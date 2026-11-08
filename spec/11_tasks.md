@@ -185,7 +185,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   你还必须**新增**：`TestPassthroughStreamOpenAIInjectedUsageFiltered`、`TestReleaseWhenAllAttemptsFail`（所有 Key 都 500 → 客户端 502，reserved 归零且无计费事件）、`TestModelNotAllowed`（403，上游未被调用）、`TestUnknownModel`（400）、`TestClientCancelStopsUpstream`、`TestInsufficientQuota`（402）、`TestTranslatorStreamPath`（假转换器把每个上游事件变成两个事件、结束时追加一个收尾事件，客户端收到双倍事件与收尾事件）、`TestRequestTooLarge`（413）、`TestStreamBodyTooLarge`（`jobs` 上传超过 `max_stream_body_bytes` → 413）、`TestEventsFirstEventErrorRetried`（`Next` 在第一个事件前返回 `*AttemptError` 时换 Key 重试，13 §4.2）、`TestRawStreamIdleTimeout`（字节流两块之间超过 `stream_idle` → 连接中止，Outcome = Timeout）、`TestDoLocalErrorNotRetried`（CORE-09）、`TestResolveRouteFromPin`（`jobs` 提交后，不带服务名的严格亲和请求路由到 `parser`，CORE-11）、`TestPinsAppendedDuringStream`（流式适配器在转发中追加的 Pins 被记录，CORE-08）、`TestAuditRecordFields`（成功、重试后成功、上游 429 全部失败、Parse 失败四种情况下审计记录各字段符合 13 §2.2，且每个请求恰好一条）。
 - **陷阱**：判断「是否已写出首字节」用包装的 `http.ResponseWriter`（13 §4.5）；不要只看局部变量。流式请求体只尝试一次（CORE-07）。
 
-## T11 数据面路由与中间件 — 状态：`TODO`
+## T11 数据面路由与中间件 — 状态：`DONE`
 
 - **前置**：T03、T04、T10
 - **必读规格**：09 §1–§2、§5；03 §7

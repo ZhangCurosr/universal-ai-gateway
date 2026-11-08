@@ -89,7 +89,6 @@ func TestHealthzNoAuth(t *testing.T) {
 }
 
 func TestUnauthenticatedAnthropicFormat(t *testing.T) {
-	t.Skip("TODO(T11)")
 	rec := serve(newTestRouter(t, 0), http.MethodPost, "/v1/messages", "", nil)
 	if rec.Code != 401 || !strings.Contains(rec.Body.String(), `"authentication_error"`) || !strings.Contains(rec.Body.String(), `"type":"error"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -97,7 +96,6 @@ func TestUnauthenticatedAnthropicFormat(t *testing.T) {
 }
 
 func TestUnauthenticatedOpenAIFormat(t *testing.T) {
-	t.Skip("TODO(T11)")
 	rec := serve(newTestRouter(t, 0), http.MethodPost, "/v1/chat/completions", auth.TokenPrefix+"unknown", nil)
 	if rec.Code != 401 || !strings.Contains(rec.Body.String(), `"code":"unauthenticated"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -105,7 +103,6 @@ func TestUnauthenticatedOpenAIFormat(t *testing.T) {
 }
 
 func TestDisabledClient403(t *testing.T) {
-	t.Skip("TODO(T11)")
 	rec := serve(newTestRouter(t, 0), http.MethodGet, "/v1/models", disabledToken, nil)
 	if rec.Code != 403 {
 		t.Fatalf("status = %d, want 403", rec.Code)
@@ -113,7 +110,6 @@ func TestDisabledClient403(t *testing.T) {
 }
 
 func TestRateLimited429RetryAfter(t *testing.T) {
-	t.Skip("TODO(T11)")
 	h := newTestRouter(t, 1)
 	if rec := serve(h, http.MethodGet, "/v1/models", userToken, nil); rec.Code != 200 {
 		t.Fatalf("first request status = %d", rec.Code)
@@ -125,7 +121,6 @@ func TestRateLimited429RetryAfter(t *testing.T) {
 }
 
 func TestModelsOpenAIFormat(t *testing.T) {
-	t.Skip("TODO(T11)")
 	rec := serve(newTestRouter(t, 0), http.MethodGet, "/v1/models", userToken, nil)
 	body := rec.Body.String()
 	if rec.Code != 200 || !strings.Contains(body, `"object":"list"`) || !strings.Contains(body, `"id":"alpha"`) {
@@ -137,7 +132,6 @@ func TestModelsOpenAIFormat(t *testing.T) {
 }
 
 func TestModelsAnthropicFormat(t *testing.T) {
-	t.Skip("TODO(T11)")
 	rec := serve(newTestRouter(t, 0), http.MethodGet, "/v1/models", userToken, map[string]string{"anthropic-version": "2023-06-01"})
 	body := rec.Body.String()
 	if rec.Code != 200 || !strings.Contains(body, `"type":"model"`) || !strings.Contains(body, `"first_id":"alpha"`) || !strings.Contains(body, `"has_more":false`) {
@@ -169,7 +163,6 @@ func TestMCPNotMountedWhenNil(t *testing.T) {
 
 // RTE-05：/mcp 经过鉴权，错误格式用 MCPErrorWriter；鉴权后 Principal 可用
 func TestMCPMountedBehindAuth(t *testing.T) {
-	t.Skip("TODO(T11)")
 	d := testDataDeps(t, 0)
 	d.MCP = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p, ok := auth.PrincipalFrom(r.Context()); !ok || p.ClientID != 1 {

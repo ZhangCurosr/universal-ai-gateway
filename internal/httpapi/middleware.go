@@ -5,10 +5,13 @@
 package httpapi
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strconv"
 	"sync/atomic"
+	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
@@ -45,8 +48,22 @@ func ClientIP(trusted clientip.Trusted) func(http.Handler) http.Handler {
 // IPRateLimit 实现 MW-07：鉴权之前按来源 IP 限流（spec/09 §5，OVL-04、OVL-05）。rpm <= 0 时直接放行。
 func IPRateLimit(l *ratelimit.Limiter, rpm int, ew ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		// TODO(T11): 键为 "ip:" + clientip.FromContext(ctx).String()；拒绝时 429 rate_limited + Retry-After。
-		return next
+		if rpm <= 0 || l == nil {
+			return next
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := clientip.FromContext(r.Context())
+			key := "ip:unknown"
+			if ip.IsValid() {
+				key = "ip:" + ip.String()
+			}
+			ok, retryAfter := l.Allow(key, rpm)
+			if !ok {
+				writeErr(w, r, ew, apperr.New(apperr.CodeRateLimited, "rate limited").WithRetryAfter(retryAfter))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
@@ -69,8 +86,51 @@ func NewOverloadGuard(maxRequests int, maxBodyBytes, maxSingleBody int64) *Overl
 // buffered 为 false 时（BodyStream / BodyNone 路由，请求体不进内存）只占并发名额，不占请求体预算（OVL-02）。
 func (g *OverloadGuard) Middleware(ew ErrorWriter, buffered bool) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		// TODO(T11): 按 OVL-01 ~ OVL-03 实现；用 CAS 循环占用，禁止「先检查再 Add」。
-		return next
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// 1. CAS 循环占用并发名额（OVL-01）
+			for {
+				cur := g.inFlight.Load()
+				if cur >= g.maxRequests {
+					writeErr(w, r, ew, apperr.New(apperr.CodeOverloaded, "service overloaded").WithRetryAfter(time.Second))
+					return
+				}
+				if g.inFlight.CompareAndSwap(cur, cur+1) {
+					break
+				}
+			}
+
+			// 2. CAS 循环占用请求体预算（OVL-02）
+			var bodyReserved int64
+			if buffered {
+				n := r.ContentLength
+				if n < 0 || n > g.maxSingleBody {
+					n = g.maxSingleBody
+				}
+				for {
+					curBytes := g.bodyBytes.Load()
+					if curBytes+n > g.maxBodyBytes {
+						// 第二种占用失败时必须归还第一种！
+						g.inFlight.Add(-1)
+						writeErr(w, r, ew, apperr.New(apperr.CodeOverloaded, "service overloaded").WithRetryAfter(time.Second))
+						return
+					}
+					if g.bodyBytes.CompareAndSwap(curBytes, curBytes+n) {
+						bodyReserved = n
+						break
+					}
+				}
+			}
+
+			// 放行时 defer 归还全部占用（OVL-03）
+			defer func() {
+				g.inFlight.Add(-1)
+				if bodyReserved > 0 {
+					g.bodyBytes.Add(-bodyReserved)
+				}
+			}()
+
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
@@ -103,11 +163,58 @@ func Recover(log *slog.Logger, ew ErrorWriter) func(http.Handler) http.Handler {
 	}
 }
 
+type accessLogKey struct{}
+
+type accessLogContext struct {
+	clientID int64
+}
+
 // AccessLog 实现 MW-02。
 func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		// TODO(T11): 请求结束后输出一条 Info：request_id, method, path, status, latency_ms, client_id, client_ip。
-		return next
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if log == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			start := time.Now()
+			tw := &trackingWriter{ResponseWriter: w}
+			alCtx := &accessLogContext{}
+			ctx := context.WithValue(r.Context(), accessLogKey{}, alCtx)
+			defer func() {
+				status := tw.status
+				if status == 0 {
+					status = http.StatusOK
+				}
+				clientID := alCtx.clientID
+				if clientID == 0 && tw.clientID != 0 {
+					clientID = tw.clientID
+				}
+				if clientID == 0 {
+					if p, ok := auth.PrincipalFrom(r.Context()); ok && p != nil {
+						clientID = p.ClientID
+					}
+				}
+				clientIP := ""
+				if ip := clientip.FromContext(r.Context()); ip.IsValid() {
+					clientIP = ip.String()
+				} else if r.RemoteAddr != "" {
+					if parsed := (clientip.Trusted{}).From(r); parsed.IsValid() {
+						clientIP = parsed.String()
+					}
+				}
+				log.Info("request",
+					"request_id", obs.RequestIDFrom(r.Context()),
+					"method", r.Method,
+					"path", r.URL.Path,
+					"status", status,
+					"latency_ms", time.Since(start).Milliseconds(),
+					"client_id", clientID,
+					"client_ip", clientIP,
+				)
+			}()
+			next.ServeHTTP(tw, r.WithContext(ctx))
+		})
 	}
 }
 
@@ -115,8 +222,35 @@ func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 func Authenticate(ix *auth.Index, pepper []byte, ew ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// TODO(T11): ExtractCredential → HashToken → Lookup；401 / 403；auth.WithPrincipal。
-			writeErr(w, r, ew, apperr.NotImplemented("T11"))
+			token, ok := auth.ExtractCredential(r.Header)
+			if !ok {
+				writeErr(w, r, ew, apperr.New(apperr.CodeUnauthenticated, "unauthenticated"))
+				return
+			}
+			hash := auth.HashToken(pepper, token)
+			p, ok := ix.Lookup(hash)
+			if !ok {
+				writeErr(w, r, ew, apperr.New(apperr.CodeUnauthenticated, "unauthenticated"))
+				return
+			}
+			if p.Disabled {
+				writeErr(w, r, ew, apperr.New(apperr.CodePermissionDenied, "client disabled"))
+				return
+			}
+			if alCtx, ok := r.Context().Value(accessLogKey{}).(*accessLogContext); ok {
+				alCtx.clientID = p.ClientID
+			}
+			for cur := w; cur != nil; {
+				if tw, ok := cur.(*trackingWriter); ok {
+					tw.clientID = p.ClientID
+				}
+				if u, ok := cur.(interface{ Unwrap() http.ResponseWriter }); ok {
+					cur = u.Unwrap()
+				} else {
+					break
+				}
+			}
+			next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
 		})
 	}
 }
@@ -124,8 +258,20 @@ func Authenticate(ix *auth.Index, pepper []byte, ew ErrorWriter) func(http.Handl
 // RateLimit 实现 MW-05。必须位于 Authenticate 之后。
 func RateLimit(l *ratelimit.Limiter, ew ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		// TODO(T11)
-		return next
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			p, ok := auth.PrincipalFrom(r.Context())
+			if !ok || p == nil {
+				writeErr(w, r, ew, apperr.New(apperr.CodeUnauthenticated, "unauthenticated"))
+				return
+			}
+			key := "c:" + strconv.FormatInt(p.ClientID, 10)
+			allowed, retryAfter := l.Allow(key, p.RPMLimit)
+			if !allowed {
+				writeErr(w, r, ew, apperr.New(apperr.CodeRateLimited, "rate limited").WithRetryAfter(retryAfter))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
@@ -134,6 +280,7 @@ type trackingWriter struct {
 	http.ResponseWriter
 	wroteHeader bool
 	status      int
+	clientID    int64
 }
 
 func (t *trackingWriter) WriteHeader(code int) {
