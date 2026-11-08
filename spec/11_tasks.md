@@ -250,7 +250,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   - 用 `caddy validate --config deploy/Caddyfile.example --adapter caddyfile`、`nginx -t -c`（在临时目录中构造最小 nginx.conf 引入该片段）、`systemd-analyze verify` 校验示例文件；本机没有对应工具时在交付说明中写明「未验证」，不得声称已验证。
   - `install-task.ps1` 在非管理员 PowerShell 中运行时给出明确提示并以非零码退出。
 
-## T32 MCP 服务端 — 状态：`TODO`
+## T32 MCP 服务端 — 状态：`DONE`
 
 - **前置**：T10、T09C
 - **必读规格**：**14 全章**；09 §1（RTE-05）；13 §2
