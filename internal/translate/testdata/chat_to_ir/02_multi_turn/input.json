@@ -1,0 +1,5 @@
+{"model":"gpt-x","messages":[
+  {"role":"user","content":"Hi"},
+  {"role":"assistant","content":"Hello! How can I help?"},
+  {"role":"user","content":[{"type":"text","text":"Tell me"},{"type":"text","text":"a joke"}]}
+]}

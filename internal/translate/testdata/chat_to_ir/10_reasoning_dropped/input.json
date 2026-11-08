@@ -1,0 +1,5 @@
+{"model":"gpt-x","messages":[
+  {"role":"user","content":"2+2?"},
+  {"role":"assistant","content":"4","reasoning_content":"The user asks a simple sum..."},
+  {"role":"user","content":"And 3+3?"}
+]}

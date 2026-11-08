@@ -1,0 +1,12 @@
+{"model":"gpt-x",
+ "tools":[{"type":"function","function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}],
+ "tool_choice":{"type":"function","function":{"name":"get_weather"}},
+ "messages":[
+  {"role":"user","content":"Weather in Paris and Rome?"},
+  {"role":"assistant","content":"","tool_calls":[
+    {"id":"call_a","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Paris\"}"}},
+    {"id":"call_b","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Rome\"}"}}]},
+  {"role":"tool","tool_call_id":"call_a","content":"18C"},
+  {"role":"tool","tool_call_id":"call_b","content":[{"type":"text","text":"22C"}]},
+  {"role":"user","content":"Thanks"}
+]}

@@ -1,0 +1,5 @@
+{"model":"gpt-x","messages":[
+  {"role":"system","content":"You are terse."},
+  {"role":"developer","content":[{"type":"text","text":"Answer in Chinese."}]},
+  {"role":"user","content":"Hi"}
+]}

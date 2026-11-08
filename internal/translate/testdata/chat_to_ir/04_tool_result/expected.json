@@ -1,0 +1,72 @@
+{
+  "max_tokens": 0,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Weather in Paris?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "arguments": {
+            "city": "Paris"
+          },
+          "id": "call_1",
+          "name": "get_weather",
+          "type": "tool_call"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "content": [
+            {
+              "text": "18C, sunny",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "tool_call_id": "call_1",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": {
+    "Mode": "auto",
+    "Name": ""
+  },
+  "tools": [
+    {
+      "Name": "get_weather",
+      "Description": "Get weather",
+      "InputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "city"
+        ]
+      },
+      "CacheControl": null
+    }
+  ],
+  "top_p": null,
+  "user": ""
+}

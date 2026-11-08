@@ -1,0 +1,24 @@
+{
+  "max_tokens": 0,
+  "messages": [
+    {
+      "parts": [
+        {
+          "media_type": "",
+          "type": "image",
+          "url": "https://example.com/cat.jpg"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": null,
+  "top_p": null,
+  "user": ""
+}

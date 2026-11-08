@@ -1,0 +1,97 @@
+{
+  "max_tokens": 0,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Weather in Paris and Rome?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "arguments": {
+            "city": "Paris"
+          },
+          "id": "call_a",
+          "name": "get_weather",
+          "type": "tool_call"
+        },
+        {
+          "arguments": {
+            "city": "Rome"
+          },
+          "id": "call_b",
+          "name": "get_weather",
+          "type": "tool_call"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "content": [
+            {
+              "text": "18C",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "tool_call_id": "call_a",
+          "type": "tool_result"
+        },
+        {
+          "content": [
+            {
+              "text": "22C",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "tool_call_id": "call_b",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "Thanks",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": {
+    "Mode": "tool",
+    "Name": "get_weather"
+  },
+  "tools": [
+    {
+      "Name": "get_weather",
+      "Description": "",
+      "InputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        }
+      },
+      "CacheControl": null
+    }
+  ],
+  "top_p": null,
+  "user": ""
+}

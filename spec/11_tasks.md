@@ -296,7 +296,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 
 | 卡 | 内容 | 前置 | 必读 |
 |:--|:--|:--|:--|
-| T20 | OpenAI Chat 请求 → IR（10 §3） | T14 | 10 §1–§3 |
+| T20 | OpenAI Chat 请求 → IR（10 §3）— `DONE` | T14 | 10 §1–§3 |
 | T21 | IR → Anthropic 请求（10 §4） | T20 | 10 §4 |
 | T22 | Anthropic 响应/流 → OpenAI 响应/流（10 §5，实现 `Translator.Response`：缓冲体转换 + 包装 `EventStream`）；实现 `translate.Register` 并在 `cmd/gateway/adapters.go` 中注册（内核无需修改） | T21 | 10 §0、§5 |
 | T23 | Anthropic 请求 → IR → OpenAI 请求 | T22 | 10 §6（届时补充） |

@@ -1,0 +1,29 @@
+{
+  "max_tokens": 0,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "What is this?",
+          "type": "text"
+        },
+        {
+          "data": "iVBORw0KGgo=",
+          "media_type": "image/png",
+          "type": "image",
+          "url": ""
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "gpt-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": null,
+  "top_p": null,
+  "user": ""
+}
