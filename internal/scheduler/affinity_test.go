@@ -11,7 +11,6 @@ import (
 var t0 = time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
 
 func TestAffinityGetPut(t *testing.T) {
-	t.Skip("TODO(T07)")
 	c := newAffinityCache(0)
 	if _, ok := c.Get("s1", t0); ok {
 		t.Fatal("Get on empty cache ok = true")
@@ -31,7 +30,6 @@ func TestAffinityGetPut(t *testing.T) {
 }
 
 func TestAffinityExpire(t *testing.T) {
-	t.Skip("TODO(T07)")
 	c := newAffinityCache(0)
 	c.Put("s1", 1, time.Minute, t0)
 	if _, ok := c.Get("s1", t0.Add(61*time.Second)); ok { // AFF-03
@@ -43,7 +41,6 @@ func TestAffinityExpire(t *testing.T) {
 }
 
 func TestAffinityTouchExtends(t *testing.T) {
-	t.Skip("TODO(T07)")
 	c := newAffinityCache(0)
 	c.Put("s1", 1, time.Minute, t0)
 	c.Get("s1", t0.Add(50*time.Second)) // AFF-04：续期到 t0+110s
@@ -65,7 +62,6 @@ func sameShardKeys() (string, string) {
 }
 
 func TestAffinityLRUEviction(t *testing.T) {
-	t.Skip("TODO(T07)")
 	c := newAffinityCache(16) // 每分片容量 1（AFF-02）
 	a, b := sameShardKeys()
 	c.Put(a, 1, time.Hour, t0)
@@ -79,7 +75,6 @@ func TestAffinityLRUEviction(t *testing.T) {
 }
 
 func TestAffinityConcurrent(t *testing.T) {
-	t.Skip("TODO(T07)")
 	c := newAffinityCache(1024)
 	var wg sync.WaitGroup
 	for g := 0; g < 16; g++ {
@@ -96,5 +91,17 @@ func TestAffinityConcurrent(t *testing.T) {
 	wg.Wait()
 	if c.Len() > 1024 {
 		t.Fatalf("Len() = %d exceeds capacity", c.Len())
+	}
+}
+
+// peek 不续期
+func TestAffinityPeekDoesNotTouch(t *testing.T) {
+	c := newAffinityCache(0)
+	c.Put("s1", 1, time.Minute, t0)
+	if id, ok := c.peek("s1", t0.Add(50*time.Second)); !ok || id != 1 {
+		t.Fatalf("peek() = %d, %v", id, ok)
+	}
+	if _, ok := c.Get("s1", t0.Add(61*time.Second)); ok {
+		t.Fatal("peek extended the TTL")
 	}
 }
