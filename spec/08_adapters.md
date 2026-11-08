@@ -318,7 +318,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 
 以下两个范例已用临时实现跑通一致性套件，证明契约足以表达它们。真正接入时以厂商当时的官方文档为准核对字段。
 
-### 8.1 搜索 API（以 Tavily 为例）：多端点、无模型字段、按 credits 计费
+### 8.1 搜索 API（以 Tavily 为例，正式规则，已实现）：多端点、无模型字段、按 credits 计费
 
 | 项 | 设计 |
 |:--|:--|
