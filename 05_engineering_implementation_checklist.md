@@ -84,8 +84,8 @@ universal-ai-gateway/
 │   │   ├── log_worker.go           # 8,192 环形非阻塞通道与 250ms/256 行批落盘流水线
 │   │   └── quota.go                # 内存原子计费与 1000ms 定时聚合对账引擎
 │   ├── security/                   # Sprint 4: 信封加密与凭证治理
-│   │   ├── envelope.go             # AES-256-GCM + AAD 关联验证硬件级信封加密
-│   │   └── token.go                # 加盐 SHA-256 单向哈希校验与高速索引
+│   │   ├── envelope.go             # AES-256-GCM + AAD 关联验证信封加密
+│   │   └── token.go                # HMAC-SHA256（pepper）令牌索引与高速校验
 │   ├── wasm/                       # Sprint 5: WASM 插件沙箱集成
 │   │   ├── engine.go               # tetratelabs/wazero JIT 运行时与实例池化管理
 │   │   └── host_abi.go             # 宿主内存读写、Hook 挂载与 50ms 超时熔断守卫
@@ -109,7 +109,7 @@ universal-ai-gateway/
 项目严格禁止任何带有 CGO 动态绑定的外部依赖。核心三方库锁定如下：
 
 ```go
-module github.com/ai-gateway/universal-ai-gateway
+module github.com/ZhangCurosr/universal-ai-gateway
 
 go 1.24.0
 
@@ -147,7 +147,7 @@ go mod verify
 ```makefile
 SHELL := /bin/bash
 BINARY_NAME := bin/gateway
-MODULE := github.com/ai-gateway/universal-ai-gateway
+MODULE := github.com/ZhangCurosr/universal-ai-gateway
 
 .PHONY: all build clean test bench lint check-cgo
 
@@ -376,7 +376,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/ir"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/ir"
 )
 
 // Test 1.1: Claude 3.7 Thinking 思考签名提取与防篡改断言
@@ -728,7 +728,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/stream"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/stream"
 )
 
 // BenchmarkStreamTranspiler 验证 TTFT 附加延迟 < 0.2ms，堆内存分配 < 8KB/conn
@@ -777,6 +777,7 @@ package scheduler
 import (
 	"errors"
 	"sync/atomic"
+	"time"
 )
 
 var ErrPoolExhausted = errors.New("scheduler: no healthy resource available in pool")
@@ -796,6 +797,7 @@ type ResourceEntity struct {
 	State          atomic.Int32 // ResourceState
 	RemainingQuota atomic.Int64
 	ResetTimeUnix  atomic.Int64
+	CooldownUntil  atomic.Int64 // UnixNano；429 冷却截止时间
 }
 
 type ResourcePool struct {
@@ -819,8 +821,11 @@ func (p *ResourcePool) SelectFastPath() (*ResourceEntity, bool) {
 	idx := p.cursor.Add(1) % n
 	res := p.resources[idx]
 
-	if res.State.Load() == int32(StateReady) && res.InFlight.Load() == 0 {
-		res.InFlight.Add(1)
+	// [修订 v1.1] 原实现先 Load()==0 再 Add(1) 存在竞态，两个 goroutine 可同时占用同一空闲槽位；
+	// 且未检查冷却截止时间。改为冷却检查 + CAS 0→1。
+	if res.State.Load() == int32(StateReady) &&
+		res.CooldownUntil.Load() <= time.Now().UnixNano() &&
+		res.InFlight.CompareAndSwap(0, 1) {
 		return res, true
 	}
 	return nil, false
@@ -914,7 +919,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/scheduler"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
 )
 
 // Test 3.1: 高并发 50,000 QPS 模拟抢占压测
@@ -1158,8 +1163,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/security"
-	"github.com/ai-gateway/universal-ai-gateway/internal/store"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/security"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
 
 // Test 4.1: 高并发写日志下的 DB Lock 检测测试
@@ -1429,7 +1434,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/wasm"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/wasm"
 )
 
 // 极简合规 WAT 模块 (无限死循环用于超时熔断断言)
@@ -1502,7 +1507,7 @@ func IsPrivateIP(ip net.IP) bool {
 		"10.0.0.0/8",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
-		"100.64.0.0/10", // CGNAT
+		// [修订 v1.1] 移除 100.64.0.0/10（CGNAT 运营商共享地址段，不属于本地私网）
 	}
 	for _, cidr := range privateCIDRs {
 		_, block, _ := net.ParseCIDR(cidr)
@@ -1613,9 +1618,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/gateway"
-	"github.com/ai-gateway/universal-ai-gateway/internal/mcp"
-	"github.com/ai-gateway/universal-ai-gateway/internal/store"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/gateway"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/mcp"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
 
 var Version = "1.0.0-PROD"
@@ -1718,7 +1723,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/scheduler"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
 )
 
 func TestWindowsWSAENOBUFS_ShieldFilter(t *testing.T) {
@@ -1756,7 +1761,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/scheduler"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
 )
 
 func TestRetryAfter_RFC1123Parsing(t *testing.T) {
@@ -1790,7 +1795,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/scheduler"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
 )
 
 func TestOAuthTokenRefresh_SingleFlightProtection(t *testing.T) {
@@ -1845,7 +1850,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/scheduler"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
 )
 
 func TestClientCancel_InFlightQuotaRelease(t *testing.T) {

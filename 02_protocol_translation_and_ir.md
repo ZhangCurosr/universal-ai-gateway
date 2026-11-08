@@ -3,7 +3,7 @@
 
 > **文档版本**: v1.0.0-PROD  
 > **状态**: RFC / 生产实现标准  
-> **模块代码**: `github.com/ai-gateway/universal-ai-gateway/internal/ir`, `internal/stream`, `internal/ingress`  
+> **模块代码**: `github.com/ZhangCurosr/universal-ai-gateway/internal/ir`, `internal/stream`, `internal/ingress`  
 > **适用目标**: OpenAI (v1/chat, v1/responses), Anthropic (Messages), Google Gemini (:generateContent), DeepSeek, MCP (Model Context Protocol)
 
 ---
@@ -42,6 +42,14 @@ Responses--------/          \---------> Responses
 
 复杂度由此降低至：
 $$\text{Complexity} = \mathcal{O}(N + M)$$
+
+> **[修订 v1.1] 同协议透传优先**（详见 [`06` ADR-03](./06_architecture_review_and_revisions.md)）：
+> 当入站协议与目标上游协议相同（Claude Code → Anthropic、OpenAI SDK → OpenAI，这是绝大多数流量）时，
+> **不经过 IR**，只局部改写 `model`、鉴权头与必要的 `stream_options`，其余字节原样转发，SSE 逐帧转发并旁路解析 usage。
+> 原因：本章 IR 不含 `cache_control` 缓存断点与未知字段，强制往返会破坏 Prompt Cache 与新协议特性，「语义超集」并不成立。
+> IR 仅用于跨协议转译，并需补齐 `CacheControl`、`Extensions map[string]json.RawMessage`、可含图片的工具结果、
+> `RedactedThinkingPart{Data}`、响应侧 `StopReason` 与分项 `Usage`。
+> 向 OpenAI 兼容上游发起流式请求时必须注入 `stream_options: {"include_usage": true}`，否则无法按真实用量结算。
 
 ---
 
@@ -186,6 +194,11 @@ gateway test --verbose
 
 在办公室或家庭局域网运行网关时，必须保证零信任网络安全与无缝发现：
 
+> **[修订 v1.1]**（详见 [`06` ADR-08](./06_architecture_review_and_revisions.md)）IP 段过滤只能减少暴露面，**不能替代认证**；
+> `100.64.0.0/10` 是运营商共享地址段，不应视为私网；部署在反向代理之后时需配置可信代理列表，否则 `RemoteAddr` 恒为代理地址；
+> 非回环访问默认要求 TLS（Bearer Token 不得在局域网明文传输）；mDNS 广播默认关闭。
+> 另：`net/http` 中间件无法在「TCP 握手阶段」丢弃连接，如需此能力应在 `net.Listener` 层包装 `Accept`。
+
 #### RFC1918 私网范围过滤与公网阻断
 网关严格校验连接来源。若启动时未显式开启公网穿透标识，任何非 RFC1918（`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`）及非本地回环（`127.0.0.0/8`, `::1`）请求直接在 TCP 握手或中间件首层丢弃：
 
@@ -198,7 +211,7 @@ func IsPrivateIP(ip net.IP) bool {
 		"10.0.0.0/8",
 		"172.16.0.0/12",
 		"192.168.0.0/16",
-		"100.64.0.0/10", // CGNAT
+		// [修订 v1.1] 移除 100.64.0.0/10（CGNAT 运营商共享地址段，不属于本地私网）
 	}
 	for _, cidr := range privateCIDRs {
 		_, block, _ := net.ParseCIDR(cidr)
@@ -394,10 +407,15 @@ func (p ToolResultPart) Clone() ContentPart {
 #### 映射路由矩阵
 | 源协议 / 字段 | 转换为 Canonical IR | 目标: Anthropic | 目标: OpenAI / DeepSeek | 目标: Google Gemini |
 | :--- | :--- | :--- | :--- | :--- |
-| **Anthropic** `thinking` + `signature` | `ThinkingPart{Text, Signature}` | 原样输出 `thinking` 块并在保留 signature 前提下回传 | 转为 `reasoning_content`，剥离 signature | 转为 `part.text` 且附带 `thought: true` |
-| **DeepSeek** `reasoning_content` | `ThinkingPart{Text}` | 构造 `thinking` 块（无签名或本地降级） | 原样注入 `reasoning_content` | 注入 `thought: true` 部分 |
-| **OpenAI Responses** `thought` | `ThinkingPart{Text}` | 包装为 `thinking` 内容块 | 降级为 `reasoning_content` | 注入 `thought: true` 部分 |
-| **Gemini** `part{thought: true}` | `ThinkingPart{Text}` | 包装为 `thinking` 内容块 | 提取为 `reasoning_content` | 原样保持 `thought: true` |
+| **Anthropic** `thinking` + `signature` | `ThinkingPart{Text, Signature, Vendor}` | 原样回传 `thinking` 块与 signature | 历史消息中丢弃（仅响应流可展示为 `reasoning_content`） | 历史消息中丢弃 |
+| **DeepSeek** `reasoning_content` | `ThinkingPart{Text, Vendor}` | **丢弃**（Anthropic 拒绝无签名 thinking 块） | 发往 DeepSeek 前**必须删除**历史中的 `reasoning_content` | 丢弃 |
+| **OpenAI Responses** `reasoning` item | `ThinkingPart{Encrypted, Vendor}` | 丢弃 | 仅回传给 OpenAI（`encrypted_content`） | 丢弃 |
+| **Gemini** `part{thought: true}` / `thoughtSignature` | `ThinkingPart{Text, Signature, Vendor}` | 丢弃 | 丢弃 | 原样回传（含 `thoughtSignature`） |
+
+> **[修订 v1.1]** 原表把各家思考内容互相「包装」为对方的思考块，这是错误的：思考签名只对**签发它的同一厂商**有效，
+> Anthropic 会以 400 拒绝无签名或签名不匹配的 `thinking` 块，DeepSeek reasoner 会拒绝输入中携带 `reasoning_content`。
+> 规则：IR 中的 `ThinkingPart` 记录来源厂商 `Vendor`，Synthesizer 只向同一厂商回传；跨厂商时丢弃，
+> 若产品需要保留推理上下文，可显式配置为转成普通文本消息（不再是思考块）。
 
 ### 4.2 Tool Call 与 Schema AST 递归重写机制
 
@@ -418,13 +436,23 @@ func CleanSchemaForGemini(node map[string]any) map[string]any {
 		case string:
 			cleaned["type"] = strings.ToUpper(t)
 		case []any: // 多类型联合声明例如 ["string", "null"]
-			if len(t) > 0 {
-				if firstStr, ok := t[0].(string); ok {
-					cleaned["type"] = strings.ToUpper(firstStr)
+			// [修订 v1.1] 原实现直接取首元素，["null", "string"] 会得到非法的 NULL 类型。
+			// 改为：取第一个非 null 类型，若联合中含 null 则设置 nullable。
+			for _, elem := range t {
+				s, ok := elem.(string)
+				if !ok {
+					continue
+				}
+				if s == "null" {
+					cleaned["nullable"] = true
+				} else if _, set := cleaned["type"]; !set {
+					cleaned["type"] = strings.ToUpper(s)
 				}
 			}
 		}
 	}
+	// 注意：anyOf / oneOf / $ref / $defs 会被下方白名单剪掉，参数约束随之丢失。
+	// 生产实现需先内联 $ref，再把 anyOf 降级为首个可表达分支（见 06 遗留待办）。
 
 	// 2. 字段拷贝与过滤白名单
 	allowedFields := map[string]bool{
@@ -484,6 +512,9 @@ func CleanSchemaForGemini(node map[string]any) map[string]any {
 3. **空返回死锁**：Agent 执行失败返回空内容，触发某些上游 API 的 `content cannot be empty` 错误。
 
 #### 自愈状态机处理逻辑
+
+> **[修订 v1.1]** 自动合成 `cancelled` 工具结果会改变对话语义并掩盖客户端 bug，改为由配置项 `heal_dangling_tool_calls` 显式开启，默认只记录告警。
+
 网关在 Lowering 阶段执行 Self-Healing 校验：
 - **检测未闭合的 ToolCall**：若检测到 `ir.ToolCallPart` 存在，但后续消息并非对应的 `ir.ToolResultPart`，网关自动在两者之间合成一条虚拟的 `ir.ToolResultPart`，填入 `{"status": "cancelled", "reason": "superseded_by_user"}`，从而使消息队列合规化闭合。
 - **自动补全 ID**：若发现缺失 `tool_call_id`，网关基于 UUIDv4 快速生成带有协议前缀的伪 ID（如 `call_synthetic_` / `toolu_synthetic_`），并在上下文中维持双向映射表。
@@ -567,7 +598,7 @@ Anthropic FSM Synthesizer:
 
 1. **`sync.Pool` 字节缓冲区池化**：
    彻底杜绝在每个 SSE 事件产生时通过 `json.Marshal` 分配内存。预热多规格的 `*bytes.Buffer` 池，单连接复用固定内存。
-2. **零序列化/快速字段字节提取（Zero-Copy Fast-Scan）**：
+2. **~~零序列化/快速字段字节提取（Zero-Copy Fast-Scan）~~**（**[修订 v1.1] 已废弃**：按字段名偏移扫描会被转义引号、`\u` 转义以及工具参数中的同名 `"content"` 字段误导；单个 SSE 事件的 JSON 解码耗时相对网络 RTT 可忽略。改为逐事件流式 JSON 解码 + `sync.Pool` 缓冲。原描述保留如下供对照）：
    上游返回的 SSE 数据行多以 `data: {...}\n\n` 构成。网关避免通过通用 JSON 反序列化器解析整个庞大对象，而是基于轻量级 SIMD 启发式扫描器直接探测 `"reasoning_content":"`、`"content":"`、`"finish_reason":"` 的起始与结束偏移量，切片直接转发拼装。
 
 ---
@@ -1543,7 +1574,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/ir"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/ir"
 )
 
 func TestCleanSchemaForGemini_EdgeCases(t *testing.T) {
@@ -1615,7 +1646,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ai-gateway/universal-ai-gateway/internal/stream"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/stream"
 )
 
 func TestOpenAIToAnthropicFSM_ThinkingTransition(t *testing.T) {

@@ -211,6 +211,13 @@
 
 ### 3.3 故障判定与降级决策矩阵
 
+> **[修订 v1.1]**（详见 [`06` ADR-04 / ADR-06](./06_architecture_review_and_revisions.md)）
+> - 透明重试/降级**只能发生在向客户端写出第一个字节之前**；流开始后出错只能以协议内错误事件结束；每请求设 `max_attempts` 与总时间预算。
+> - 401 不应一律永久隔离：OAuth 类凭据先单飞刷新令牌；DirectKey 先进入 `Suspect` 并用 `/v1/models` 验证一次。403 需区分「该模型/地区无权限」（只标记 Key×模型组合）与「账号停用」。
+> - 补充 Anthropic `529 overloaded_error`：属于厂商全局过载，渠道级退避，不惩罚单个 Key。
+> - 固定 8s TTFT 超时对长上下文与扩展思考请求过激，应按 prompt 长度与思考预算动态计算。
+> - 跨模型兜底（如 Claude → DeepSeek）需虚拟模型显式声明 `allow_cross_model`，并在响应中返回真实 `model`；默认只在同一模型的不同供给渠道之间降级。
+
 | 上游响应 / 异常 | 分类判定 | 降级动作 | 资源池影响 | 是否计入客户端重试 |
 |---|---|---|---|---|
 | **401 Unauthorized** | 凭证失效 / 账号被封 | **立即降级到下一候选** | 立即隔离该 Key（Quarantine），告警 | 否（透明降级） |
@@ -226,6 +233,10 @@
 ---
 
 ## 4. 混合调度算法矩阵 (Hybrid Scheduling Engine)
+
+> **[修订 v1.1]** 本章的快速路径、SWRR、Smart、Pace 与第 5 章的会话粘性原文没有定义优先级，且 Smart（追逐最早重置）与 Pace（匀速消耗）目标相反。
+> 修订后的唯一决策顺序为：**硬过滤 → 会话粘性 → 缓存冷点再平衡（绑定 Key 闲置超过上游缓存 TTL 时才允许切换）→ 池策略（每池仅一种）→ CAS 占槽**。
+> 快速路径仅作为无亲和键请求的实现优化。详见 [`06` ADR-04](./06_architecture_review_and_revisions.md)。
 
 网关设计了分层混合调度机制：**$O(1)$ 零负载快速路径**负责应对 85% 以上的高并发空闲调度，而**平滑加权轮询**、**Smart** 与 **Pace** 算法则在饱和与受控状态下实现收益最大化。
 
@@ -352,6 +363,13 @@ $$\text{AffinityKey}_{main} = \text{MurmurHash3}\left(\text{ClientID} + \text{":
 其中 `PrefixHash` 为请求 System Prompt 与第一轮 User Message 提取的 SHA-256 前 16 位。
 
 ### 5.2 Subagent-Aware 缓存隔离机制
+
+> **[修订 v1.1] 机理修正**（详见 [`06` ADR-05](./06_architecture_review_and_revisions.md)）：上游 Prompt Cache 按「组织/账号 + 精确前缀」命中，
+> Subagent 的短请求使用不同前缀，**不会把主会话的缓存条目挤出**，网关也无法感知上游 GPU 显存中的 KV Cache。
+> 需要隔离的真实原因是：Subagent 突发并发吃光同一账号的 RPM/TPM 或窗口额度，导致主会话被 429 后被迫切号而丢失缓存。
+> 因此修订方案为「主会话为每个 Key 预留并发/额度余量」，而非强制物理隔离账号池。
+> 下文的 `X-Claude-Code-Subagent`、`X-Agent-Role`、`X-Task-Type` 等请求头**并非任何客户端实际发送的字段**，
+> 识别信号应改为可配置的提取器链（`metadata.user_id` 会话段、系统提示词指纹、子任务模型名、用户自定义头）。
 
 #### 5.2.1 自动化 Coding Agent 的行为特征
 以 Claude Code、Devin 为代表的新一代 Agent 工具，其单次用户 Prompt 往往触发深度任务编排：
@@ -660,27 +678,24 @@ func (p *Pool) Acquire(ctx context.Context, affKey uint64, requiredCaps Capabili
 			p.mu.RLock()
 			k, exists := p.idMap[pinnedID]
 			p.mu.RUnlock()
-			if exists && p.isKeyUsable(k, nowNano, requiredCaps) {
-				if atomic.AddInt32(&k.InFlight, 1) <= k.MaxInFlight {
-					return k, p.makeReleaseFunc(k), nil
-				}
-				// 槽位已满，释放并向下回退
-				atomic.AddInt32(&k.InFlight, -1)
+			if exists && p.isKeyUsable(k, nowNano, requiredCaps) && p.tryAcquire(k) {
+				return k, p.makeReleaseFunc(k), nil
 			}
 		}
 	}
 
 	// 2. O(1) 零负载快速路径 (Zero-Load Fast Path)
-	// 借鉴 05_MinerUProxyManager 实测 40,000+ QPS 架构，空闲资源无锁极速抢占
+	// [修订 v1.1] 快速路径同样必须经过 isKeyUsable（原实现只看 State，会选中 CooldownUntil 未到期的 Key），
+	// 且只服务于「无亲和键」或「亲和 Key 不可用」的请求；完整决策顺序见 06 ADR-04。
 	startCursor := atomic.AddUint64(&p.cursor, 1)
 	for i := 0; i < n && i < 4; i++ { // 仅尝试探测最多 4 个相邻槽位，避免退化
 		idx := int((startCursor + uint64(i)) % uint64(n))
 		k := p.keys[idx]
 
-		// 无锁探测：InFlight 必须为 0 且处于 Ready 状态
+		// 无锁探测：InFlight 必须为 0 且 Key 整体可用（状态、冷却、能力位）
 		if atomic.LoadInt32(&k.InFlight) == 0 &&
 			atomic.LoadInt32(&k.State) == int32(StateReady) &&
-			(k.Capabilities&requiredCaps == requiredCaps) {
+			p.isKeyUsable(k, nowNano, requiredCaps) {
 
 			if atomic.CompareAndSwapInt32(&k.InFlight, 0, 1) {
 				// 抢占成功，注册粘性并返回
@@ -711,12 +726,28 @@ func (p *Pool) Acquire(ctx context.Context, affKey uint64, requiredCaps Capabili
 		return nil, nil, ErrNoEligibleResource
 	}
 
-	atomic.AddInt32(&selected.InFlight, 1)
+	// [修订 v1.1] 从过滤到占槽之间存在竞态，必须 CAS 占槽，不能无条件 Add(1) 突破 MaxInFlight
+	if !p.tryAcquire(selected) {
+		return nil, nil, ErrPoolExhausted // 由上层在重试预算内重新调度
+	}
 	if affKey != 0 && p.affinity != nil {
 		p.affinity.Put(affKey, selected.ID)
 	}
 
 	return selected, p.makeReleaseFunc(selected), nil
+}
+
+// tryAcquire 以 CAS 循环占用一个并发槽位，保证 InFlight 永不超过 MaxInFlight
+func (p *Pool) tryAcquire(k *ResourceKey) bool {
+	for {
+		cur := atomic.LoadInt32(&k.InFlight)
+		if cur >= k.MaxInFlight {
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&k.InFlight, cur, cur+1) {
+			return true
+		}
+	}
 }
 
 func (p *Pool) isKeyUsable(k *ResourceKey, nowNano int64, caps CapabilityBitmask) bool {

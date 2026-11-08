@@ -1,7 +1,7 @@
 # 04. 高性能存储架构、端到端安全与 WASM 插件沙箱全景蓝图
 
 > **文档版本**：v1.0.0 | **架构代号**：Universal AI Gateway (Project Titan)  
-> **核心原则**：纯 Go 零 CGO 依赖（Single Static Binary）、数据面与控制面彻底解耦、硬件级信封加密、微秒级 WASM 沙箱隔离、高吞吐弹性流水线。
+> **核心原则**：纯 Go 零 CGO 依赖（Single Static Binary）、数据面与控制面彻底解耦、信封加密、微秒级 WASM 沙箱隔离、高吞吐弹性流水线。
 
 ---
 
@@ -11,7 +11,7 @@
 
 传统开源网关（如 `new-api`）与实验性代理网关（如 `Magpie`）在工业级生产实践中暴露出了致命瓶颈：
 1. **控制面与数据面耦合引发锁雪崩**：高频并发请求直接读写后端 MySQL/PostgreSQL，热点用户配额行（`users.quota`）发生严苛的行级锁争抢，导致网关整体延迟从毫秒级退化至秒级甚至发生连接池耗尽崩溃。
-2. **凭证明文或简易对称加密存储**：上游高价值 API Key 仅以明文或静态配置 key 加密存放，缺乏防重放与跨账户篡改保护；下游访问凭证缺乏单向加盐防护，一旦数据库快照外泄即导致全部密钥沦陷。
+2. **凭证明文或简易对称加密存储**：上游高价值 API Key 仅以明文或静态配置 key 加密存放，缺乏防密文置换与跨账户篡改保护；下游访问凭证缺乏单向加盐防护，一旦数据库快照外泄即导致全部密钥沦陷。
 3. **扩展机制两极分化**：要么采用外部子进程（如 Magpie 依赖 Bun 运行时 + NDJSON IPC 通信，带来 250MB+ 体积与数毫秒跨进程序列化延迟）；要么强行修改 Go 核心源码，缺乏动态插件化能力。
 
 本项目贯彻**工业级全栈工程实践**，提出并实现了以下核心解耦架构：
@@ -170,6 +170,11 @@ COMMIT;
 3. **级联超时崩溃**：下游客户端触发 Read Timeout（默认 30s/60s），进而重试，造成流量二次放大，数据库 CPU 飙升至 100%，系统陷入瘫痪。
 
 #### 2.3.2 解耦方案：内存高速记账 + 定时异步聚合对账
+
+> **[修订 v1.1]** 本节方案仅适用于 **Standalone 单实例**部署。内存余额在进程崩溃时会丢失未落盘的增量与全部在途预扣，
+> 且原地 `UPDATE used_quota` 无法审计。修订后的计费设计（预留→结算、`defer` 结算、计费事件不可丢弃、
+> 追加式 `usage_ledger` 流水账、崩溃恢复语义）见 [`06` ADR-01 / ADR-02](./06_architecture_review_and_revisions.md#adr-02计费改为预留--结算-追加式流水账计费事件不可丢弃)。
+
 本网关将计费计量彻底划分为**数据面（Data Plane）**与**控制面（Control Plane）**：
 
 ```
@@ -306,29 +311,40 @@ func (r *ReconciliationEngine) flushDeltas(ctx context.Context) {
 		return
 	}
 
+	// [修订 v1.1] 事务任一步失败都会整体回滚，因此必须把整批增量还回内存，
+	// 而不是只归还出错的那一条（原实现会丢失其余已 Swap 的增量，且忽略 Commit 错误）。
+	restore := func() {
+		for _, entry := range batch {
+			if clVal, ok := r.clients.Load(entry.clientID); ok {
+				clVal.(*ClientRuntime).DeltaAccumulator.Add(entry.amount)
+			}
+		}
+	}
+
 	// 开启事务批量更新数据库
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
+		restore()
 		return
 	}
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, "UPDATE clients SET used_quota = used_quota + ? WHERE id = ?")
 	if err != nil {
+		restore()
 		return
 	}
 	defer stmt.Close()
 
 	for _, entry := range batch {
 		if _, err := stmt.ExecContext(ctx, entry.amount, entry.clientID); err != nil {
-			// 若写入失败，将增量还回内存，防止少计漏计
-			if clVal, ok := r.clients.Load(entry.clientID); ok {
-				clVal.(*ClientRuntime).DeltaAccumulator.Add(entry.amount)
-			}
+			restore()
 			return
 		}
 	}
-	_ = tx.Commit()
+	if err := tx.Commit(); err != nil {
+		restore()
+	}
 }
 
 func (r *ReconciliationEngine) Stop() {
@@ -569,8 +585,8 @@ CREATE INDEX IF NOT EXISTS idx_upstream_keys_provider_state ON upstream_keys(pro
 CREATE TABLE IF NOT EXISTS clients (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    prefix TEXT NOT NULL,                 -- 前缀明文 (如 "mup_live_7a8b")
-    token_hash TEXT NOT NULL UNIQUE,      -- 加盐 SHA-256 哈希
+    prefix TEXT NOT NULL,                 -- 前缀明文 (如 "uai_live_7a8b9c")
+    token_hash TEXT NOT NULL UNIQUE,      -- HMAC-SHA256(pepper, token)
     role TEXT NOT NULL DEFAULT 'standard',-- admin, standard, readonly
     total_quota INTEGER NOT NULL DEFAULT 0, -- 总可用配额 (微美元)
     used_quota INTEGER NOT NULL DEFAULT 0,  -- 已消费配额
@@ -684,9 +700,15 @@ CREATE TABLE IF NOT EXISTS system_settings (
 ```
 
 #### 3.1.1 核心防护机制说明
-1. **硬件级主密钥隔离**：网关首次启动时，检查是否存在 `master.key`。若不存在，则使用系统安全随机源（`crypto/rand`）生成 32 字节（256 位）熵值，以 `0600` 权限安全写入专属目录。支持通过环境变量 `GATEWAY_MASTER_KEY` 直接从云端 KMS（如 AWS KMS、HashiCorp Vault）注入。
+1. **本地主密钥隔离**：网关首次启动时，检查是否存在 `master.key`。若不存在，则使用系统安全随机源（`crypto/rand`）生成 32 字节（256 位）熵值，以 `0600` 权限安全写入专属目录。支持通过环境变量 `GATEWAY_MASTER_KEY` 直接从云端 KMS（如 AWS KMS、HashiCorp Vault）注入。
 2. **AAD（附加身份验证数据）防篡改与防替换机制**：传统 AES-CBC 仅加密明文，攻击者即使无法解密，也可以将数据库中“合法 Key A”的密文字段拷贝覆盖到“恶意 Key B”的记录中，从而利用 Key B 的接口直接调用盗取 Key A 的额度。在 AES-GCM 中，我们将 `provider`、`fingerprint` 与 `created_at` 强行绑定在 AAD 中。**只要攻击者篡改了对应行的任何元数据，GCM 认证标签（Auth Tag）在解密时必然校验失败，直接抛出 `cipher: message authentication failed`，彻底杜绝密文置换攻击**。
 3. **主动内存擦除（Zeroization）**：在密文解密出明文 Key 并发送完上游 HTTP 请求后，关键内存字节必须被立即覆写为 0，防止内存分析工具转储（Core Dump）还原密钥。
+
+> **[修订 v1.1] 评审意见**（详见 [`06` ADR-07](./06_architecture_review_and_revisions.md)）：
+> - 第 1 条：`master.key` 默认与 `gateway.db` 同处 `--data-dir`，数据目录整体备份泄露时密文与密钥同时失守。默认路径须移出数据目录，并优先使用 KMS / OS 密钥库（DPAPI、Keychain）。本方案是「单主密钥直接加密」，要成为真正的信封加密需为每条凭据生成 DEK 并以 KEK 包裹，同时记录 `kek_version` 以支持轮换。
+> - 第 2 条：AAD 仅含 `provider:fingerprint:created_at`，**不含表名与行主键**，攻击者把整行这三列连同密文一起复制到另一行即可绕过；应改为 `"uaig:v1:upstream_keys:" + id + ":" + provider + ":" + kek_version`。
+> - 第 3 条：`Open` 返回 Go `string`，字符串不可变且会被 `net/http` 头部等多处复制，无法可靠擦除；上游明文凭据在进程生命周期内常驻内存，威胁模型应明确排除「攻击者可读进程内存」。
+> - 对 32 字节高熵随机主密钥做 PBKDF2-10 万轮无安全收益（PBKDF2 用于低熵口令），改用 HKDF 按用途派生子密钥。
 
 #### 3.1.2 生产级加密实现代码
 
@@ -804,23 +826,24 @@ func Zeroize(b []byte) {
 ```
 +-------------------------------------------------------------------------------------------------+
 | Client Token Generation:                                                                        |
-| Prefix: "mup_live_" (9 Chars) + Base64URLEncode(Random 32 Bytes) (43 Chars)                    |
-| Full Token Example: "mup_live_7a9fK2L09xYzA1234567890abcdef1234567890abcde"                   |
+| Prefix: "uai_live_" (9 Chars) + Base64URLEncode(Random 32 Bytes) (43 Chars)                    |
+| Full Token Example: "uai_live_7a9fK2L09xYzA1234567890abcdef1234567890abcde"                   |
 +-------------------------------------------------------------------------------------------------+
                                       |
          +----------------------------+----------------------------+
          |                                                         |
          v (Display to User ONCE)                                  v (Database Ingestion)
 +-------------------------------------+   +-------------------------------------------------------+
-| Plaintext: Display in UI Modal      |   | 1. Extract Display Prefix: First 12 Chars             |
-| "Save this key now! You will not be |   |    Prefix = "mup_live_7a9f"                           |
-| able to see it again."              |   | 2. Compute Salted Hash:                               |
-+-------------------------------------+   |    Hash = Hex(SHA-256(FullToken + ClientSalt))        |
+| Plaintext: Display in UI Modal      |   | 1. Extract Display Prefix: "uai_live_" + 6 random     |
+| "Save this key now! You will not be |   |    Prefix = "uai_live_7a9fK2"                         |
+| able to see it again."              |   | 2. Compute Keyed Hash (pepper kept outside DB):       |
++-------------------------------------+   |    Hash = Hex(HMAC-SHA256(Pepper, FullToken))         |
                                           | 3. Store: `clients(prefix, token_hash)`               |
                                           +-------------------------------------------------------+
 ```
 
-- **验证流程**：下游请求头携带 `Authorization: Bearer mup_live_...`，网关计算其哈希值并在内存索引中查找，匹配成功即完成身份确认。数据库中绝无任何明文记录，即使全库泄露，攻击者亦无法反向推导出真实调用 Token。
+- **验证流程**：下游请求头携带 `Authorization: Bearer uai_live_...`（或 Anthropic SDK 的 `x-api-key`、Gemini 的 `x-goog-api-key`），网关计算其 HMAC 并在内存索引中查找，匹配成功即完成身份确认。数据库中绝无任何明文记录，即使全库泄露，攻击者亦无法反向推导出真实调用 Token。
+- **[修订 v1.1]** 原方案写作 `SHA-256(FullToken + ClientSalt)`：若盐按客户端区分，则无法用入站 Token 直接 O(1) 查表；若为全局盐又与数据库存放在一起时形同虚设。统一改为**单一全局 pepper 的 HMAC**，pepper 由主密钥经 HKDF 派生、不入库。详见 [`06` ADR-07](./06_architecture_review_and_revisions.md)。
 
 ---
 
@@ -834,7 +857,8 @@ func Zeroize(b []byte) {
 2. **双重提交 CSRF Token 验证**：
    - 在执行敏感操作（创建 Key、撤销 Token、修改配额）时，前端通过专属只读 Header（`X-CSRF-Token`）回传随登录分配的防重放随机 Token，服务端进行严格双向匹配。
 3. **针对暴力破解的指数退避与滑动窗口封禁**：
-   - 基于客户端 IP 与用户名的联合令牌桶算法。连续登录失败 5 次后，每次重试必须强制自旋等待 $2^N$ 秒，超过 10 次则自动拉入封禁黑名单 15 分钟。
+   - 基于客户端 IP 与用户名的联合令牌桶算法。连续登录失败 5 次后，在 $2^N$ 秒的锁定窗口内直接返回 `429` 与 `Retry-After`（**服务端不得 sleep 等待**，否则攻击者可借此耗尽 goroutine 与连接），超过 10 次则自动拉入封禁黑名单 15 分钟。
+5. **[修订 v1.1] 管理面独立监听**：管理 UI / API 默认绑定 `127.0.0.1:8081`，与数据面 `:8080` 分离；绑定非回环地址时强制 TLS。首次启动向 stderr 打印一次性 bootstrap token 用于创建管理员，之后统一使用 Cookie 会话 + CSRF。详见 [`06` ADR-08](./06_architecture_review_and_revisions.md)。
 4. **统一 HTTP 安全响应头中间件**：
 ```go
 func SecurityHeadersMiddleware(next http.Handler) http.Handler {
@@ -876,6 +900,13 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 ---
 
 ### 4.3 插件生命周期 Hook 设计
+
+> **[修订 v1.1]**（详见 [`06` ADR-09](./06_architecture_review_and_revisions.md)）
+> - `OnRequest` 挂在 **IR Lowering 之后**，插件读写版本化的 `ir.Request` JSON 视图，避免每个插件各自解析 N 种协议；
+> - `OnStreamChunk` 逐块审查会漏掉跨 chunk 边界的敏感词，需要「延迟窗口」（暂扣最近 N 个字符再下发），这会带来可配置的额外延迟，不能宣称「零影响 TTFT」；
+> - 流式场景下 `OnResponse` 只能事后审计，无法改写已发给客户端的内容；
+> - 宿主与沙箱间是「拷贝进/拷贝出 + JSON 编解码」，开销随载荷线性增长，「< 10µs / < 15µs」仅适用于小载荷；
+> - 每个插件声明 `fail_mode: open | closed`，合规类插件默认 closed。
 
 插件系统支持在请求生命周期的三个黄金位置挂载拦截器：
 
@@ -977,12 +1008,23 @@ type PluginInstance struct {
 type PluginEngine struct {
 	runtime      wazero.Runtime
 	compiledCode wazero.CompiledModule
-	pool         sync.Pool
+	// [修订 v1.1] 使用有界 channel 而非 sync.Pool：sync.Pool 会在 GC 时静默丢弃实例且不调用 Close，
+	// 导致模块线性内存泄漏；同时无法限制实例总数。
+	pool chan *PluginInstance
 }
 
+const (
+	pluginPoolSize        = 16
+	pluginMemoryLimitPage = 256 // 256 × 64KiB = 16MiB
+)
+
 func NewPluginEngine(ctx context.Context, wasmBytes []byte) (*PluginEngine, error) {
-	// 创建基于原生 JIT 编译器的纯 Go 运行时
-	r := wazero.NewRuntime(ctx)
+	// [修订 v1.1] wazero 默认不会因 context 取消而中断正在执行的 WASM 代码，
+	// 必须开启 WithCloseOnContextDone，否则下面的 50ms 超时对死循环插件无效。
+	cfg := wazero.NewRuntimeConfig().
+		WithCloseOnContextDone(true).
+		WithMemoryLimitPages(pluginMemoryLimitPage)
+	r := wazero.NewRuntimeWithConfig(ctx, cfg)
 	wasi_snapshot_preview1.MustInstantiate(ctx, r)
 
 	// 预先将字节码编译为原生机器码 (JIT Cache)
@@ -995,19 +1037,32 @@ func NewPluginEngine(ctx context.Context, wasmBytes []byte) (*PluginEngine, erro
 	engine := &PluginEngine{
 		runtime:      r,
 		compiledCode: compiled,
-	}
-
-	engine.pool = sync.Pool{
-		New: func() any {
-			inst, err := engine.instantiate(context.Background())
-			if err != nil {
-				return nil
-			}
-			return inst
-		},
+		pool:         make(chan *PluginInstance, pluginPoolSize),
 	}
 
 	return engine, nil
+}
+
+// acquire 优先复用空闲实例，池空时按需新建（总数由 release 控制不超过 pluginPoolSize）
+func (pe *PluginEngine) acquire(ctx context.Context) (*PluginInstance, error) {
+	select {
+	case inst := <-pe.pool:
+		return inst, nil
+	default:
+		return pe.instantiate(ctx)
+	}
+}
+
+// release 健康实例放回池；trap / 超时后的实例状态不可信，直接关闭
+func (pe *PluginEngine) release(inst *PluginInstance, healthy bool) {
+	if healthy {
+		select {
+		case pe.pool <- inst:
+			return
+		default: // 池已满
+		}
+	}
+	_ = inst.mod.Close(context.Background())
 }
 
 func (pe *PluginEngine) instantiate(ctx context.Context) (*PluginInstance, error) {
@@ -1028,18 +1083,18 @@ func (pe *PluginEngine) instantiate(ctx context.Context) (*PluginInstance, error
 }
 
 // ExecuteOnRequest 执行请求阶段拦截
-func (pe *PluginEngine) ExecuteOnRequest(ctx context.Context, req *RequestContext) error {
-	instRaw := pe.pool.Get()
-	if instRaw == nil {
-		return errors.New("failed to acquire wasm plugin instance")
+func (pe *PluginEngine) ExecuteOnRequest(ctx context.Context, req *RequestContext) (err error) {
+	inst, err := pe.acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to acquire wasm plugin instance: %w", err)
 	}
-	inst := instRaw.(*PluginInstance)
-	defer pe.pool.Put(inst)
+	// 任一步出错（含 trap、超时）都视为实例不健康，不再放回池中
+	defer func() { pe.release(inst, err == nil) }()
 
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 
-	// 设定 50ms 超时熔断保护，防止恶意或死循环 WASM 插件打满 CPU
+	// 设定 50ms 超时熔断保护（依赖 RuntimeConfig.WithCloseOnContextDone 才能真正中断执行）
 	ctxTimeout, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 	defer cancel()
 
@@ -1126,7 +1181,7 @@ universal-ai-gateway/
 │   │   └── bindings_cache.go        # 16,384 容量任务归属环形缓存
 │   ├── security/                    # 安全体系与加解密核心
 │   │   ├── envelope.go              # AES-256-GCM 信封加密与 AAD 绑定
-│   │   ├── token_governance.go      # 下游 Token 加盐 SHA-256 哈希引擎
+│   │   ├── token_governance.go      # 下游 Token HMAC-SHA256 索引引擎
 │   │   └── csrf_ratelimit.go        # CSRF 防御与管理端防爆破退避算法
 │   ├── wasm/                        # WebAssembly 插件沙箱
 │   │   ├── engine.go                # Wazero 纯 Go 运行时与 JIT 实例池
@@ -1271,7 +1326,7 @@ echo -e "\nAll binaries built successfully in ./${TARGET_DIR}!"
 
 [ Phase 2: 多通道 Ingress 与 MCP 枢纽 (Ingress & MCP) ] ------------> 里程碑: 企业多场景接入
   * 落地控制面与数据面彻底解耦（内存无锁扣费 + 1s 异步对账落盘）
-  * 完成 AES-256-GCM 硬件级信封加密与 AAD 防篡改机制
+  * 完成 AES-256-GCM 信封加密与 AAD 防篡改机制
   * 支持 Model Context Protocol (MCP) 跨协议中继与工具动态映射
   * 支持 SSE、Streamable HTTP 以及长生命周期 Session 归属绑定
   * 交付物: 生产级安全凭据防护网关，支持客户端 Token 治理与 MCP 工具聚合
@@ -1341,5 +1396,5 @@ scheduler:
 
 1. **绝对单二进制分发**：彻底移除 CGO、GCC 与系统动态链接依赖，单文件跨平台部署，冷启动时间从传统容器方案的数秒压缩至 **15 毫秒**以内。
 2. **彻底消灭行锁雪崩**：数据面无磁盘 I/O、无互斥排他锁，内存原子扣费延迟从 `new-api` 的 20ms+ 降低至 **< 50ns**，并发请求承载力提升 100 倍以上。
-3. **硬件级凭据防篡改**：AES-256-GCM 结合 AAD 绑定，使数据库脱敏与防置换达到金融系统安全标准；下游客户端凭据加盐哈希单向存储，彻底免疫拖库风险。
+3. **凭据防篡改**：AES-256-GCM 结合 AAD 绑定，使数据库脱敏与防置换达到金融系统安全标准；下游客户端凭据加盐哈希单向存储，彻底免疫拖库风险。
 4. **极致轻量沙箱扩展**：相比 Magpie 的外部 Node/Bun 进程架构，基于 `wazero` 的纯 Go WASM 架构将内存占用削减 **90%**，进程间通信序列化延迟消除为 **0**，为企业级私有化交付提供了坚实底座。

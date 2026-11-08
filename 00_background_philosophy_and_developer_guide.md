@@ -23,7 +23,7 @@
   - [3.1 哲学一：控制面与数据面物理彻底解耦（Control/Data Plane Separation）](#31-哲学一控制面与数据面物理彻底解耦controldata-plane-separation)
   - [3.2 哲学二：星型收敛而非网状互转（Hub-and-Spoke via Canonical IR）](#32-哲学二星型收敛而非网状互转hub-and-spoke-via-canonical-ir)
   - [3.3 哲学三：缓存局部性第一准则（Cache Locality is King）](#33-哲学三缓存局部性第一准则cache-locality-is-king)
-  - [3.4 哲学四：零信任与硬件级信封加密（Zero Trust by Default）](#34-哲学四零信任与硬件级信封加密zero-trust-by-default)
+  - [3.4 哲学四：零信任与信封加密（Zero Trust by Default）](#34-哲学四零信任与信封加密zero-trust-by-default)
   - [3.5 哲学五：零 CGO 与单二进制自包含（Single Static Binary Ergonomics）](#35-哲学五零-cgo-与单二进制自包含single-static-binary-ergonomics)
   - [3.6 哲学六：非阻塞异步日志流水线（Drop-Safe Asynchronous Logging）](#36-哲学六非阻塞异步日志流水线drop-safe-asynchronous-logging)
   - [3.7 哲学七：故障优雅降级与平台感知（Fail Soft & OS-Aware）](#37-哲学七故障优雅降级与平台感知fail-soft--os-aware)
@@ -167,6 +167,9 @@ Client (Claude Code)          Gateway (Round-Robin)             Upstream Nodes
 
 ### 2.2 极致吞吐与微秒级延迟指标
 
+> **[修订 v1.1]** 2.2 与 2.3 中的数字（35,000+ QPS、< 50ns、命中率 > 90%、成本降至 15–20%、Subagent 挤出率 0% 等）均未经基准验证，
+> 应视为**设计目标**而非验收基线。修订后的指标与测量口径见 [`06` ADR-10](./06_architecture_review_and_revisions.md)。
+
 在大模型调用链路中，网关层必须做到“透明无感”——将协议转译与安全审查的开销压制在物理网络延迟的统计方差之内：
 
 - **单机代理吞吐量（Proxy Throughput）**：在主流 8 核服务器 / 本地 PC 上，数据面纯内存代理吞吐量达到 **35,000+ QPS**（纯文本小包转发模式）。
@@ -216,7 +219,7 @@ Client (Claude Code)          Gateway (Round-Robin)             Upstream Nodes
 |         |                                                                                         |
 |         v                                                                                         |
 |  +---------------------------------------------------------------------------------------------+  |
-|  | 1. In-Memory Token Hash Index (加盐 SHA-256 快速命中，无 SQL 查找)                          |  |
+|  | 1. In-Memory Token Hash Index (HMAC-SHA256 快速命中，无 SQL 查找)                           |  |
 |  | 2. In-Memory Atomic RateLimiter (无锁 Token Bucket，CAS 纯内存限流)                         |  |
 |  | 3. In-Memory Atomic Quota Counter (atomic.AddInt64 扣减内存账本，耗时 < 50ns)              |  |
 |  | 4. Canonical IR Zero-Copy Stream Engine (协议转译与 SSE 状态机)                             |  |
@@ -240,6 +243,11 @@ Client (Claude Code)          Gateway (Round-Robin)             Upstream Nodes
 
 - **数据面（Data Plane）**：直接承接下游客户端的 HTTP/SSE 流量。在数据面的生命周期中，**严禁执行任何阻塞式 I/O、严禁发起任何 SQL 查询、严禁争抢全局读写锁**。鉴权通过预热至内存哈希表的加盐哈希值比对完成；限流基于无锁原子计数器；配额检查与扣减全部在纯内存中通过原子操作处理。
 - **控制面（Control Plane）**：负责元数据持久化、配置加载、密钥信封加解密与后台对账。数据面产生的计费增量与调用审计日志，通过专用的无阻塞通信管道异步回传给控制面，控制面合并批量后平滑刷入磁盘。即便底层磁盘 I/O 发生数十秒卡顿，数据面的请求代理依然微秒级丝滑运行。
+
+> **[修订 v1.1]**（详见 [`06` ADR-01 / ADR-02](./06_architecture_review_and_revisions.md)）
+> 1. 「纯内存账本」只在 **Standalone 单实例**下成立，多副本部署会导致配额双花与熔断状态失步，Cluster 档需改用 Redis 账本 + PostgreSQL。
+> 2. 配额必须在**准入时预留**（按 `max_tokens` 估算上限），流结束后在 `defer` 中按上游真实 usage **结算**；不能像 4.1 时序图那样只在流结束时扣减，否则大量并发长请求会在余额校验通过后集体透支。
+> 3. 审计日志可以在背压时丢弃，**计费事件不可丢弃**：计费通道满时应对新请求返回 503，而不是丢掉已发生的用量。计费流水写入追加式 `usage_ledger`。
 
 ### 3.2 哲学二：星型收敛而非网状互转（Hub-and-Spoke via Canonical IR）
 
@@ -284,32 +292,38 @@ Project Titan 采用**规范化中间表示（Canonical Intermediate Representat
 - 对当前会话 $Session$，优先锚定其历史粘性节点 $K_{current}$；
 - 只有当备选候选节点 $K_{candidate}$ 的 Pace 优势**跨越阶梯超越当前节点达 10% 以上**时，系统才允许执行物理切号：
   $$\text{AllowSwitch} \iff \frac{Pace(K_{candidate}) - Pace(K_{current})}{Pace(K_{current})} > 0.10$$
-- 在 10% 的迟滞保护带（Deadband）内，网关坚定不移地保持物理亲和性，从而以数学确定性锁死 **90%+ 的提示词缓存命中率**！
+- 在 10% 的迟滞保护带（Deadband）内，网关坚定不移地保持物理亲和性，避免因微小数值扰动引发的乒乓切号。
 
 ```
-Pace Value Hysteresis Band:
-Band 0: [ 10.0, 11.0 )
-Band 1: [ 11.0, 12.1 )
-Band 2: [ 12.1, 13.3 ) <--- 当前 Key 位于此处 (Pace = 12.5)
-Band 3: [ 13.3, 14.6 ) <--- 只有当外部候选 Key 跨入 Band 3 (>13.75)，才允许物理切断！
+Pace Value Hysteresis（判定以比例规则为准，分段仅用于可视化）:
+当前 Key Pace = 12.5  →  切换门槛 = 12.5 × 1.10 = 13.75
+候选 Key Pace = 13.5  →  未超过 13.75，保持当前 Key（即便它在对数分段上已落入更高的桶）
+候选 Key Pace = 14.0  →  超过 13.75，允许切换
 ```
+
+> **[修订 v1.1]** 原文示例把「跨入更高分段桶（起点 13.31）」与「超过当前值 10%（13.75）」两种规则混用，已统一为比例规则。
+> 迟滞只能抑制乒乓，不能「以数学确定性锁死 90%+ 命中率」——命中率还取决于客户端缓存断点、上游缓存 TTL 与会话闲置时长。
+> 更关键的改进是：**会话绑定的 Key 健康时不因 Pace 主动迁移，只在闲置超过上游缓存 TTL（缓存已失效、切换无代价）时再平衡**。详见 [`06` ADR-04](./06_architecture_review_and_revisions.md)。
 
 #### 3.3.2 Subagent 隔离路由哲学
 对于来自 Claude Code 等 Agent 自动拉起的后台 Subagent 请求（带特定标识或上下文极小特征），网关通过会话解析器将其自动分流至**隔离轻量任务池（Isolated Subagent Pool）**，严禁与核心主会话混用物理账号，彻底根除“缓存冲刷毒性”。
 
-### 3.4 哲学四：零信任与硬件级信封加密（Zero Trust by Default）
+> **[修订 v1.1]** 上游 Prompt Cache 按「账号 + 精确前缀」命中，Subagent 短请求不会把主会话缓存「冲刷」掉；
+> 真正的风险是 Subagent 突发并发耗尽同一账号的限流额度，迫使主会话 429 后切号。修订方案为主会话预留并发/额度余量，详见 [`06` ADR-05](./06_architecture_review_and_revisions.md)。
+
+### 3.4 哲学四：零信任与信封加密（Zero Trust by Default）
 
 **核心定律**：**严禁在持久层明文存储任何上游 API Key 与下游 Token，全库泄露亦无法逆向还原凭证。**
 
 传统的开源网关由于开发者的安全意识薄弱，经常在 SQLite 或 MySQL 库中直接存储 `sk-ant-api03-...` 等明文凭证，甚至在客户端凭证表中明文存储用户 Token。一旦遭遇 SQL 注入漏洞、备份文件泄露或内鬼拖库，企业资产将面临毁灭性打击。
 
-Project Titan 在存储安全上全面推行**硬件级信封加密体系（Envelope Encryption）**：
+Project Titan 在存储安全上全面推行**信封加密体系（Envelope Encryption）**：
 
 ```
 +---------------------------------------------------------------------------------------------------+
 |                                  信封加密与单向哈希安全拓扑                                       |
 +---------------------------------------------------------------------------------------------------+
-|  [ 1. 上游凭据：AES-256-GCM + AAD 防重放信封加密 ]                                               |
+|  [ 1. 上游凭据：AES-256-GCM + AAD 防置换加密 ]                                               |
 |                                                                                                   |
 |  Master Key (32-byte Root Key, File perm 0600, 物理隔离存放)                                     |
 |         |                                                                                         |
@@ -325,13 +339,13 @@ Project Titan 在存储安全上全面推行**硬件级信封加密体系（Enve
 |                                                                                                   |
 |  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~  |
 |                                                                                                   |
-|  [ 2. 下游凭据：加盐 SHA-256 单向哈希治理 ]                                                       |
+|  [ 2. 下游凭据：HMAC-SHA256 单向索引治理 ]                                                       |
 |                                                                                                   |
-|  Client Issues Plain Token: "uai_cmnl_live_9a8b7c6d5e4f3a2b1c0d9e8f..."                           |
+|  Client Issues Plain Token: "uai_live_9a8b7c6d5e4f3a2b1c0d9e8f..."                                |
 |         |                                                                                         |
-|         +---> Prefix Extracted: "uai_cmnl_live" (前12位脱敏用于控制台展示检索)                     |
+|         +---> Prefix Extracted: "uai_live_9a8b7c" (前缀+6位随机，用于控制台展示)                 |
 |         |                                                                                         |
-|         +---> Salted Hash: SHA-256(PlainToken + GlobalSalt)                                       |
+|         +---> Keyed Hash: HMAC-SHA256(Pepper, PlainToken)                                        |
 |                  |                                                                                |
 |                  v                                                                                |
 |               Persisted in DB: TokenHash (单向不可逆)                                             |
@@ -339,8 +353,8 @@ Project Titan 在存储安全上全面推行**硬件级信封加密体系（Enve
 +---------------------------------------------------------------------------------------------------+
 ```
 
-- **上游 Key 保护**：通过本地 32 字节硬件级主密钥（`master.key`）驱动 AES-256-GCM 算法。加密时强制绑定附加认证数据（AAD），将提供商类型、账号 ID 等上下文注入校验 Tag。攻击者即便利诱 SQL 注入把 A 用户的加密串复制替换给 B 用户，在解密时由于 AAD 不匹配，GCM 认证机制将直接拒绝，彻底消除跨租户伪造漏洞。
-- **下游 Client Token 治理**：下游客户端通信令牌以 `uai_` 为统一起始特征，入库时仅存储加盐 SHA-256 单向哈希和前缀 12 位脱敏串。校验时对入站 Token 计算哈希并直接在内存哈希表中匹配，做到“接触即哈希，全链路无明文持久化”。
+- **上游 Key 保护**：通过 32 字节本地主密钥（`master.key`，生产环境优先使用 KMS / OS 密钥库，且不得与数据库同目录存放）驱动 AES-256-GCM 算法。加密时强制绑定附加认证数据（AAD），将表名、行主键、提供商类型与密钥版本注入校验 Tag。攻击者即便利诱 SQL 注入把 A 用户的加密串复制替换给 B 用户，在解密时由于 AAD 不匹配，GCM 认证机制将直接拒绝，彻底消除跨租户伪造漏洞。
+- **下游 Client Token 治理**：下游客户端通信令牌统一为 `uai_live_` 前缀，入库时仅存储 `HMAC-SHA256(pepper, token)`（pepper 由主密钥派生、不入库）和「前缀 + 6 位随机字符」的脱敏展示串。校验时对入站 Token 计算哈希并直接在内存哈希表中匹配，做到“接触即哈希，全链路无明文持久化”。
 
 ### 3.5 哲学五：零 CGO 与单二进制自包含（Single Static Binary Ergonomics）
 
@@ -396,24 +410,27 @@ default:
 **核心定律**：**精准细分错误语义防范级联雪崩，感知底层操作系统网络栈极限与平台陷阱。**
 
 #### 3.7.1 严格区分 401 凭证死锁与 429 退避降级
-- **401 Unauthorized / Account Banned**：代表账号凭据失效或被服务商风控永久封禁。**严禁重试**，必须即刻将该 Key 置为永久隔离状态（Quarantine），触发 Webhook 告警，并平滑将其从调度池摘除，防止对已死账号发起洪峰探测引发连锁风控；
+- **401 Unauthorized / Account Banned**：代表账号凭据失效或被服务商风控永久封禁。**严禁盲目重试**；OAuth 类凭据先单飞刷新令牌一次，DirectKey 先进入 `Suspect` 并以 `/v1/models` 验证一次，确认失效后再置为隔离状态（Quarantine），触发 Webhook 告警，并平滑将其从调度池摘除，防止对已死账号发起洪峰探测引发连锁风控；
 - **429 Too Many Requests / 503 Service Unavailable**：代表临时并发拥塞或服务商抖动。激活三阶指数退避算法（Exponential Backoff with Full Jitter），并在 100ms 级别内自动熔断倒换至备用资源池，保障下游 Agent 会话无感穿透。
 
 #### 3.7.2 针对 Windows 宿主环境的 `WSAENOBUFS (10055)` 专项治理
 在 Windows 平台下运行高并发网关服务时，存在一个臭名昭著的系统陷阱：**`WSAENOBUFS`（系统由于缺乏足够缓冲区空间或因为队列已满而无法执行套接字操作）**。
-- **根因分析**：Windows 操作系统默认的临时端口范围（Ephemeral Ports）仅开放 16,384 个，且处于 `TIME_WAIT` 状态的 TCP 连接默认回收延迟长达 240 秒（4 分钟）。当高并发 Agent 请求不断发起短连接向上游大模型轮询时，系统可用端口将在数分钟内被迅速耗尽，直接导致网关对外网络瘫痪，呈现“假死”状态。
+- **根因分析**：Windows 操作系统默认的临时端口范围（Ephemeral Ports）仅开放 16,384 个，且处于 `TIME_WAIT` 状态的 TCP 连接默认回收延迟为 120 秒（`TcpTimedWaitDelay` 在现代 Windows 上的默认值；旧版系统为 240 秒）。当高并发 Agent 请求不断发起短连接向上游大模型轮询时，系统可用端口将在数分钟内被迅速耗尽，直接导致网关对外网络瘫痪，呈现“假死”状态。
 - **网关主动治理措施**：
-  1. **长连接物理复用**：强制调优 Go `http.Transport`，将 `MaxIdleConns` 设为 2048，`MaxIdleConnsPerHost` 设为 512，`IdleConnTimeout` 延长至 90 秒，杜绝高频 TCP 三次握手与短连接挥手；
+  1. **长连接物理复用**：强制调优 Go `http.Transport`，取值统一以 03 §6.2 为准（`MaxIdleConns` 20000、`MaxIdleConnsPerHost` 2000、`IdleConnTimeout` 90 秒），杜绝高频 TCP 三次握手与短连接挥手；
   2. **系统底层探测与调优警示**：网关在 Windows 平台启动时，会自动检查注册表项：
-     - `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\MaxUserPort`（推荐调至 `65534`）；
+     - 动态端口范围（`netsh int ipv4 show dynamicport tcp`；如需扩容用 `netsh int ipv4 set dynamicport tcp start=10000 num=55535`。注册表 `MaxUserPort` 仅对 Vista 之前的系统生效）；
      - `HKLM\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\TcpTimedWaitDelay`（推荐调至 `30` 秒）。
-     一旦捕获 `WSAENOBUFS` 错误，立即触发熔断自保护机制，防止耗尽宿主系统非分页缓冲池（Non-paged Pool）。
+     一旦捕获 `WSAENOBUFS` 错误，触发**本地背压**（返回 503 并清理空闲连接），**绝不惩罚任何上游 Key**——否则熔断器会把所有健康 Key 一并置为不可用（见 03 §6.2）。
 
 ---
 
 ## 4. 系统心智模型：请求全生命周期（The Mental Model: Request Journey）
 
 为了让任何新工程师建立水晶般清晰的系统运行心智模型，以下以一个典型的 **Claude Code 客户端执行长代码分析与工具调用的 HTTP POST 请求** 为例，完整重塑其在网关内部的端到端旅程。
+
+> **[修订 v1.1]** 本章时序存在三处与修订设计不符：① 缺少准入时的配额预留；② WASM `OnRequest` 位于 IR Lowering 之前（应在之后，插件只面对 IR）；
+> ③ Claude Code → Anthropic 属于同协议，应走透传路径而非 Lowering/Synthesize。修订后的 12 步生命周期见 [`06` 第 4 节](./06_architecture_review_and_revisions.md)。
 
 ### 4.1 端到端全景时序流图（ASCII Sequence Diagram）
 
@@ -456,8 +473,8 @@ default:
 - 路由处理器根据 URI 路径（如 `/v1/messages`、`/v1/chat/completions` 或 `/models/...:generateContent`）动态识别源协议类型，提取客户端 TraceID，并在 Context 中初始化纳秒级性能追踪游标。
 
 #### 阶段二：加盐单向哈希极速鉴权（Zero-DB Hash Authentication）
-- 提取 `Authorization: Bearer uai_cmnl_live_...` 头中的令牌；
-- 计算其加盐 SHA-256 哈希值：`hash = SHA256(Token + Salt)`；
+- 提取 `Authorization: Bearer uai_live_...` 头（Anthropic SDK / Claude Code 默认使用 `x-api-key` 头，Gemini 使用 `x-goog-api-key`，三者均需解析）中的令牌；
+- 计算其 HMAC：`hash = HMAC-SHA256(pepper, Token)`；
 - 在数据面常驻内存哈希表（`TokenCache`）中检索匹配。整个鉴权过程在纳秒级完成，完全不触发数据库查询。若无效则立即抛出 401 终止。
 
 #### 阶段三：纯内存无锁令牌桶限流（In-Memory Atomic Rate Limiting）
@@ -536,15 +553,15 @@ default:
 
 ### 红线七：严禁对返回 401 Unauthorized / Account Banned 的上游渠道进行盲目重试
 - **原因**：401 代表账号凭证永久失效或因滥用被封禁。盲目重试不仅徒劳无功，还会将上游封禁惩罚迅速扩散至整个 IP 段，且会无端耗费下游请求的等待超时。
-- **正例**：状态机捕获 401 后，必须立即将该物理 Key 原子切换为 `StateQuarantine`，触发报警通知管理员，并平滑将其从调度池摘除，绝不在当前循环中盲目重试。
+- **正例**：状态机捕获 401 后，将该物理 Key 原子切换为 `StateSuspect` 并从调度中摘除，经一次验证（OAuth 先刷新令牌）仍失败再切换为 `StateQuarantine`，触发报警通知管理员，并平滑将其从调度池摘除，绝不在当前循环中盲目重试。
 
 ### 红线八：严禁使用普通随机数（`math/rand`）生成安全密钥、加盐 Salt 或 Token
 - **原因**：`math/rand` 是可预测的伪随机数生成器，攻击者可通过已知序列逆向推导出网关生成的凭据与加盐参数，导致整个信封加密体系崩溃。
 - **正例**：所有主密钥初始化、Nonce 生成、Token 派发必须无条件使用 `crypto/rand` 密码学安全随机源。
 
 ### 红线九：严禁将长耗时或不确定延迟的子任务（Subagent）与主对话混用同一物理账号粘性
-- **原因**：子任务的异构上下文会瞬间破坏物理节点上已经建立的主会话长文本 KV Cache，引发灾难性的缓存冲刷毒性。
-- **正例**：调度器必须识别并尊重 `X-Agent-Subtask` 等标识，将子任务流量强制导流至隔离资源池，确保主会话物理粘滞性不被破坏。
+- **原因**：子任务的突发并发会耗尽主会话所在账号的 RPM/TPM 额度，迫使主会话 429 后切号，从而丢失已建立的 Prompt Cache（上游缓存按「账号 + 精确前缀」命中，子任务本身并不会覆盖主会话缓存）。
+- **正例**：调度器通过可配置的提取器链识别子任务（`metadata.user_id` 会话段、系统提示词指纹、子任务模型名、用户自定义头——不要假设客户端会发送任何特定头），并为主会话在每个 Key 上预留并发/额度余量，确保主会话粘滞性不被破坏（见 06 ADR-05）。
 
 ### 红线十：严禁在未配置 `busy_timeout` 与 WAL 模式的前提下直接并发连接 SQLite 数据库
 - **原因**：SQLite 默认的回滚日志模式（Rollback Journal）在多线程并发读写时会立即抛出 `database is locked` 错误，导致服务异常终止。
