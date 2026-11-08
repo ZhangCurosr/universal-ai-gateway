@@ -149,7 +149,7 @@ func (s *server) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	existing, err := s.d.Store.GetUpstreamKey(r.Context(), id)
+	_, err = s.d.Store.GetUpstreamKey(r.Context(), id) // 先确认存在，不存在直接 404，避免部分写入
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, apperr.New(apperr.CodeNotFound, fmt.Sprintf("upstream key %d not found", id)))
@@ -246,7 +246,6 @@ func (s *server) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = existing // used to verify existence
 	writeJSON(w, http.StatusOK, map[string]any{
 		"key": s.buildKeyView(updated),
 	})

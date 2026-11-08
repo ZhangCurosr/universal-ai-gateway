@@ -41,6 +41,20 @@ type server struct {
 	d         Deps
 	trusted   clientip.Trusted
 	ipTracker *ipFailureTracker
+
+	// writeMu 串行化所有写操作（创建/修改/轮换）。管理面写入频率很低，串行化后
+	// 「读-改-写」不会互相覆盖（例如 rotate-token 把刚禁用的客户端写回启用），
+	// ADM-03 的「至少保留一个管理员」检查与写入之间也不会被并发请求穿插。
+	writeMu sync.Mutex
+}
+
+// serial 把写操作 handler 包成串行执行。
+func (s *server) serial(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		h(w, r)
+	}
 }
 
 type ipFailureTracker struct {
@@ -124,16 +138,16 @@ func NewServer(d Deps) http.Handler {
 	mux.HandleFunc("GET /admin/api/health", s.handleHealth)
 
 	// Clients
-	mux.HandleFunc("POST /admin/api/clients", s.handleCreateClient)
+	mux.HandleFunc("POST /admin/api/clients", s.serial(s.handleCreateClient))
 	mux.HandleFunc("GET /admin/api/clients", s.handleListClients)
 	mux.HandleFunc("GET /admin/api/clients/{id}", s.handleGetClient)
-	mux.HandleFunc("PATCH /admin/api/clients/{id}", s.handleUpdateClient)
-	mux.HandleFunc("POST /admin/api/clients/{id}/rotate-token", s.handleRotateToken)
+	mux.HandleFunc("PATCH /admin/api/clients/{id}", s.serial(s.handleUpdateClient))
+	mux.HandleFunc("POST /admin/api/clients/{id}/rotate-token", s.serial(s.handleRotateToken))
 
 	// Keys
-	mux.HandleFunc("POST /admin/api/keys", s.handleCreateKey)
+	mux.HandleFunc("POST /admin/api/keys", s.serial(s.handleCreateKey))
 	mux.HandleFunc("GET /admin/api/keys", s.handleListKeys)
-	mux.HandleFunc("PATCH /admin/api/keys/{id}", s.handleUpdateKey)
+	mux.HandleFunc("PATCH /admin/api/keys/{id}", s.serial(s.handleUpdateKey))
 
 	// Usage
 	mux.HandleFunc("GET /admin/api/usage", s.handleQueryUsage)
