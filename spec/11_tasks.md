@@ -207,7 +207,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **涉及文件**：`internal/admin/server.go`、`internal/admin/clients.go`（新建）、`internal/admin/keys.go`（新建）、`internal/admin/usage.go`（新建）、`internal/admin/server_test.go`
 - **测试**：每个端点至少一个成功用例和一个失败用例；另外 `TestCannotDisableLastAdmin`、`TestRotateTokenInvalidatesOld`、`TestNoSecretsInResponses`（对所有响应体做字符串检查，不得出现 secret 明文或 `token_hash`）、`TestAuthFailureIPLockout`。
 
-## T13 审计日志流水线 — 状态：`TODO`
+## T13 审计日志流水线 — 状态：`DONE`
 
 - **前置**：T02
 - **必读规格**：本卡；02 §5
