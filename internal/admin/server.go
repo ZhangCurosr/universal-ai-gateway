@@ -1,15 +1,23 @@
 package admin
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"sync"
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/clientip"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/crypto"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ledger"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
@@ -29,15 +37,216 @@ type Deps struct {
 	Now       func() time.Time // 为 nil 时用 time.Now
 }
 
+type server struct {
+	d         Deps
+	trusted   clientip.Trusted
+	ipTracker *ipFailureTracker
+}
+
+type ipFailureTracker struct {
+	mu       sync.Mutex
+	failures map[string][]time.Time // guarded by mu
+}
+
+func newIPFailureTracker() *ipFailureTracker {
+	return &ipFailureTracker{
+		failures: make(map[string][]time.Time),
+	}
+}
+
+func (t *ipFailureTracker) isLocked(ip string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	times, ok := t.failures[ip]
+	if !ok {
+		return false
+	}
+	cutoff := now.Add(-time.Minute)
+	i := 0
+	for _, ts := range times {
+		if ts.After(cutoff) {
+			times[i] = ts
+			i++
+		}
+	}
+	times = times[:i]
+	if len(times) == 0 {
+		delete(t.failures, ip)
+		return false
+	}
+	t.failures[ip] = times
+	return len(times) >= 20
+}
+
+func (t *ipFailureTracker) recordFailure(ip string, now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	cutoff := now.Add(-time.Minute)
+	times := t.failures[ip]
+	i := 0
+	for _, ts := range times {
+		if ts.After(cutoff) {
+			times[i] = ts
+			i++
+		}
+	}
+	times = append(times[:i], now)
+	t.failures[ip] = times
+}
+
 // NewServer 返回管理面 http.Handler（spec/09 §4）。
 func NewServer(d Deps) http.Handler {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.Logger == nil {
+		d.Logger = obs.Discard()
+	}
+
+	var trusted clientip.Trusted
+	if d.Config != nil && len(d.Config.Server.TrustedProxies) > 0 {
+		var err error
+		trusted, err = clientip.ParseTrusted(d.Config.Server.TrustedProxies)
+		if err != nil {
+			d.Logger.Warn("admin: parse trusted proxies failed", "error", err)
+		}
+	}
+
+	s := &server{
+		d:         d,
+		trusted:   trusted,
+		ipTracker: newIPFailureTracker(),
+	}
+
 	mux := http.NewServeMux()
-	// TODO(T12): 注册 spec/09 §4.1 的全部端点，并套用 ADM-01 ~ ADM-04 的鉴权中间件。
+
+	// Health
+	mux.HandleFunc("GET /admin/api/health", s.handleHealth)
+
+	// Clients
+	mux.HandleFunc("POST /admin/api/clients", s.handleCreateClient)
+	mux.HandleFunc("GET /admin/api/clients", s.handleListClients)
+	mux.HandleFunc("GET /admin/api/clients/{id}", s.handleGetClient)
+	mux.HandleFunc("PATCH /admin/api/clients/{id}", s.handleUpdateClient)
+	mux.HandleFunc("POST /admin/api/clients/{id}/rotate-token", s.handleRotateToken)
+
+	// Keys
+	mux.HandleFunc("POST /admin/api/keys", s.handleCreateKey)
+	mux.HandleFunc("GET /admin/api/keys", s.handleListKeys)
+	mux.HandleFunc("PATCH /admin/api/keys/{id}", s.handleUpdateKey)
+
+	// Usage
+	mux.HandleFunc("GET /admin/api/usage", s.handleQueryUsage)
+
+	// Fallback
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		writeError(w, apperr.NotImplemented("T12"))
+		writeError(w, apperr.New(apperr.CodeNotFound, "route not found"))
 	})
-	return mux
+
+	return s.wrap(mux)
+}
+
+func (s *server) wrap(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		now := s.d.Now()
+
+		// 1. Request ID (MW-01)
+		reqID := obs.NewRequestID()
+		w.Header().Set("X-Request-Id", reqID)
+		ctx := obs.WithRequestID(r.Context(), reqID)
+		r = r.WithContext(ctx)
+
+		// 2. IP Lockout (ADM-04)
+		remoteIP := s.trusted.From(r)
+		ipStr := "unknown"
+		if remoteIP.IsValid() {
+			ipStr = remoteIP.String()
+		}
+
+		if s.ipTracker.isLocked(ipStr, now) {
+			writeError(w, apperr.New(apperr.CodeRateLimited, "too many authentication failures"))
+			return
+		}
+
+		// 3. Admin Authentication (ADM-01, ADM-02)
+		cred, ok := auth.ExtractCredential(r.Header)
+		if !ok {
+			s.ipTracker.recordFailure(ipStr, now)
+			writeError(w, apperr.New(apperr.CodeUnauthenticated, "unauthenticated"))
+			return
+		}
+
+		if s.d.Keyring == nil || s.d.Index == nil {
+			writeError(w, apperr.New(apperr.CodeInternal, "authentication service unavailable"))
+			return
+		}
+
+		tokenHash := auth.HashToken(s.d.Keyring.TokenPepper(), cred)
+		principal, ok := s.d.Index.Lookup(tokenHash)
+		if !ok {
+			s.ipTracker.recordFailure(ipStr, now)
+			writeError(w, apperr.New(apperr.CodeUnauthenticated, "unauthenticated"))
+			return
+		}
+
+		if principal.Role != store.RoleAdmin {
+			s.ipTracker.recordFailure(ipStr, now)
+			writeError(w, apperr.New(apperr.CodePermissionDenied, "admin role required"))
+			return
+		}
+
+		if principal.Disabled {
+			s.ipTracker.recordFailure(ipStr, now)
+			writeError(w, apperr.New(apperr.CodePermissionDenied, "principal is disabled"))
+			return
+		}
+
+		// Store principal in context
+		ctx = auth.WithPrincipal(ctx, principal)
+		r = r.WithContext(ctx)
+
+		// 4. Request Body Limit 1 MiB
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func parseID(r *http.Request, name string) (int64, error) {
+	val := r.PathValue(name)
+	if val == "" {
+		return 0, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("missing %s", name))
+	}
+	id, err := strconv.ParseInt(val, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("invalid %s: %s", name, val))
+	}
+	return id, nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, data any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(data)
+}
+
+func decodeJSON(r *http.Request, dst any) error {
+	if r.Body == nil {
+		return apperr.New(apperr.CodeInvalidRequest, "request body required")
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			return apperr.New(apperr.CodeRequestTooLarge, "request body too large")
+		}
+		if errors.Is(err, io.EOF) {
+			return apperr.New(apperr.CodeInvalidRequest, "request body empty")
+		}
+		return apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("invalid json: %v", err))
+	}
+	return nil
 }

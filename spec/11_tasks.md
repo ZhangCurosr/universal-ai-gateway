@@ -200,7 +200,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   - `TestSpoofedXFFIgnored`（`Trusted` 为空时，客户端伪造 `X-Forwarded-For` 不影响 IP 限流的键）。
 - **注意**：测试路由使用真实的 anthropic 与 openai 入站适配器；`/v1/models` 的输出格式依赖 T09A/T09B 的 `WriteCatalog`。`Limiter` 与 `IPLimiter` 必须是两个不同的实例。`OverloadGuard.Middleware` 的 `buffered` 参数为 false 时不占请求体预算（OVL-02）。`router_test.go` 中的 `TestMCPMountedBehindAuth` 也属于本卡。
 
-## T12 管理面 API — 状态：`TODO`
+## T12 管理面 API — 状态：`DONE`
 
 - **前置**：T02、T03、T05、T08
 - **必读规格**：05 §4、09 §4
