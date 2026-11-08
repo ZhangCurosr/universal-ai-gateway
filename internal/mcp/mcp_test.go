@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/audit"
@@ -278,7 +280,6 @@ func decodeResult(t *testing.T, rec *httptest.ResponseRecorder, into any) *Respo
 
 // SRV-M02、SRV-M07：initialize 协商版本
 func TestInitialize(t *testing.T) {
-	t.Skip("TODO(T32)")
 	ts := newTestServer(t, 1<<20)
 	var res struct {
 		ProtocolVersion string `json:"protocolVersion"`
@@ -299,7 +300,6 @@ func TestInitialize(t *testing.T) {
 
 // SRV-M01、SRV-M03 ~ SRV-M05
 func TestTransportRules(t *testing.T) {
-	t.Skip("TODO(T32)")
 	ts := newTestServer(t, 1<<20)
 	if rec := ts.rpc(t, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, nil); rec.Code != http.StatusAccepted || rec.Body.Len() != 0 {
 		t.Errorf("notification: status=%d body=%q, want 202 empty", rec.Code, rec.Body.String())
@@ -328,7 +328,6 @@ func TestTransportRules(t *testing.T) {
 
 // TL-01 ~ TL-04：只列出客户端可用的工具；参数选服务的工具附上可用服务列表
 func TestToolsListFiltered(t *testing.T) {
-	t.Skip("TODO(T32)")
 	ts := newTestServer(t, 1<<20)
 	var res struct {
 		Tools []struct {
@@ -354,7 +353,6 @@ func TestToolsListFiltered(t *testing.T) {
 
 // TL-05 ~ TL-10：工具调用走内核（计费）并转换结果
 func TestToolsCall(t *testing.T) {
-	t.Skip("TODO(T32)")
 	ts := newTestServer(t, 1<<20)
 	var res struct {
 		Content []struct{ Type, Text string } `json:"content"`
@@ -392,7 +390,6 @@ func TestToolsCall(t *testing.T) {
 
 // TL-09：结果超过上限
 func TestToolsCallResultTooLarge(t *testing.T) {
-	t.Skip("TODO(T32)")
 	ts := newTestServer(t, 8)
 	var res struct {
 		IsError bool `json:"isError"`
@@ -403,10 +400,197 @@ func TestToolsCallResultTooLarge(t *testing.T) {
 	}
 }
 
+// SRV-M06: Origin 校验（防 DNS 重绑定）
+func TestOriginRejected(t *testing.T) {
+	ts := newTestServer(t, 1<<20)
+
+	allowedOrigins := []string{
+		"http://localhost",
+		"http://localhost:3000",
+		"https://localhost:8443",
+		"http://127.0.0.1",
+		"http://127.0.0.1:8080",
+		"http://[::1]",
+		"http://[::1]:8080",
+	}
+	for _, o := range allowedOrigins {
+		rec := ts.rpc(t, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, http.Header{"Origin": {o}})
+		if rec.Code != http.StatusOK {
+			t.Errorf("origin %q rejected: status=%d", o, rec.Code)
+		}
+	}
+
+	rejectedOrigins := []string{
+		"http://evil.com",
+		"https://evil.com:8080",
+		"http://localhost.evil.com",
+		"http://attacker.com",
+		"null",
+	}
+	for _, o := range rejectedOrigins {
+		rec := ts.rpc(t, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, http.Header{"Origin": {o}})
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("origin %q status = %d, want 403", o, rec.Code)
+		}
+	}
+}
+
+// 外层请求取消时内部请求随之取消
+func TestToolsCallCanceledWithClient(t *testing.T) {
+	upstreamReached := make(chan struct{})
+	upstreamFinished := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		close(upstreamReached)
+		<-r.Context().Done()
+		close(upstreamFinished)
+	}))
+	defer up.Close()
+
+	cfg, err := config.Parse([]byte(`
+server: { data_dir: ./data, master_key_file: ./secrets/master.key }
+pools: [ { name: e, protocol: echo, base_url: "` + up.URL + `" } ]
+models:
+  - { name: echo-svc, pool: e, price: { requests: "0.001" } }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := protocol.NewRegistry()
+	if err := reg.RegisterIngress(echoIngress{}, protocol.IngressOptions{Fallback: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterEgress(echoEgress{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	sched := scheduler.New(scheduler.PoolsFromConfig(cfg.Pools), scheduler.Options{Logger: obs.Discard()})
+	sched.SetKeys([]*scheduler.Key{scheduler.NewKey(1, "e", "k", []byte("sk-e"), 1, 10, scheduler.PersistedReady)})
+	led := ledger.NewMemory(ledger.MemoryConfig{EventQueueCapacity: 100})
+	led.LoadAccounts([]ledger.Account{{ClientID: 1, QuotaNanoUSD: 1_000_000_000_000}})
+	c, err := core.New(core.Deps{Config: cfg, Registry: reg, Ledger: led, Scheduler: sched, Audit: audit.NewPipeline(10),
+		HTTPClient: up.Client(), Logger: obs.Discard()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Deps{Registry: reg, Core: c, MaxResultBytes: 1 << 20, Version: "test", Logger: obs.Discard()})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	ctx = auth.WithPrincipal(ctx, &auth.Principal{ClientID: 1, AllowedModels: []string{"echo-svc"}})
+	ctx = obs.WithRequestID(ctx, "req_cancel")
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo_text","arguments":{"text":"hello"}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = req.WithContext(ctx)
+
+	done := make(chan struct{})
+	rec := httptest.NewRecorder()
+	go func() {
+		defer close(done)
+		srv.ServeHTTP(rec, req)
+	}()
+
+	select {
+	case <-upstreamReached:
+		cancel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream to be reached")
+	}
+
+	select {
+	case <-upstreamFinished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("upstream did not observe context cancellation")
+	}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeHTTP did not finish after cancellation")
+	}
+}
+
+// 结果与错误中不出现上游 Key 与网关 Token
+func TestNoSecretsInToolOutput(t *testing.T) {
+	const upstreamKey = "sk-upstream-secret-12345"
+	const gatewayToken = "uai_live_gateway_token_98765"
+
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var v struct{ Text string }
+		_ = json.NewDecoder(r.Body).Decode(&v)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"echo": v.Text})
+	}))
+	defer up.Close()
+
+	cfg, err := config.Parse([]byte(`
+server: { data_dir: ./data, master_key_file: ./secrets/master.key }
+pools: [ { name: e, protocol: echo, base_url: "` + up.URL + `" } ]
+models:
+  - { name: echo-svc, pool: e, price: { requests: "0.001" } }
+  - { name: secret-svc, pool: e, price: { requests: "0.001" } }
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := protocol.NewRegistry()
+	if err := reg.RegisterIngress(echoIngress{}, protocol.IngressOptions{Fallback: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterEgress(echoEgress{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	sched := scheduler.New(scheduler.PoolsFromConfig(cfg.Pools), scheduler.Options{Logger: obs.Discard()})
+	sched.SetKeys([]*scheduler.Key{scheduler.NewKey(1, "e", "k", []byte(upstreamKey), 1, 10, scheduler.PersistedReady)})
+	led := ledger.NewMemory(ledger.MemoryConfig{EventQueueCapacity: 100})
+	led.LoadAccounts([]ledger.Account{{ClientID: 1, QuotaNanoUSD: 1_000_000_000_000}})
+	c, err := core.New(core.Deps{Config: cfg, Registry: reg, Ledger: led, Scheduler: sched, Audit: audit.NewPipeline(10),
+		HTTPClient: up.Client(), Logger: obs.Discard()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := New(Deps{Registry: reg, Core: c, MaxResultBytes: 1 << 20, Version: "test", Logger: obs.Discard()})
+
+	testCases := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo_text","arguments":{"text":"normal"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo_text","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo_hidden","arguments":{"text":"hi"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"nope","arguments":{}}}`,
+		`{"jsonrpc":"2.0","id":5,"method":"unknown_method"}`,
+	}
+
+	for _, tc := range testCases {
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(tc))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+gatewayToken)
+		ctx := auth.WithPrincipal(req.Context(), &auth.Principal{ClientID: 1, AllowedModels: []string{"echo-svc"}})
+		req = req.WithContext(obs.WithRequestID(ctx, "req_test"))
+
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+
+		body := rec.Body.String()
+		if strings.Contains(body, upstreamKey) {
+			t.Errorf("upstream key leaked in body for %s: %s", tc, body)
+		}
+		if strings.Contains(body, gatewayToken) {
+			t.Errorf("gateway token leaked in body for %s: %s", tc, body)
+		}
+	}
+}
+
 // ---------------------------------------------------------------- T33：客户端与 stdio 桥
 
 func TestClientAndBridge(t *testing.T) {
-	t.Skip("TODO(T33)")
 	ts := newTestServer(t, 1<<20)
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer uai_live_test" {
@@ -445,5 +629,79 @@ func TestClientAndBridge(t *testing.T) {
 	}
 	if strings.Contains(log.String(), "uai_live_test") {
 		t.Error("token written to the bridge log")
+	}
+}
+
+func TestBridgeServerError(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteHTTPError(w, "", apperr.New(apperr.CodeInternal, "internal server failure"))
+	}))
+	defer gw.Close()
+
+	c := &Client{URL: gw.URL + "/mcp", Token: "uai_live_secret_token_123", HTTP: gw.Client()}
+
+	in := strings.NewReader(`{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"echo"}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"notifications/test"}` + "\n" +
+		`{"jsonrpc":"2.0","id":"req-abc","method":"ping"}` + "\n")
+	var out, log strings.Builder
+	if err := Bridge(context.Background(), c, in, &out, &log); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("bridge output lines = %d, want 2: %q", len(lines), out.String())
+	}
+
+	// 第一条必须是 id: 100, code: -32603
+	var resp1 struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   *Error          `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &resp1); err != nil {
+		t.Fatalf("unmarshal resp1 error = %v", err)
+	}
+	if string(resp1.ID) != "100" || resp1.Error == nil || resp1.Error.Code != CodeInternalError {
+		t.Errorf("resp1 = %+v, want id 100, code -32603", resp1)
+	}
+
+	// 第二条必须是 id: "req-abc", code: -32603
+	var resp2 struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   *Error          `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &resp2); err != nil {
+		t.Fatalf("unmarshal resp2 error = %v", err)
+	}
+	if string(resp2.ID) != `"req-abc"` || resp2.Error == nil || resp2.Error.Code != CodeInternalError {
+		t.Errorf("resp2 = %+v, want id \"req-abc\", code -32603", resp2)
+	}
+
+	// 诊断日志不泄露 Token
+	if strings.Contains(log.String(), "uai_live_secret_token_123") {
+		t.Error("token leaked into bridge log")
+	}
+	if strings.Contains(out.String(), "uai_live_secret_token_123") {
+		t.Error("token leaked into bridge out")
+	}
+}
+
+func TestClientSSE(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"status\":\"ok\"}}\n\n")
+	}))
+	defer gw.Close()
+
+	c := &Client{URL: gw.URL + "/mcp", Token: "uai_live_test", HTTP: gw.Client()}
+	resp, err := c.Post(context.Background(), []byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(resp), `"status":"ok"`) {
+		t.Fatalf("unexpected sse response: %s", string(resp))
 	}
 }

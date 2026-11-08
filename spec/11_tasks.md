@@ -259,7 +259,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **测试**：`mcp_test.go` 中的 `TestInitialize`、`TestTransportRules`、`TestToolsListFiltered`、`TestToolsCall`、`TestToolsCallResultTooLarge`；另新增 `TestOriginRejected`（SRV-M06）、`TestToolsCallCanceledWithClient`（外层请求取消时内部请求随之取消）、`TestNoSecretsInToolOutput`（结果与错误中不出现上游 Key 与网关 Token）。
 - **陷阱**：工具执行失败要放进 `isError: true` 的**结果**里，不要返回 JSON-RPC 错误——只有「工具不存在」与报文格式错误是 JSON-RPC 错误（TL-05）。内部请求不经过中间件，不要再调用 `Authenticate`。
 
-## T33 MCP 客户端、stdio 桥与命令行 — 状态：`TODO`
+## T33 MCP 客户端、stdio 桥与命令行 — 状态：`DONE`
 
 - **前置**：T32
 - **必读规格**：14 §3、§4
