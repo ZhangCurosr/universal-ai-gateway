@@ -37,7 +37,7 @@ func NewServer(d Deps) http.Handler {
 	mux := http.NewServeMux()
 	// TODO(T12): 注册 spec/09 §4.1 的全部端点，并套用 ADM-01 ~ ADM-04 的鉴权中间件。
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		apperr.WriteHTTP(w, apperr.FormatAdmin, "", apperr.NotImplemented("T12"))
+		writeError(w, apperr.NotImplemented("T12"))
 	})
 	return mux
 }

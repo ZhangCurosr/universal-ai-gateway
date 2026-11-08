@@ -1,6 +1,6 @@
 # 07 调度器与容错（Scheduler & Resilience）
 
-代码位置：`internal/scheduler`（类型与 `tryAcquire` 已提供；亲和缓存 T07、选择与状态机 T08）、`internal/provider/classify.go`（错误分类，已提供）、`internal/proxy`（重试循环，T10）。
+代码位置：`internal/scheduler`（类型与 `tryAcquire` 已提供；亲和缓存 T07、选择与状态机 T08）、`internal/protocol/classify.go`（错误分类，已提供）、`internal/core`（重试循环，T10）。
 
 ## 1. 核心类型
 
@@ -23,11 +23,12 @@ type Key struct {
 type AcquireRequest struct {
     Pool        string
     AffinityKey string  // 空 = 无亲和
+    Strict      bool    // 只能用 AffinityKey 记录的 Key（SCH-17）
     Exclude     []int64 // 本请求已经尝试失败的 Key
 }
 
 type Lease struct { Key *Key /* 私有字段 */ }
-func (l *Lease) Finish(o provider.Outcome) // 释放并上报，只生效一次
+func (l *Lease) Finish(o protocol.Outcome) // 释放并上报，只生效一次
 
 type Scheduler struct { /* ... */ }
 func New(pools []PoolConfig, opts Options) *Scheduler
@@ -68,6 +69,9 @@ Key 在时刻 `now` 可被选中，当且仅当以下**全部**成立：
 | SCH-13 | 亲和缓存 TTL = 池的 `affinity_ttl`，每次命中刷新。会话空闲超过 TTL 后条目过期，下次请求自然重新选择——这就是「在缓存冷点再平衡」，不需要额外逻辑 |
 | SCH-14 | `tryAcquire` 必须是 CAS 循环（已提供），保证 `inFlight` 永远不超过 `MaxInFlight` |
 | SCH-15 | `Acquire` 全程不做 I/O，不调用回调；耗时应在微秒级 |
+| SCH-17 | `Strict == true`：亲和缓存未命中（或已过期）→ `CodeNotFound`（消息 `unknown or expired task; resubmit`）；命中但该 Key 不在候选集 C 中或 `tryAcquire` 失败 → `CodeUpstreamUnavailable`（带 §3.1 的 Retry-After）。**绝不**回落到其他 Key。严格模式不刷新 TTL |
+| SCH-18 | `Lease.Pin(key, ttl)`：把 `key` 绑定到本 Lease 的 Key，TTL 为 `ttl`（池的 `pin_ttl`）；与普通亲和共用同一个缓存。缓存满时 LRU 淘汰可能淘汰固定条目——这是已知限制，写进部署文档（固定条目数 ≈ 并发未完成任务数，远小于默认容量 65536） |
+| SCH-19 | `PinnedPool(key)`：亲和缓存命中且未过期、且该 Key 仍存在时返回其池名；不刷新 TTL。供内核为不带服务名的严格亲和请求确定路由（CORE-11） |
 | SCH-16 | `SetKeys` 对同 ID 的 Key：若 `Pool/Name/Secret/Weight/MaxInFlight` 全部不变，**继续使用旧的 `*Key` 对象**，只更新持久化状态；若有任一改变，使用新对象，并从旧对象复制 `cooldownUntil` 与 `authFailures`，熔断器重新从 closed 开始，`inFlight` 从 0 开始（旧租约在旧对象上结束，过渡期内并发可能短暂超过上限，这是可接受的）。导出字段在对象被放入池后永不修改，因此读取它们不需要加锁 |
 
 ### 3.1 无可用 Key
@@ -120,17 +124,18 @@ func (c *affinityCache) Len() int
 - **half_open**：同一时间只允许 1 个探测请求（SCH-04）。探测成功 → closed，清空窗口，`d` 重置为 `open_duration`；探测失败 → open，`d = min(d*2, max_open_duration)`。
 - 只有 ST-09 计为失败，只有 ST-01 计为成功；其他 Outcome 不进入窗口统计。
 
-## 6. 重试循环（`proxy`，任务 T10）
+## 6. 重试循环（`core`，任务 T10）
 
 ```
 exclude := []
 for attempt := 1; attempt <= pool.MaxAttempts; attempt++ {
-    lease, err := sched.Acquire({Pool, AffinityKey, Exclude: exclude})
+    lease, err := sched.Acquire({Pool, AffinityKey, Strict, Exclude: exclude})
     if err != nil { break }                       // 无可用 Key
-    resp, outcome := sendUpstream(lease.Key)      // 只读到响应头
-    if resp 是 2xx { 开始转发；转发结束后 lease.Finish(最终 outcome)；return }
+    resp, err := route.Egress.Do(ctx, upstream(lease.Key), call)   // 一次尝试，可含多次上游调用
+    if err == nil { 开始转发；转发结束后 lease.Finish(最终 outcome)；return }
+    outcome := err 是 *AttemptError ? 修正后的 Outcome（CORE-10）: LocalError（CORE-09）
     lease.Finish(outcome)
-    if !retryable(outcome) { 把上游错误返回客户端；return }
+    if !outcome.Kind.Retryable() || call.BodyStream != nil || Strict { 把错误返回客户端；return }
     exclude = append(exclude, lease.Key.ID)
 }
 返回最后一次失败对应的错误（§6.1）
@@ -141,7 +146,8 @@ for attempt := 1; attempt <= pool.MaxAttempts; attempt++ {
 | RTY-01 | 只有在**尚未向客户端写出任何字节**时才允许重试。读到上游 2xx 响应头即进入转发阶段，之后任何错误都不重试 |
 | RTY-02 | 每次重试前必须重新执行 `Acquire`，并排除已失败的 Key |
 | RTY-03 | 重试不等待（不 sleep）；换 Key 本身就是退避 |
-| RTY-04 | 上游失败响应体在重试前必须读完（上限 8 KiB）并关闭，以便连接复用 |
+| RTY-04 | 上游失败响应体在重试前必须读完（上限 8 KiB）并关闭，以便连接复用（`protocol.Send` 已实现） |
+| RTY-06 | 流式请求体（`call.BodyStream != nil`）与严格亲和（`Strict`）的请求只尝试一次（CORE-07、SCH-17） |
 | RTY-05 | 客户端 `ctx` 已取消时立即停止循环，`Outcome = Canceled` |
 
 ### 6.1 全部失败时返回给客户端的错误
@@ -150,21 +156,35 @@ for attempt := 1; attempt <= pool.MaxAttempts; attempt++ {
 |:--|:--|
 | `Acquire` 返回 ErrNoKey | 503 `upstream_unavailable`，带 `Retry-After`（§3.1） |
 | `RateLimited` | 429 `rate_limited`，`Retry-After` 取上游值 |
-| `ClientError` | **原样转发**上游状态码与错误体（截断 8 KiB），这是客户端请求本身的问题 |
+| `ClientError` | 同协议透传：**原样转发** `AttemptError` 中的上游状态码、`Content-Type` 与错误体（截断 8 KiB），这是客户端请求本身的问题。转译路径：400 `invalid_request`（`upstream rejected the request`），不转发上游原文（格式属于另一个协议） |
+| `LocalError` | 502 `upstream_error`（如上游响应过大）；`Do` 返回 `*apperr.Error` 时原样返回（CORE-09） |
+| 严格亲和未命中 | 404 `not_found`（SCH-17） |
 | `Overloaded` | 503 `upstream_unavailable` |
 | `Timeout` | 504 `timeout` |
 | 其他 | 502 `upstream_error` |
 
-## 7. 亲和键计算（`proxy.AffinityKey`，任务 T10）
+## 7. 亲和键计算（`core.AffinityKey`，任务 T10）
 
-返回值格式 `c<clientID>:<来源>:<16 位十六进制>`；来源与优先级：
+职责划分：**入站适配器**从请求中提取原始线索（spec/08 §2.4，`Envelope.Affinity`）；**内核**决定优先级并做哈希。内核不读取请求体字段。
 
-| 优先级 | 来源 | 适用协议 | 取值 |
-|:-:|:--|:--|:--|
-| 1 | `h` | 全部 | 请求头 `X-UAIG-Session` 非空（≤128 字节） |
-| 2 | `u` | anthropic | 请求体 `metadata.user_id` 非空 |
-| 2 | `u` | openai_chat | 请求体 `prompt_cache_key` 非空，否则 `user` 非空 |
-| 3 | `p` | anthropic | 对原始 JSON 字节 `tools` + `system` + `messages[0]` 计算 SHA-256 |
-| 3 | `p` | openai_chat | 对 `tools` + `messages[0]` + `messages[1]`（若存在）计算 SHA-256 |
+```go
+func AffinityKey(clientID int64, h http.Header, hint protocol.AffinityHint) string
+```
 
-十六进制部分 = `hex(sha256(取值))[:16]`。字段不存在时以空字节参与哈希。所有来源都为空时返回空字符串（无亲和）。
+| 优先级 | 来源 | 取值 |
+|:-:|:--|:--|
+| 0 | `hint.Strict == true` | 只用 `hint`（来源 `j`），忽略请求头——任务固定不能被客户端头覆盖 |
+| 1 | `h` | 请求头 `X-UAIG-Session` 非空且 ≤ 128 字节（所有协议通用；超长视为不存在）；`h` 为 nil 时跳过 |
+| 2 | `hint.Source`（`u`、`p` 或 `j`） | `hint.Value` 非空 |
+
+返回值格式 `c<clientID>:<来源>:<hex(sha256(取值))[:16]>`；都没有时返回空字符串（无亲和）。
+
+### 7.1 任务固定（异步 API）
+
+异步 API 的任务只存在于创建它的上游账号下，查询必须使用同一个 Key：
+
+1. 创建任务的响应中，出站适配器把任务 ID 放进 `Response.Pins`（spec/08 EG-06）。
+2. 内核在转发成功后，对每个 pin 调用 `lease.Pin(AffinityKey(clientID, nil, AffinityHint{Source: AffinityPin, Value: pin}), pool.pin_ttl)`（CORE-08）。
+3. 查询任务的请求，入站适配器给出 `AffinityHint{Source: AffinityPin, Value: 任务 ID, Strict: true}`（spec/08 IN-G07）；内核以 `Strict` 调用 `Acquire`（SCH-17），该请求不换 Key 重试。
+4. 亲和键包含 clientID，因此客户端 A 创建的任务，客户端 B 无法查询（返回 404）。
+5. 固定记录只在内存中：网关重启或条目过期后查询返回 404，客户端需要重新提交。

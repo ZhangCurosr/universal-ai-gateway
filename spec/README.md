@@ -13,13 +13,15 @@
 | 3 | [03_config.md](./03_config.md) | 配置文件结构、默认值、校验规则、命令行参数、HTTP 服务端超时、可信代理 | 改 `config`、`cmd` 的人 |
 | 4 | [04_storage.md](./04_storage.md) | SQLite 表结构、迁移、仓储接口与语义 | 改 `store` 的人 |
 | 5 | [05_security_auth.md](./05_security_auth.md) | 主密钥、信封加密、Token、鉴权、管理员引导 | 改 `crypto`、`auth`、`admin` 的人 |
-| 6 | [06_billing_ledger.md](./06_billing_ledger.md) | 价格、成本计算、预留-结算账本、计费事件、崩溃语义 | 改 `pricing`、`ledger`、`proxy` 的人 |
-| 7 | [07_scheduler.md](./07_scheduler.md) | Key 池、状态机、亲和缓存、选择策略、错误分类、重试 | 改 `scheduler`、`proxy` 的人 |
-| 8 | [08_providers_and_passthrough.md](./08_providers_and_passthrough.md) | 上游协议适配器、透传改写、usage 提取、SSE | 改 `provider`、`sse`、`proxy` 的人 |
-| 9 | [09_http_api.md](./09_http_api.md) | 数据面端点、错误响应格式、中间件、管理 API | 改 `httpapi`、`admin` 的人 |
+| 6 | [06_billing_ledger.md](./06_billing_ledger.md) | 价格、成本计算、预留-结算账本、计费事件、崩溃语义 | 改 `pricing`、`ledger`、`core` 的人 |
+| 7 | [07_scheduler.md](./07_scheduler.md) | Key 池、状态机、亲和缓存、选择策略、错误分类、重试 | 改 `scheduler`、`core` 的人 |
+| 8 | [08_adapters.md](./08_adapters.md) | 入站 / 出站协议适配器契约（大模型与非大模型 API）、一致性测试套件、**新增协议的扩展指南**、搜索 / 文档解析接入范例 | 改 `protocol`、`adapter/*` 的人；新增协议的人 |
+| 9 | [09_http_api.md](./09_http_api.md) | 由注册表生成的数据面路由、中间件、错误格式约定、管理 API | 改 `httpapi`、`admin` 的人 |
 | 10 | [10_ir_translation.md](./10_ir_translation.md) | （M2）跨协议 IR 与转译规则 | 改 `ir`、`translate` 的人 |
 | 11 | [11_tasks.md](./11_tasks.md) | **任务卡**：顺序、依赖、涉及文件、验收标准 | 所有人 |
 | 12 | [12_deployment.md](./12_deployment.md) | 局域网 / 域名对外部署、反向代理示例、调参、开机自启 | 部署者；做 T14、T15 的人 |
+| 13 | [13_core.md](./13_core.md) | 内核：协议无关的处理流程、透传/转译选择、三种响应形态的转发、结算、超时、**冻结接口与变更流程** | 改 `core` 的人；任何想改契约的人 |
+| 14 | [14_ai_access.md](./14_ai_access.md) | 供 AI 调用：工具契约、MCP 服务端、命令行、Claude Code / Codex CLI 等客户端的配置 | 改 `mcp`、实现工具的人；部署者 |
 
 ## 规格写法约定
 

@@ -12,6 +12,11 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ratelimit"
 )
 
+// testErrorWriter 写 {"code","message"}，让中间件测试不依赖任何具体协议。
+func testErrorWriter(w http.ResponseWriter, _ string, err *apperr.Error) {
+	apperr.WriteJSON(w, err, map[string]string{"code": string(err.Code), "message": err.Message})
+}
+
 func TestRequestIDIgnoresClientValue(t *testing.T) {
 	var seen string
 	h := RequestID(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen = obs.RequestIDFrom(r.Context()) }))
@@ -26,17 +31,11 @@ func TestRequestIDIgnoresClientValue(t *testing.T) {
 }
 
 func TestRecoverReturns500(t *testing.T) {
-	h := Recover(obs.Discard())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+	h := Recover(obs.Discard(), testErrorWriter)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
-	if rec.Code != 500 || !strings.Contains(rec.Body.String(), `"api_error"`) {
+	if rec.Code != 500 || !strings.Contains(rec.Body.String(), `"code":"internal"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-}
-
-func TestFormatForPath(t *testing.T) {
-	if FormatForPath("/v1/messages") != apperr.FormatAnthropic || FormatForPath("/v1/chat/completions") != apperr.FormatOpenAI {
-		t.Fatal("FormatForPath mismatch")
 	}
 }
 
@@ -46,7 +45,7 @@ func TestOverloadGuardRejectsWhenFull(t *testing.T) {
 	g := NewOverloadGuard(1, 1<<20, 1<<10)
 	release := make(chan struct{})
 	entered := make(chan struct{})
-	h := g.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	h := g.Middleware(testErrorWriter, true)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		close(entered)
 		<-release
 	}))
@@ -58,7 +57,7 @@ func TestOverloadGuardRejectsWhenFull(t *testing.T) {
 	<-entered
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader("{}")))
-	if rec.Code != 503 || rec.Header().Get("Retry-After") != "1" || !strings.Contains(rec.Body.String(), "overloaded_error") {
+	if rec.Code != 503 || rec.Header().Get("Retry-After") != "1" || !strings.Contains(rec.Body.String(), `"code":"overloaded"`) {
 		t.Fatalf("second request status=%d retry=%q body=%s", rec.Code, rec.Header().Get("Retry-After"), rec.Body.String())
 	}
 	close(release)
@@ -73,7 +72,7 @@ func TestOverloadGuardBodyBudget(t *testing.T) {
 	t.Skip("TODO(T11)")
 	g := NewOverloadGuard(100, 1000, 600)
 	var inside int64
-	h := g.Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { _, inside = g.InFlight() }))
+	h := g.Middleware(testErrorWriter, true)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { _, inside = g.InFlight() }))
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(strings.Repeat("a", 300)))
 	h.ServeHTTP(httptest.NewRecorder(), req)
@@ -86,13 +85,21 @@ func TestOverloadGuardBodyBudget(t *testing.T) {
 	if inside != 600 {
 		t.Fatalf("reserved %d bytes for unknown length, want 600", inside)
 	}
+	// 流式请求体的路由不占请求体预算
+	stream := g.Middleware(testErrorWriter, false)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { _, inside = g.InFlight() }))
+	big := httptest.NewRequest(http.MethodPost, "/upload", strings.NewReader("x"))
+	big.ContentLength = 1 << 30
+	stream.ServeHTTP(httptest.NewRecorder(), big)
+	if inside != 0 {
+		t.Fatalf("reserved %d bytes for a streamed body, want 0", inside)
+	}
 }
 
 // OVL-04 / OVL-05：鉴权前按 IP 限流，不同 IP 互不影响
 func TestIPRateLimit(t *testing.T) {
 	t.Skip("TODO(T11)")
 	h := chain(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
-		ClientIP(clientip.Trusted{}), IPRateLimit(ratelimit.New(nil), 1))
+		ClientIP(clientip.Trusted{}), IPRateLimit(ratelimit.New(nil), 1, testErrorWriter))
 	send := func(remote string) int {
 		req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 		req.RemoteAddr = remote

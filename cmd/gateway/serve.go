@@ -26,9 +26,10 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) error {
 	//   5. ledger.RecoverUnflushed(data_dir/unflushed_usage.jsonl)
 	//   6. 管理员引导 BOOT-01 ~ BOOT-03（Token 明文只用 fmt.Fprintln(opts.Stderr, ...) 输出一次）
 	//   7. 加载：auth.Reloader.Reload；ledger.LoadAccounts（SumCostByClient）；scheduler.LoadKeys + SetKeys
-	//   8. 上游 http.Client（spec/08 §8）
+	//   8. 上游 http.Client（spec/13 §6）
 	//   9. 后台 worker：ledger.Flusher、audit.Writer、audit.Retention、ratelimit.Sweep（每 5 分钟）
-	//  10. 数据面 + 管理面 http.Server；调用 opts.OnListening
+	//  10. MCP：cfg.MCP.Disabled 为 false 时 mcp.New(...)，作为 DataDeps.MCP，DataDeps.MCPErrorWriter = mcp.WriteHTTPError（spec/14）
+	//  11. 数据面 + 管理面 http.Server；调用 opts.OnListening
 	// 关闭顺序：数据面 Shutdown(shutdown_grace) → 管理面 Shutdown → 取消 worker 并等待 → 关闭 DB → 释放目录锁。
 	_ = ctx
 	_ = cfg

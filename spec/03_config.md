@@ -26,17 +26,21 @@ server:
   shutdown_grace: 30s              # 优雅关闭等待在途请求的最长时间
   log_level: info                  # debug | info | warn | error
   read_header_timeout: 10s         # §6：读完请求头的最长时间（防慢速攻击）
-  read_timeout: 60s                # §6：读完整个请求（头 + 体）的最长时间
+  read_timeout: 60s                # §6：读完整个请求（头 + 体）的最长时间；接入大文件上传 API 时要按带宽调大
   idle_timeout: 120s               # §6：keep-alive 空闲连接保留时间
   max_header_bytes: 65536          # §6：请求头总大小上限
   trusted_proxies: []              # §7：可信反向代理 CIDR，例如 ["127.0.0.1/32", "::1/128"]
 
 limits:
-  max_request_body_bytes: 33554432 # 32 MiB，单个请求体上限
-  default_max_output_tokens: 8192  # 请求未给 max_tokens 时用于预留估算
+  max_request_body_bytes: 33554432 # 32 MiB，缓冲请求体（BodyBuffered，JSON 等）上限
+  max_stream_body_bytes: 536870912 # 512 MiB，流式请求体（BodyStream，文件上传）上限；不占内存预算
   max_in_flight_requests: 256      # spec/09 §5：数据面模型请求的全局并发上限
   max_buffered_body_bytes: 536870912 # spec/09 §5：所有在途请求体合计的内存预算（512 MiB）
   preauth_ip_rpm: 600              # spec/09 §5：鉴权之前每个来源 IP 每分钟请求数；0 = 关闭
+
+mcp:                               # spec/14：/mcp 端点
+  disabled: false                  # true = 不挂载 /mcp
+  max_result_bytes: 4194304        # 单次工具调用的端点响应上限（4 MiB）
 
 ledger:
   flush_interval: 250ms
@@ -51,15 +55,16 @@ audit:
 
 pools:
   - name: anthropic-main
-    protocol: anthropic            # anthropic | openai_chat
+    protocol: anthropic            # 已注册的适配器协议名：anthropic | openai_chat | ……
     base_url: "https://api.anthropic.com"
     strategy: least_inflight       # least_inflight | weighted_round_robin
     affinity_ttl: 5m               # 应与上游 Prompt Cache TTL 一致
+    pin_ttl: 24h                   # 异步任务 ID 固定到创建它的 Key 的时长（spec/07 §7.1）
     max_attempts: 3                # 含首次尝试
     timeouts:
       connect: 10s
-      response_header_base: 60s    # 等待上游响应头的基础超时
-      response_header_per_100k_input_tokens: 30s
+      response_header_base: 60s    # 等待上游响应的基础超时（异步任务「同步封装」的池要配成分钟级）
+      response_header_per_mib: 90s # 请求体每 MiB 追加的等待时长
       stream_idle: 120s            # 流式两次事件之间的最长间隔
       non_stream_total: 10m        # 非流式请求的整体超时
     cooldown:
@@ -72,17 +77,25 @@ pools:
       open_duration: 30s
       max_open_duration: 5m
 
-models:
-  - name: "claude-sonnet-4-5"      # 客户端请求中使用的模型名（唯一）
+models:                           # 客户端可见的「服务」：大模型、搜索、文档解析……
+  - name: "claude-sonnet-4-5"      # 客户端请求中使用的服务名（唯一）
     pool: anthropic-main
-    upstream_model: "claude-sonnet-4-5"   # 发往上游的模型名
-    max_output_tokens: 64000
-    price:                          # 单位：USD / 百万 token
-      input: 3.0
-      output: 15.0
-      cache_read: 0.30
-      cache_write: 3.75
+    upstream_model: "claude-sonnet-4-5"   # 发往上游的服务名；缺省 = name
+    price:                          # 计量单位 → "USD[/PER]"（spec/06 PRC-05）
+      input_tokens: "3/1M"
+      output_tokens: "15/1M"
+      cache_read_tokens: "0.30/1M"
+      cache_write_tokens: "3.75/1M"
+    reserve:                        # 预留用量的上限兼默认值（spec/06 PRC-03）
+      output_tokens: 64000
+
+  - name: "tavily-search"          # 非大模型服务的写法（需要 tavily 适配器，spec/08 §8.1）
+    pool: tavily
+    price: { credits: "0.008" }
+    reserve: { credits: 2 }
 ```
+
+`price` 必须为该池协议的出站适配器声明的**每个**单位定价（免费写 `"0"`），否则启动失败（CORE-05）。各协议的单位见 spec/08（anthropic：`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`；openai_chat：前三个）。
 
 ## 3. 默认值（`config.Default()`）
 
@@ -100,10 +113,11 @@ models:
 | `server.max_header_bytes` | `65536` |
 | `server.trusted_proxies` | `[]` |
 | `limits.max_request_body_bytes` | `33554432` |
-| `limits.default_max_output_tokens` | `8192` |
+| `limits.max_stream_body_bytes` | `536870912` |
 | `limits.max_in_flight_requests` | `256` |
 | `limits.max_buffered_body_bytes` | `536870912` |
 | `limits.preauth_ip_rpm` | `600` |
+| `mcp.disabled` / `mcp.max_result_bytes` | `false` / `4194304` |
 | `ledger.flush_interval` | `250ms` |
 | `ledger.event_queue_capacity` | `4096` |
 | `ledger.admission_high_watermark` | `0.9` |
@@ -111,9 +125,9 @@ models:
 | `audit.batch_size` | `256` |
 | `audit.flush_interval` | `250ms` |
 | `audit.retention_days` | `30` |
-| 池内缺省字段 | `strategy: least_inflight`、`affinity_ttl: 5m`、`max_attempts: 3`、`connect: 10s`、`response_header_base: 60s`、`response_header_per_100k_input_tokens: 30s`、`stream_idle: 120s`、`non_stream_total: 10m`、`cooldown.default: 30s`、`cooldown.max: 10m`、`breaker` 同上例 |
+| 池内缺省字段 | `strategy: least_inflight`、`affinity_ttl: 5m`、`max_attempts: 3`、`pin_ttl: 24h`、`connect: 10s`、`response_header_base: 60s`、`response_header_per_mib: 90s`、`stream_idle: 120s`、`non_stream_total: 10m`、`cooldown.default: 30s`、`cooldown.max: 10m`、`breaker` 同上例 |
 
-池级默认值由 `Config.Normalize()` 填充（解析后调用）。
+池级默认值与 `models[].upstream_model`（缺省 = `name`）由 `Config.Normalize()` 填充（解析后调用）。
 
 ## 4. 校验规则（`Config.Validate()`）
 
@@ -124,15 +138,16 @@ models:
 | CFG-01 | `data_listen`、`admin_listen` 必须能被 `net.SplitHostPort` 解析 |
 | CFG-02 | `admin_listen` 的主机不是回环地址（`127.0.0.1`、`::1`、`localhost`）时报错：M1 不支持管理面对外监听 |
 | CFG-03 | `master_key_file` 的绝对路径**不得**位于 `data_dir` 的绝对路径之下（防止数据目录整体备份时密钥一起泄露） |
-| CFG-04 | `pools[].name` 非空且唯一；`protocol` 只能是 `anthropic` / `openai_chat`；`base_url` 必须是 `http`/`https` 的绝对 URL |
+| CFG-04 | `pools[].name` 非空且唯一；`protocol` 必须匹配 `[a-z][a-z0-9_]*`（是否有对应适配器由 `core.New` 检查，CORE-01）；`base_url` 必须是 `http`/`https` 的绝对 URL |
 | CFG-05 | `strategy` 只能是 `least_inflight` / `weighted_round_robin`；`max_attempts` 范围 1–5 |
-| CFG-06 | `models[].name` 非空且唯一；`pool` 必须引用已存在的池；`upstream_model` 非空 |
-| CFG-07 | 价格各项 `>= 0`；`max_output_tokens > 0` |
+| CFG-06 | `models[].name` 非空且唯一；`pool` 必须引用已存在的池；`upstream_model` 非空（Normalize 之后） |
+| CFG-07 | `price` 的每个键满足 `pricing.ValidUnit`，每个值能被 `pricing.ParseRate` 解析；`reserve` 的每个键合法、值 `>= 0`。价目表是否覆盖适配器的全部单位由 `core.New` 检查（CORE-05） |
 | CFG-08 | `ledger.admission_high_watermark` 在 `(0, 1]`；所有容量、批量大小 `> 0`；所有时长 `> 0` |
 | CFG-09 | 至少有 1 个池、1 个模型 |
 | CFG-10 | `read_header_timeout`、`read_timeout`、`idle_timeout`、`max_header_bytes` 都 `> 0`，且 `read_header_timeout <= read_timeout` |
 | CFG-11 | `trusted_proxies` 每一项都必须是 CIDR（`netip.ParsePrefix` 可解析）；单个 IP 要写成 `/32` 或 `/128` |
-| CFG-12 | `max_in_flight_requests > 0`、`preauth_ip_rpm >= 0`、`max_buffered_body_bytes >= max_request_body_bytes` |
+| CFG-13 | `mcp.max_result_bytes > 0` |
+| CFG-12 | `max_in_flight_requests > 0`、`preauth_ip_rpm >= 0`、`max_buffered_body_bytes >= max_request_body_bytes`、`max_stream_body_bytes > 0` |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 
@@ -145,7 +160,7 @@ models:
 5. `sqlite.Open(ctx, data_dir/gateway.db)`（含迁移）。
 6. 管理员引导：若不存在 `role=admin` 的客户端，创建一个并把 Token **只打印一次**到 stderr（见 05 §5）。
 7. 从存储加载：客户端 → `auth.Index`；用量汇总 → `ledger`；上游 Key（解密）→ `scheduler`。
-8. 创建上游 `http.Client`（共享 `http.Transport`，参数见 08 §8）。
+8. 创建上游 `http.Client`（共享 `http.Transport`，参数见 13 §6）。
 9. 启动后台 worker：`ledger.Flusher.Run`、`audit.Writer.Run`、`audit` 过期清理（每小时）。
 10. 启动管理面与数据面 `http.Server`。日志输出两个监听地址。
 
@@ -166,7 +181,7 @@ models:
     Handler:           handler,
     ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
     ReadTimeout:       cfg.Server.ReadTimeout,
-    WriteTimeout:      0, // 必须为 0：流式响应可能持续数分钟，写超时会把它截断；流式超时由 spec/08 §7 控制
+    WriteTimeout:      0, // 必须为 0：流式响应可能持续数分钟，写超时会把它截断；流式超时由 spec/13 §5 控制
     IdleTimeout:       cfg.Server.IdleTimeout,
     MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
     ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),

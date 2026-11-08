@@ -14,11 +14,15 @@ server:
   trusted_proxies: []        # 例如 ["127.0.0.1/32", "::1/128"]
 
 limits:
-  max_request_body_bytes: 33554432
-  default_max_output_tokens: 8192
+  max_request_body_bytes: 33554432     # 缓冲请求体上限（JSON 请求）
+  max_stream_body_bytes: 536870912     # 流式请求体上限（文件上传等）
   max_in_flight_requests: 256
   max_buffered_body_bytes: 536870912
   preauth_ip_rpm: 600
+
+mcp:                                  # /mcp 端点：让 AI 以 MCP 工具的方式调用网关（spec/14）
+  disabled: false
+  max_result_bytes: 4194304
 
 ledger:
   flush_interval: 250ms
@@ -44,15 +48,53 @@ pools:
     base_url: "https://api.deepseek.com"
     strategy: weighted_round_robin
 
+  - name: openai
+    protocol: openai_responses          # Responses API（Codex CLI 等使用）
+    base_url: "https://api.openai.com"
+    pin_ttl: 720h                       # 上游保存响应 30 天；previous_response_id 需要回到同一个 Key
+
+# models 是客户端可见的「服务」：大模型、搜索、文档解析……都在这里登记。
+#   price：计量单位 → "USD[/PER]"。单位由出站适配器定义（spec/08 §3.1），必须全部定价（可以写 "0"）。
+#   reserve：预留用量的上限兼默认值（spec/06 PRC-03）。
 models:
   - name: "claude-sonnet-4-5"
     pool: anthropic-main
     upstream_model: "claude-sonnet-4-5"
-    max_output_tokens: 64000
-    price: { input: 3.0, output: 15.0, cache_read: 0.30, cache_write: 3.75 }
+    price:
+      input_tokens: "3/1M"
+      output_tokens: "15/1M"
+      cache_read_tokens: "0.30/1M"
+      cache_write_tokens: "3.75/1M"
+    reserve: { output_tokens: 64000 }
 
   - name: "deepseek-chat"
     pool: deepseek
-    upstream_model: "deepseek-chat"
-    max_output_tokens: 8192
-    price: { input: 0.27, output: 1.10, cache_read: 0.07, cache_write: 0 }
+    price: { input_tokens: "0.27/1M", output_tokens: "1.10/1M", cache_read_tokens: "0.07/1M" }
+    reserve: { output_tokens: 8192 }
+
+  - name: "gpt-5"
+    pool: openai
+    price: { input_tokens: "1.25/1M", output_tokens: "10/1M", cache_read_tokens: "0.125/1M" }
+    reserve: { output_tokens: 32000 }
+
+# 非大模型 API 的写法示例（需要对应的适配器已注册，见 spec/08 §8）：
+#
+# pools:
+#   - name: tavily
+#     protocol: tavily
+#     base_url: "https://api.tavily.com"
+#   - name: mineru
+#     protocol: mineru
+#     base_url: "https://mineru.net"
+#     pin_ttl: 48h                      # 任务 ID 固定到创建它的 Key 的时长
+#     timeouts: { response_header_base: 10m }
+#
+# models:
+#   - name: "tavily-search"
+#     pool: tavily
+#     price: { credits: "0.008" }       # 每 credit 0.008 美元
+#     reserve: { credits: 2 }           # advanced 搜索最多 2 credits
+#   - name: "mineru-parse"
+#     pool: mineru
+#     price: { pages: "0.01", requests: "0" }
+#     reserve: { pages: 600 }           # 单文件页数上限

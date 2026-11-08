@@ -1,4 +1,4 @@
-package provider
+package protocol
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// ClassifyHTTP 把上游非 2xx 响应映射为 Outcome（spec/07 §5、spec/08 §9）。
+// ClassifyHTTP 把上游非 2xx 响应映射为 Outcome（spec/07 §5、spec/08 §7）。
 // 2xx 返回 OutcomeSuccess。
 func ClassifyHTTP(status int, h http.Header, now time.Time) Outcome {
 	o := Outcome{Status: status}
@@ -81,7 +81,7 @@ func isLocalResourceError(err error) bool {
 		errors.Is(errno, syscall.EADDRINUSE) || errors.Is(errno, syscall.ENOBUFS)
 }
 
-// ParseRetryAfter 解析上游建议的等待时长，取各来源中最大的正值；都没有返回 0（spec/08 §9）。
+// ParseRetryAfter 解析上游建议的等待时长，取各来源中最大的正值；都没有返回 0（spec/08 §7）。
 func ParseRetryAfter(h http.Header, now time.Time) time.Duration {
 	var best time.Duration
 	consider := func(d time.Duration) {

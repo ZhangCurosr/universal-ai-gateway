@@ -9,6 +9,7 @@ type Config struct {
 	Limits LimitsConfig  `yaml:"limits"`
 	Ledger LedgerConfig  `yaml:"ledger"`
 	Audit  AuditConfig   `yaml:"audit"`
+	MCP    MCPConfig     `yaml:"mcp"`
 	Pools  []PoolConfig  `yaml:"pools"`
 	Models []ModelConfig `yaml:"models"`
 }
@@ -32,13 +33,19 @@ type ServerConfig struct {
 }
 
 type LimitsConfig struct {
-	MaxRequestBodyBytes    int64 `yaml:"max_request_body_bytes"`
-	DefaultMaxOutputTokens int64 `yaml:"default_max_output_tokens"`
+	MaxRequestBodyBytes int64 `yaml:"max_request_body_bytes"` // 缓冲请求体（BodyBuffered）的上限
+	MaxStreamBodyBytes  int64 `yaml:"max_stream_body_bytes"`  // 流式请求体（BodyStream，如文件上传）的上限
 
 	// 全局过载保护（spec/09 §5）。
 	MaxInFlightRequests  int   `yaml:"max_in_flight_requests"`  // 数据面模型请求的全局并发上限
 	MaxBufferedBodyBytes int64 `yaml:"max_buffered_body_bytes"` // 在途请求体字节总预算
 	PreAuthIPRPM         int   `yaml:"preauth_ip_rpm"`          // 鉴权前每个来源 IP 的 RPM；0 = 关闭
+}
+
+// MCPConfig 是 MCP 端点 /mcp 的配置（spec/14）。
+type MCPConfig struct {
+	Disabled       bool  `yaml:"disabled"`         // true = 不挂载 /mcp
+	MaxResultBytes int64 `yaml:"max_result_bytes"` // 单次工具调用的端点响应上限
 }
 
 type LedgerConfig struct {
@@ -54,12 +61,6 @@ type AuditConfig struct {
 	RetentionDays int           `yaml:"retention_days"`
 }
 
-// 协议取值（与 provider.Protocol 的字符串值一致）。
-const (
-	ProtocolAnthropic  = "anthropic"
-	ProtocolOpenAIChat = "openai_chat"
-)
-
 // 池策略取值。
 const (
 	StrategyLeastInflight      = "least_inflight"
@@ -72,6 +73,7 @@ type PoolConfig struct {
 	BaseURL     string         `yaml:"base_url"`
 	Strategy    string         `yaml:"strategy"`
 	AffinityTTL time.Duration  `yaml:"affinity_ttl"`
+	PinTTL      time.Duration  `yaml:"pin_ttl"` // 任务固定（Response.Pins）的有效期（spec/07 §7.1）
 	MaxAttempts int            `yaml:"max_attempts"`
 	Timeouts    TimeoutsConfig `yaml:"timeouts"`
 	Cooldown    CooldownConfig `yaml:"cooldown"`
@@ -79,11 +81,12 @@ type PoolConfig struct {
 }
 
 type TimeoutsConfig struct {
-	Connect                          time.Duration `yaml:"connect"`
-	ResponseHeaderBase               time.Duration `yaml:"response_header_base"`
-	ResponseHeaderPer100kInputTokens time.Duration `yaml:"response_header_per_100k_input_tokens"`
-	StreamIdle                       time.Duration `yaml:"stream_idle"`
-	NonStreamTotal                   time.Duration `yaml:"non_stream_total"`
+	Connect            time.Duration `yaml:"connect"`
+	ResponseHeaderBase time.Duration `yaml:"response_header_base"`
+	// ResponseHeaderPerMiB 是请求体每 MiB 追加的等待时长（大输入需要更久才开始响应）。
+	ResponseHeaderPerMiB time.Duration `yaml:"response_header_per_mib"`
+	StreamIdle           time.Duration `yaml:"stream_idle"`
+	NonStreamTotal       time.Duration `yaml:"non_stream_total"`
 }
 
 type CooldownConfig struct {
@@ -99,20 +102,16 @@ type BreakerConfig struct {
 	MaxOpenDuration time.Duration `yaml:"max_open_duration"`
 }
 
+// ModelConfig 是一个客户端可见的服务（大模型、搜索、文档解析……），名称沿用 "model"。
 type ModelConfig struct {
-	Name            string      `yaml:"name"`
-	Pool            string      `yaml:"pool"`
-	UpstreamModel   string      `yaml:"upstream_model"`
-	MaxOutputTokens int64       `yaml:"max_output_tokens"`
-	Price           PriceConfig `yaml:"price"`
-}
-
-// PriceConfig 单位：USD / 百万 token。转换为整数见 pricing.FromUSDPerMTok。
-type PriceConfig struct {
-	Input      float64 `yaml:"input"`
-	Output     float64 `yaml:"output"`
-	CacheRead  float64 `yaml:"cache_read"`
-	CacheWrite float64 `yaml:"cache_write"`
+	Name string `yaml:"name"`
+	Pool string `yaml:"pool"`
+	// UpstreamModel 是发给上游的服务名；为空时等于 Name。
+	UpstreamModel string `yaml:"upstream_model"`
+	// Price 是价目表：计量单位 → 价格字符串 "USD[/PER]"（spec/06 PRC-05），如 "3/1M"、"0.008"。
+	Price map[string]string `yaml:"price"`
+	// Reserve 是预留用量的上限兼默认值：计量单位 → 数量（spec/06 PRC-03），如 {output_tokens: 8192}。
+	Reserve map[string]int64 `yaml:"reserve"`
 }
 
 // Default 返回全部顶层默认值（spec/03 §3）。池级默认值由 Normalize 填充。
@@ -131,17 +130,18 @@ func Default() Config {
 			MaxHeaderBytes:    64 << 10,
 		},
 		Limits: LimitsConfig{
-			MaxRequestBodyBytes:    32 << 20,
-			DefaultMaxOutputTokens: 8192,
-			MaxInFlightRequests:    256,
-			MaxBufferedBodyBytes:   512 << 20,
-			PreAuthIPRPM:           600,
+			MaxRequestBodyBytes:  32 << 20,
+			MaxStreamBodyBytes:   512 << 20,
+			MaxInFlightRequests:  256,
+			MaxBufferedBodyBytes: 512 << 20,
+			PreAuthIPRPM:         600,
 		},
 		Ledger: LedgerConfig{
 			FlushInterval:          250 * time.Millisecond,
 			EventQueueCapacity:     4096,
 			AdmissionHighWatermark: 0.9,
 		},
+		MCP: MCPConfig{MaxResultBytes: 4 << 20},
 		Audit: AuditConfig{
 			QueueCapacity: 8192,
 			BatchSize:     256,
@@ -157,10 +157,11 @@ func (c *Config) Normalize() {
 		p := &c.Pools[i]
 		setDefault(&p.Strategy, StrategyLeastInflight)
 		setDefault(&p.AffinityTTL, 5*time.Minute)
+		setDefault(&p.PinTTL, 24*time.Hour)
 		setDefault(&p.MaxAttempts, 3)
 		setDefault(&p.Timeouts.Connect, 10*time.Second)
 		setDefault(&p.Timeouts.ResponseHeaderBase, 60*time.Second)
-		setDefault(&p.Timeouts.ResponseHeaderPer100kInputTokens, 30*time.Second)
+		setDefault(&p.Timeouts.ResponseHeaderPerMiB, 90*time.Second)
 		setDefault(&p.Timeouts.StreamIdle, 120*time.Second)
 		setDefault(&p.Timeouts.NonStreamTotal, 10*time.Minute)
 		setDefault(&p.Cooldown.Default, 30*time.Second)
@@ -170,6 +171,9 @@ func (c *Config) Normalize() {
 		setDefault(&p.Breaker.FailureRatio, 0.5)
 		setDefault(&p.Breaker.OpenDuration, 30*time.Second)
 		setDefault(&p.Breaker.MaxOpenDuration, 5*time.Minute)
+	}
+	for i := range c.Models {
+		setDefault(&c.Models[i].UpstreamModel, c.Models[i].Name)
 	}
 }
 

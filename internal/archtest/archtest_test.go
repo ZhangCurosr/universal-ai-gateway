@@ -29,24 +29,27 @@ var layers = map[string]int{
 	"internal/sse":      1,
 	"internal/pricing":  1,
 	"internal/store":    1,
-	"internal/provider": 1,
+	"internal/protocol": 1,
 	"internal/ir":       1,
 	"internal/clientip": 1,
 
-	"internal/store/sqlite":       2,
-	"internal/auth":               2,
-	"internal/ratelimit":          2,
-	"internal/ledger":             2,
-	"internal/audit":              2,
-	"internal/scheduler":          2,
-	"internal/provider/anthropic": 2,
-	"internal/provider/openai":    2,
-	"internal/translate":          2,
+	"internal/store/sqlite":        2,
+	"internal/auth":                2,
+	"internal/ratelimit":           2,
+	"internal/ledger":              2,
+	"internal/audit":               2,
+	"internal/scheduler":           2,
+	"internal/adapter/anthropic":   2,
+	"internal/adapter/openai":      2,
+	"internal/adapter/openairesp":  2,
+	"internal/adapter/adaptertest": 2,
+	"internal/translate":           2,
 
-	"internal/proxy": 3,
+	"internal/core": 3,
 
 	"internal/httpapi": 4,
 	"internal/admin":   4,
+	"internal/mcp":     4,
 
 	"cmd/gateway": 5,
 
@@ -56,7 +59,8 @@ var layers = map[string]int{
 // sameLayerAllowed 是明确允许的同层依赖。
 var sameLayerAllowed = map[string][]string{
 	"internal/store":    {"internal/crypto"},
-	"internal/provider": {"internal/sse", "internal/pricing", "internal/jsonx"},
+	"internal/config":   {"internal/pricing"},
+	"internal/protocol": {"internal/sse", "internal/pricing"},
 	"internal/ir":       {"internal/pricing"},
 }
 
@@ -68,10 +72,14 @@ var thirdParty = map[string][]string{
 
 // forbidden 是额外的禁止导入规则：包 → 不得导入的路径（含前缀匹配）。
 var forbidden = map[string][]string{
-	"internal/proxy":   {"database/sql", module + "internal/store/sqlite"}, // ARCH-01
+	"internal/core":    {"database/sql", module + "internal/store/sqlite"}, // ARCH-01
 	"internal/httpapi": {"database/sql", module + "internal/store/sqlite"}, // ARCH-01
-	"internal/admin":   {module + "internal/proxy"},                        // ARCH-06
+	"internal/admin":   {module + "internal/core"},                         // ARCH-06
 }
+
+// adapterPrefix 下的具体适配器只能被 cmd/gateway 导入（ARCH-07：内核与其他包不得依赖具体协议）。
+// adaptertest 只能被测试文件导入（ARCH-08）。
+const adapterPrefix = module + "internal/adapter/"
 
 type importInfo struct {
 	file string
@@ -152,6 +160,7 @@ func TestLayering(t *testing.T) {
 				continue // 测试文件不受分层约束（ARCH-05 另行检查）
 			}
 			checkForbidden(t, pkg, imp)
+			checkAdapterIsolation(t, pkg, imp)
 			checkThirdParty(t, pkg, imp)
 			if !strings.HasPrefix(imp.path, module) {
 				continue
@@ -170,6 +179,20 @@ func TestLayering(t *testing.T) {
 			}
 			t.Errorf("ARCH: %s (layer %d) must not import %s (layer %d) [%s]", pkg, from, target, to, imp.file)
 		}
+	}
+}
+
+func checkAdapterIsolation(t *testing.T, pkg string, imp importInfo) {
+	if !strings.HasPrefix(imp.path, adapterPrefix) {
+		return
+	}
+	target := strings.TrimPrefix(imp.path, module)
+	if target == "internal/adapter/adaptertest" {
+		t.Errorf("ARCH-08: %s/%s imports adaptertest outside a _test.go file", pkg, imp.file)
+		return
+	}
+	if pkg != "cmd/gateway" {
+		t.Errorf("ARCH-07: %s/%s imports concrete adapter %s; only cmd/gateway/adapters.go may", pkg, imp.file, target)
 	}
 }
 

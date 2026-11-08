@@ -75,12 +75,9 @@ type KeyView struct {
 
 // UsageItem 是用量汇总的一行。
 type UsageItem struct {
-	ClientID         int64  `json:"client_id"`
-	Model            string `json:"model"`
-	Requests         int64  `json:"requests"`
-	InputTokens      int64  `json:"input_tokens"`
-	OutputTokens     int64  `json:"output_tokens"`
-	CacheReadTokens  int64  `json:"cache_read_tokens"`
-	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	CostNanoUSD      int64  `json:"cost_nano_usd"`
+	ClientID    int64            `json:"client_id"`
+	Model       string           `json:"model"`
+	Requests    int64            `json:"requests"`
+	Usage       map[string]int64 `json:"usage"` // 计量单位 → 数量，如 {"input_tokens":120,"pages":30}
+	CostNanoUSD int64            `json:"cost_nano_usd"`
 }

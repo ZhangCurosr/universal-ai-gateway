@@ -1,4 +1,4 @@
-// Package sse 实现 Server-Sent Events 的读取与写入（spec/08 §6）。
+// Package sse 实现 Server-Sent Events 的读取与写入（spec/13 §4）。
 //
 // 读取规则遵循 WHATWG 规范的子集：
 //   - 以空行结束一个事件；

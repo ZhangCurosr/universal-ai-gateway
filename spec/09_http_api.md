@@ -1,60 +1,66 @@
 # 09 HTTP 接口（Data Plane & Admin API）
 
-代码位置：`internal/httpapi`（错误格式与中间件已提供；路由与 handler 装配 T11）、`internal/ratelimit`（T04）、`internal/admin`（T12）。
+代码位置：`internal/httpapi`（路由组装、冲突分派、`/healthz`、`RequestID`、`ClientIP`、`Recover` 已提供；其余中间件 T11）、`internal/ratelimit`（T04）、`internal/admin`（T12）。
 
 ## 1. 数据面端点
 
-| 方法 | 路径 | 鉴权 | 处理者 |
-|:--|:--|:--|:--|
-| `POST` | `/v1/messages` | 是 | `proxy.Handler`，入站协议 `anthropic` |
-| `POST` | `/v1/chat/completions` | 是 | `proxy.Handler`，入站协议 `openai_chat` |
-| `GET` | `/v1/models` | 是 | §1.2 |
-| `GET` | `/healthz` | 否 | 返回 `200 {"status":"ok"}` |
+**数据面的路由不写死在 httpapi 中**，而是由注册表中每个入站适配器的 `Routes()` 声明（spec/08 §2）。一个协议可以声明任意多个调用端点（大模型、搜索、文件上传、任务查询……）。当前注册的适配器产生以下端点：
 
-其他路径返回 404，错误格式按 §2.3（OpenAI 格式）。
+| 方法 | 路径 | 声明者 | 处理者 |
+|:--|:--|:--|:--|
+| `POST` | `/v1/messages` | anthropic（Call，Op `messages`） | `core.Handler(anthropic 入站, 该路由)` |
+| `POST` | `/v1/chat/completions` | openai_chat（Call，Op `chat.completions`） | `core.Handler(openai 入站, 该路由)` |
+| `POST` | `/v1/responses`，以及 `GET`/`DELETE` `/v1/responses/{id}`、`POST /v1/responses/{id}/cancel`、`GET /v1/responses/{id}/input_items` | openai_responses（Call） | `core.Handler(responses 入站, 该路由)` |
+| `GET` | `/v1/models` | anthropic 与 openai_chat（Catalog，冲突） | `Ingress.WriteCatalog(core.Models(principal))` |
+| `POST`（`GET`/`DELETE` 返回 405） | `/mcp` | httpapi（由 `DataDeps.MCP` 注入，spec/14） | `mcp.Server` |
+| `GET` | `/healthz` | httpapi 自身 | `200 {"status":"ok"}`，不鉴权 |
+
+| 编号 | 规则（已实现于 `router.go`） |
+|:--|:--|
+| RTE-01 | 遍历 `Registry.Ingresses()`（按优先级），把每个适配器声明的每条路由注册到 `http.ServeMux`；`RouteCall` 的处理者是 `core.Handler(in, rt)`，`RouteCatalog` 的是 `in.WriteCatalog` |
+| RTE-02 | 多个适配器声明同一 `(Method, Path)` 时：按优先级依次调用 `Claims(r)`，第一个返回 true 的处理；都不认领时交给兜底协议（若它声明了该路由），否则交给优先级最高者 |
+| RTE-03 | 每条协议路由都套用 §1.1 的协议中间件，中间件的错误格式使用**该协议**的 `WriteError` |
+| RTE-04 | 未匹配任何路由的请求返回 404，格式使用兜底协议（当前为 OpenAI） |
+| RTE-05 | `DataDeps.MCP` 非 nil 时挂载 `/mcp`（所有方法），中间件与协议路由相同，错误格式用 `DataDeps.MCPErrorWriter`（`mcp.WriteHTTPError`）。httpapi 不导入 mcp 包（同层），由 `cmd/gateway` 注入（已实现） |
 
 ### 1.1 中间件顺序
 
 ```
-RequestID → ClientIP → AccessLog → Recover → [模型端点与 /v1/models: IPRateLimit → Overload → Authenticate → RateLimit] → handler
+RequestID → ClientIP → AccessLog → Recover → [协议路由: IPRateLimit → Overload → Authenticate → RateLimit] → 端点
 ```
 
 顺序的理由：`IPRateLimit` 与 `Overload` 放在鉴权之前，使未鉴权的洪泛请求在计算 HMAC、读取请求体之前就被挡掉；`RateLimit`（每客户端）必须在鉴权之后，因为它需要 clientID。
 
+协议中间件的签名都带一个 `ErrorWriter`（即 `protocol.Ingress.WriteError`），**中间件自己不拼错误 JSON**：
+
+```go
+type ErrorWriter func(w http.ResponseWriter, requestID string, err *apperr.Error)
+func Authenticate(ix *auth.Index, pepper []byte, ew ErrorWriter) func(http.Handler) http.Handler
+func RateLimit(l *ratelimit.Limiter, ew ErrorWriter) func(http.Handler) http.Handler
+func IPRateLimit(l *ratelimit.Limiter, rpm int, ew ErrorWriter) func(http.Handler) http.Handler
+func (g *OverloadGuard) Middleware(ew ErrorWriter, buffered bool) func(http.Handler) http.Handler // buffered = (rt.Body == BodyBuffered)
+```
+
 | 编号 | 中间件 | 行为 |
 |:--|:--|:--|
-| MW-01 | `RequestID` | 生成 `req_` + 24 位小写 base32 随机串，存入 context，写响应头 `X-Request-Id`。**忽略**客户端传来的同名头 |
+| MW-01 | `RequestID` | 生成 `req_` + 24 位小写 base32 随机串，存入 context，写响应头 `X-Request-Id`。**忽略**客户端传来的同名头（已提供） |
 | MW-02 | `AccessLog` | 请求结束后输出一条 `Info` 日志：`request_id, method, path, status, latency_ms, client_id`（未鉴权为 0）、`client_ip`（取自 MW-06）。不记录请求体与头部 |
-| MW-03 | `Recover` | 捕获 panic：`Error` 日志（含堆栈）；若尚未写响应头则返回 500 `internal` |
-| MW-04 | `Authenticate` | `auth.ExtractCredential` → `HashToken` → `Index.Lookup`；失败 401；`Disabled` 为 403；成功后用 `auth.WithPrincipal(ctx, p)` 存入 context，下游用 `auth.PrincipalFrom(ctx)` 取出。请求 ID 用 `obs.WithRequestID` / `obs.RequestIDFrom` |
+| MW-03 | `Recover` | 捕获 panic：`Error` 日志（含堆栈）；若尚未写响应头则用兜底协议格式返回 500 `internal`（已提供） |
+| MW-04 | `Authenticate` | `auth.ExtractCredential` → `HashToken` → `Index.Lookup`；失败 401；`Disabled` 为 403；成功后用 `auth.WithPrincipal(ctx, p)` 存入 context，下游用 `auth.PrincipalFrom(ctx)` 取出 |
 | MW-05 | `RateLimit` | `ratelimit.Limiter.Allow("c:"+clientID, rpm)`；拒绝时 429 `rate_limited`，`Retry-After` 为秒数（向上取整） |
-| MW-06 | `ClientIP` | `clientip.Trusted.From(r)` 解析真实 IP（spec/03 §7），`clientip.WithIP` 存入 context（**已提供**） |
+| MW-06 | `ClientIP` | `clientip.Trusted.From(r)` 解析真实 IP（spec/03 §7），`clientip.WithIP` 存入 context（已提供） |
 | MW-07 | `IPRateLimit` | 见 §5 OVL-04、OVL-05 |
 | MW-08 | `OverloadGuard.Middleware` | 见 §5 OVL-01 ~ OVL-03 |
 
-错误格式由**路径决定**：`/v1/messages` 用 Anthropic 格式，其余用 OpenAI 格式（MW-04/05 也遵守这一点）。
+### 1.2 目录端点
 
-### 1.2 `GET /v1/models`
-
-只列出客户端被允许使用的模型（`Principal.ModelAllowed`），按 `name` 升序。
-
-- 请求带 `anthropic-version` 头 → Anthropic 格式：
-
-  ```json
-  {"data":[{"type":"model","id":"claude-sonnet-4-5","display_name":"claude-sonnet-4-5","created_at":"1970-01-01T00:00:00Z"}],
-   "has_more":false,"first_id":"claude-sonnet-4-5","last_id":"claude-sonnet-4-5"}
-  ```
-  列表为空时 `first_id`、`last_id` 为 `null`。
-
-- 否则 → OpenAI 格式：
-
-  ```json
-  {"object":"list","data":[{"id":"claude-sonnet-4-5","object":"model","created":0,"owned_by":"universal-ai-gateway"}]}
-  ```
+`core.Models(principal)` 返回客户端被允许使用的服务（按 ID 升序），具体格式由入站适配器的 `WriteCatalog` 决定（spec/08 §2.8）。
 
 ## 2. 错误码与错误格式
 
 ### 2.1 错误码（`internal/apperr`，已提供）
+
+HTTP 状态码由 `apperr.Code.HTTPStatus()` 统一决定；各协议的 `error.type` 由各自入站适配器的 `errorType` 表决定（下表是当前两个适配器的汇总，供对照）：
 
 | Code | HTTP | Anthropic `error.type` | OpenAI `error.type` |
 |:--|:-:|:--|:--|
@@ -73,30 +79,14 @@ RequestID → ClientIP → AccessLog → Recover → [模型端点与 /v1/models
 | `overloaded` | 503 | `overloaded_error` | `server_error` |
 | `timeout` | 504 | `timeout_error` | `server_error` |
 
-### 2.2 Anthropic 格式
+新增错误码属于 `apperr` 的变更（第 0 层），需要架构负责人批准，并同步更新所有入站适配器的映射表。
 
-```json
-{"type":"error","error":{"type":"rate_limit_error","message":"client rate limit exceeded"},"request_id":"req_..."}
-```
+### 2.2 写错误的约定
 
-### 2.3 OpenAI 格式
-
-```json
-{"error":{"message":"client rate limit exceeded","type":"rate_limit_error","param":null,"code":"rate_limited"}}
-```
-
-### 2.4 写错误的统一入口（已提供）
-
-```go
-// internal/apperr/http.go（放在第 0 层，httpapi、proxy、admin 都可以使用）
-func WriteHTTP(w http.ResponseWriter, format apperr.Format, requestID string, err error)
-// format 取 apperr.FormatAnthropic / apperr.FormatOpenAI / apperr.FormatAdmin；
-// httpapi.FormatForPath(path) 按路径给出数据面应使用的格式。
-```
-
-- `err` 不是 `*apperr.Error` 时按 `internal` 处理，消息固定为 `internal error`（不泄露内部错误文本）。
-- `RetryAfter > 0` 时写 `Retry-After` 头（秒，向上取整）。
-- 已经开始写响应体后**禁止**再调用 `WriteError`（流式场景改用 08 §6.4 的错误事件）。
+- 数据面：一律调用本请求所属协议的 `Ingress.WriteError`；它内部用 `apperr.WriteJSON` 写状态码与 `Retry-After`。
+- 管理面：`admin.writeError`，格式 `{"error":{"code","message"}}`。
+- 非业务错误先经 `apperr.Normalize` 变为 `internal`，消息固定为 `internal error`，不泄露内部错误文本。
+- 已经开始写响应体后**禁止**再写错误响应，流式场景改用 `Ingress.StreamError`（spec/08 §2.6、spec/13 §4.4）。
 
 ## 3. 令牌桶限流（`internal/ratelimit`，T04）
 
@@ -169,7 +159,7 @@ type KeyView struct {
     CreatedAt, UpdatedAt string
 }
 type UsageItem struct {
-    ClientID int64; Model string; Requests, InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens, CostNanoUSD int64
+    ClientID int64; Model string; Requests int64; Usage map[string]int64; CostNanoUSD int64
 }
 ```
 
@@ -202,11 +192,11 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | 编号 | 行为 |
 |:--|:--|
 | OVL-01 | 每个请求占用 1 个并发名额；当前在途数已达 `maxRequests` 时拒绝 |
-| OVL-02 | 每个请求按 `n = r.ContentLength` 占用请求体预算；`ContentLength < 0`（未知长度）或 `> maxSingleBody` 时按 `maxSingleBody` 占用；占用后总量会超过 `maxBodyBytes` 时拒绝。两种占用都用 **CAS 循环**，任一失败时已占用的部分必须归还 |
-| OVL-03 | 拒绝时返回 503 `overloaded`、`Retry-After: 1`，错误格式按 `FormatForPath`，并且**不读取请求体**；放行时在 `next` 返回后（`defer`）归还全部占用。流式请求的占用持续到流结束 |
+| OVL-02 | `buffered` 为 true 时，每个请求按 `n = r.ContentLength` 占用请求体预算；`ContentLength < 0`（未知长度）或 `> maxSingleBody` 时按 `maxSingleBody` 占用；占用后总量会超过 `maxBodyBytes` 时拒绝。`buffered` 为 false（流式上传、无请求体的路由）时不占请求体预算，只占并发名额。两种占用都用 **CAS 循环**，任一失败时已占用的部分必须归还 |
+| OVL-03 | 拒绝时返回 503 `overloaded`、`Retry-After: 1`，错误格式用传入的 `ew`，并且**不读取请求体**；放行时在 `next` 返回后（`defer`）归还全部占用。流式响应的占用持续到流结束 |
 | OVL-04 | `IPRateLimit`：`rpm <= 0` 直接放行；否则以 `"ip:" + clientip.FromContext(ctx).String()` 为键调用 `Limiter.Allow`，拒绝时 429 `rate_limited` 并带 `Retry-After` |
 | OVL-05 | 客户端 IP 为零值（无法解析）时以键 `"ip:unknown"` 计数，不放行也不报错 |
 
 ### 5.1 内存估算（写进部署文档，供用户调参）
 
-一个在途请求在网关中大约持有 3 份请求体（原文、解析出的顶层字段、改写后的请求体），因此最坏情况下请求体相关内存约为 `3 × max_buffered_body_bytes`。默认 512 MiB 预算对应约 1.5 GiB 峰值；内存较小的机器应调小 `max_buffered_body_bytes` 与 `max_request_body_bytes`。非流式响应另外最多缓冲 64 MiB / 请求（spec/08 §6.5）。
+一个在途请求在网关中大约持有 3 份请求体（原文、解析出的顶层字段、改写后的请求体），因此最坏情况下请求体相关内存约为 `3 × max_buffered_body_bytes`。默认 512 MiB 预算对应约 1.5 GiB 峰值；内存较小的机器应调小 `max_buffered_body_bytes` 与 `max_request_body_bytes`。缓冲响应另外最多缓冲 64 MiB / 请求（spec/13 §6）。流式上传（`BodyStream`）与字节流下载（`ResponseRaw`）边读边写，每个请求只占 32 KiB 级别的缓冲。

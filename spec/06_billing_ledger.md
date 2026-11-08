@@ -2,29 +2,44 @@
 
 代码位置：`internal/pricing`（已提供参考实现）、`internal/ledger`（接口已定义，实现为任务 T05/T06）。
 
-## 1. 金额单位
+## 1. 金额与计量单位
 
-- 所有金额是 `int64` 的 **nano-USD**：1 USD = 1,000,000,000。
-- 配置中的价格是 `float64` 的「USD / 百万 token」，加载时转换为 `int64` 的「nano-USD / 百万 token」：`round(price * 1e9)`。
-- **禁止**在成本计算中使用 `float64`。
+- 所有金额是 `int64` 的 **nano-USD**：1 USD = 1,000,000,000。**禁止**在成本计算中使用 `float64`。
+- 计费以**计量单位**为基础。单位是出站适配器定义的可计数量，名称满足 `^[a-z][a-z0-9_]{0,63}$`：
+
+| 单位 | 含义 | 典型协议 |
+|:--|:--|:--|
+| `input_tokens` | 不含缓存读写的普通输入 token（PRC-02） | 大模型 |
+| `output_tokens` | 输出 token | 大模型 |
+| `cache_read_tokens` / `cache_write_tokens` | 缓存命中 / 写入的输入 token | 大模型 |
+| `requests` | 调用次数 | 按次计费的 API |
+| 其他（`credits`、`pages`、`characters`、`seconds`……） | 由适配器在 spec/08 中定义 | 搜索、文档解析、语音…… |
+
+- 每个出站适配器用 `Egress.Units()` 声明它可能报告的单位；每个模型的价目表必须为这些单位全部定价（CORE-05）。
 
 ## 2. 成本计算（`pricing`，已提供）
 
 ```go
-type Price struct { InputPerMTok, OutputPerMTok, CacheReadPerMTok, CacheWritePerMTok int64 } // nano-USD / 百万 token
-type Usage struct { InputTokens, OutputTokens, CacheReadTokens, CacheWriteTokens int64 }
-func Cost(p Price, u Usage) int64
-func EstimateReserve(p Price, bodyBytes int, maxOutputTokens int64) int64
+type Usage map[string]int64                 // 单位 → 数量
+type Rate  struct { NanoUSD, Per int64 }     // 每 Per 个单位 NanoUSD
+type Price map[string]Rate                   // 单位 → 单价
+func ParseRate(s string) (Rate, error)       // "3/1M"、"0.008"、"1.5/1K"
+func Cost(p Price, u Usage) (nano int64, unpriced []string)
+func ReserveUsage(estimate, caps Usage) Usage
+func EstimateInputTokens(bodyBytes int) int64      // 大模型入站适配器用
+func EstimateOutputTokens(forwardedBytes int64) int64 // 大模型出站适配器用
 ```
 
 | 编号 | 规则 |
 |:--|:--|
-| PRC-01 | `Cost = ceil((In*Pin + Out*Pout + CR*Pcr + CW*Pcw) / 1_000_000)`，各项先累加再除，结果向上取整 |
-| PRC-02 | `Usage.InputTokens` 是**不含**缓存读写的普通输入 token（与 Anthropic 一致）。OpenAI 的 `prompt_tokens` 包含缓存命中部分，适配器必须先减去 `cached_tokens`（见 08 §5） |
-| PRC-03 | `EstimateReserve`：输入 token 估算为 `ceil(bodyBytes / 3)`（偏保守），按**输入单价**计；输出按 `maxOutputTokens × 输出单价`；不考虑缓存折扣 |
-| PRC-04 | 任一 token 数为负数时视为 0 |
+| PRC-01 | `Cost = ceil(Σ 用量 × NanoUSD / Per)`：各项**精确**累加（有理数）后整体向上取整；超过 int64 饱和为 `MaxInt64`；有用量但未定价的单位按 0 计并在 `unpriced` 中返回 |
+| PRC-02 | `input_tokens` 是**不含**缓存读写的普通输入 token（与 Anthropic 一致）。OpenAI 的 `prompt_tokens` 包含缓存命中部分，适配器必须先减去（spec/08 USE-04） |
+| PRC-03 | 预留用量 `ReserveUsage(env.Estimate, models[].reserve)`：Estimate 中有的单位取 `min(估计, reserve)`（reserve 中没有该单位则取估计）；Estimate 中**没有该键**、reserve 中有的单位取 reserve。即 `reserve` 既是上限也是默认值。Estimate 中**显式为 0** 的单位表示确定不会产生，不会被 reserve 补上 |
+| PRC-04 | 任一用量为负数时视为 0 |
+| PRC-05 | 价格字符串 `USD[/PER]`：USD 为非负十进制，最多 9 位小数（精确换算为 nano-USD，不经过浮点）；PER 为正整数，可带 `K`（×1000）或 `M`（×1,000,000）后缀，缺省为 1 |
 
-`maxOutputTokens` 的取值（由 `proxy` 计算，LED-01）：请求体中 `max_tokens`（Anthropic）或 `max_completion_tokens` / `max_tokens`（OpenAI）存在且 > 0 时取它与模型 `max_output_tokens` 的较小值；否则取 `min(limits.default_max_output_tokens, 模型 max_output_tokens)`。
+例：`claude-sonnet` 配置 `price: {input_tokens: "3/1M", output_tokens: "15/1M", ...}`、`reserve: {output_tokens: 64000}`；请求 `max_tokens: 1024`、请求体 3000 字节 → Estimate `{input_tokens: 1000, output_tokens: 1024}` → 预留 `1000 × 3e9 / 1e6 + 1024 × 15e9 / 1e6 = 3,000,000 + 15,360,000 = 18,360,000` nano-USD。
+`tavily-search` 配置 `price: {credits: "0.008"}`、`reserve: {credits: 2}`；请求未声明深度 → Estimate 为空 → 预留 2 credits = 16,000,000 nano。
 
 ## 3. 账本接口（`internal/ledger/ledger.go`，已提供签名）
 
@@ -60,7 +75,7 @@ available  = quota - spent - reserved
 
 | 编号 | 方法 | 行为 |
 |:--|:--|:--|
-| LED-01 | — | 预留金额由 `proxy` 用 `pricing.EstimateReserve` 计算，`amount <= 0` 时按 1 处理（保证每个请求都有预留记录） |
+| LED-01 | — | 预留金额由 `core` 计算：`pricing.Cost(price, pricing.ReserveUsage(env.Estimate, reserve))`，`amount <= 0` 时按 1 处理（保证每个请求都有预留记录） |
 | LED-02 | `Reserve` | 账户不存在 → `apperr.CodeUnauthenticated`（客户端刚被删除） |
 | LED-03 | `Reserve` | 非 unlimited 且 `spent + reserved + amount > quota` → `apperr.CodeInsufficientQuota`，**不修改任何状态** |
 | LED-04 | `Reserve` | 事件队列长度 ≥ `capacity × admission_high_watermark` → `apperr.CodeOverloaded`（计费持久化跟不上时拒绝新请求，而不是丢事件） |
@@ -68,19 +83,19 @@ available  = quota - spent - reserved
 | LED-06 | `Settle` | `reserved -= r.Amount`；`spent += ev.CostNanoUSD`；把 `ev` 发送到事件队列。**允许**实际成本大于预留（透支），这是预期行为：上游已经计费，不能拒绝 |
 | LED-07 | `Settle` | 事件队列满时**阻塞发送**（不丢弃）。理由：此时客户端响应已结束，阻塞只影响该请求 goroutine 的退出；LED-04 已在准入处限流 |
 | LED-08 | `Settle` / `Release` | 同一个 `Reservation` 只能结束一次：第二次调用 `Settle` 返回 `ErrAlreadyFinished`，第二次 `Release` 什么也不做。用 `atomic.Bool` 实现 |
-| LED-09 | `Release` | `reserved -= r.Amount`，不产生事件。**只在确定上游没有产生费用时调用**：上游请求从未发出、或上游在返回任何内容前返回了 4xx/5xx 错误 |
+| LED-09 | `Release` | `reserved -= r.Amount`，不产生事件。**只在确定上游没有产生费用时调用**：上游请求从未发出、或每次尝试都在得到可转发响应之前失败（`Egress.Do` 返回错误） |
 | LED-10 | `UpsertAccount` | 更新 quota/unlimited；`spent` 与 `reserved` 保持不变；账户不存在则新建（`spent` 取参数值） |
 | LED-11 | `Settle` | `ev.CostNanoUSD < 0` 视为编程错误，返回 `apperr.CodeInternal` 且不修改状态 |
 
-### 3.3 什么时候 Settle，什么时候 Release（`proxy` 中实现，LIFE-15）
+### 3.3 什么时候 Settle，什么时候 Release（`core` 中实现，spec/13 §2.1）
 
-| 情况 | 调用 |
-|:--|:--|
-| 上游 2xx 且正常结束，拿到上游 usage | `Settle`，`usage_source = "upstream"` |
-| 上游 2xx 但流中途断开 / 客户端取消，已拿到部分 usage（如 Anthropic 的 `message_start`） | `Settle`，用已拿到的 usage；若输出 token 未知，按已转发的文本字节数 `ceil(bytes/4)` 估算，`usage_source = "estimated"` |
-| 上游 2xx 但完全没有 usage 信息 | `Settle`，输入按 PRC-03 估算、输出按已转发字节估算，`usage_source = "estimated"` |
-| 所有尝试都在收到 2xx 之前失败 | `Release` |
-| 鉴权、限流、模型校验等在 Reserve 之前失败 | 不需要（还没有预留） |
+| 情况 | 调用 | 结算用量 / `usage_source` |
+|:--|:--|:--|
+| `Egress.Do` 返回了 `*Response`，Meter 来源 `UsageUpstream` | `Settle` | 上游用量（可以为空 = 不计费）/ `upstream` |
+| 同上，来源 `UsageEstimated`（如流中断，适配器按已转发文本估算了输出） | `Settle` | 适配器给出的单位 + 其余单位取预留用量 / `estimated` |
+| 同上，来源 `UsageNone`（适配器拿不到任何用量） | `Settle` | 预留用量 / `estimated` |
+| 所有尝试都在得到 `*Response` 之前失败 | `Release` | — |
+| 鉴权、限流、服务校验等在 Reserve 之前失败 | 不需要（还没有预留） | — |
 
 ## 4. 计费事件刷盘（`ledger.Flusher`，任务 T06）
 

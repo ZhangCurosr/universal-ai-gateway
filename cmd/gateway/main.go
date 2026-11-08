@@ -22,6 +22,11 @@ func main() {
 
 // realMain 解析子命令并返回退出码，便于测试。
 func realMain(args []string, stdout, stderr io.Writer) int {
+	return realMainIO(args, os.Stdin, stdout, stderr, os.Getenv)
+}
+
+// realMainIO 与 realMain 相同，但标准输入与环境变量也可注入（客户端子命令的测试使用）。
+func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
 	if len(args) == 0 {
 		usage(stderr)
 		return 2
@@ -37,6 +42,17 @@ func realMain(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintln(stdout, "config ok")
 		return 0
+	case "tools", "call", "mcp":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		switch args[0] {
+		case "tools":
+			return cmdTools(ctx, args[1:], getenv, stdout, stderr)
+		case "call":
+			return cmdCall(ctx, args[1:], getenv, stdin, stdout, stderr)
+		default:
+			return cmdMCP(ctx, getenv, stdin, stdout, stderr)
+		}
 	case "serve":
 		cfg, code := loadConfig(args[1:], stderr)
 		if cfg == nil {
@@ -74,5 +90,10 @@ func usage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
   gateway serve        --config <path>   start the gateway
   gateway check-config --config <path>   validate the config file
-  gateway version                        print version`)
+  gateway version                        print version
+
+client commands (talk to a running gateway; env UAIG_URL, UAIG_TOKEN):
+  gateway tools [--json]                       list the tools available to this token
+  gateway call <tool> [--args JSON|-] [--json] call a tool and print its result
+  gateway mcp                                  run an MCP server on stdio (for Claude Code, Cursor, ...)`)
 }

@@ -35,12 +35,18 @@
 7. 不确定的地方**不要猜**。规格没写清楚的行为，选择最保守的做法（拒绝请求、返回错误、不扣费），
    并在代码中写 `// SPEC-GAP(Txx): 说明`，在交付说明中列出。
 
+### 2.1 架构底线：微内核
+
+- **内核（`internal/core`）与契约（`internal/protocol`）是冻结的**：实现任务中不得修改它们的导出 API（spec/13 §7）。
+- **协议知识只能出现在适配器里**（`internal/adapter/<name>`）：内核、路由、管理面中不得出现协议名、请求体字段名或 `switch protocol`，也不得出现 token 专用逻辑（计费只认计量单位，spec/06 §1）。
+- **新增协议不应修改内核**：如果你觉得必须改，说明契约不够用——停下来报告，不要绕过（spec/08 §6）。
+
 ## 3. 绝对禁止（任何一条违反都要返工）
 
 | # | 禁止 | 原因 |
 |:-:|:--|:--|
 | 1 | 在日志、错误信息、panic 中输出上游 API Key、客户端 Token、主密钥的明文 | 凭据泄露。需要展示时用 `obs.MaskSecret` |
-| 2 | 在数据面请求处理路径（`internal/proxy`、`internal/httpapi` 的数据面 handler）中直接访问数据库 | 热路径不得做磁盘 I/O，见 spec/01 §4 |
+| 2 | 在数据面请求处理路径（`internal/core`、`internal/httpapi` 的数据面 handler）中直接访问数据库 | 热路径不得做磁盘 I/O，见 spec/01 §4 |
 | 3 | 用 `math/rand` 生成 Token、密钥、nonce | 必须用 `crypto/rand` |
 | 4 | 丢弃计费事件（`ledger` 中的 usage event） | 审计日志可以丢，计费事件不可以丢，见 spec/06 |
 | 5 | 已经向客户端写出响应字节之后再重试上游或切换 Key | 会导致客户端收到拼接错乱的流，见 spec/07 §6 |
@@ -48,7 +54,7 @@
 | 7 | 用字符串拼接构造 SQL（含 `fmt.Sprintf` 拼参数） | SQL 注入；一律用 `?` 占位符 |
 | 8 | 忽略 `error` 返回值（`_ = f()` 只允许用于 `Close`/`Rollback` 这类清理调用，且需注释） | 静默失败 |
 | 9 | 在库代码中调用 `os.Exit`、`log.Fatal`、`panic`（`cmd/` 与不可能发生的编程错误除外） | 进程意外退出 |
-| 10 | 修改 `internal/archtest` 中的分层规则来让自己的代码通过 | 分层规则是架构约束 |
+| 10 | 修改 `internal/archtest` 中的分层规则或 `internal/adapter/adaptertest` 套件来让自己的代码通过 | 它们是架构约束 |
 
 ## 4. 完成的定义（Definition of Done）
 

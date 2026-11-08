@@ -7,6 +7,7 @@ import (
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
 )
 
@@ -24,7 +25,7 @@ func TestPrepareBodyInjectsUsage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			out, injected, err := Adapter{}.PrepareBody([]byte(tt.body), "deepseek-chat", true)
+			out, injected, err := prepareBody([]byte(tt.body), "deepseek-chat", true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -40,7 +41,7 @@ func TestPrepareBodyInjectsUsage(t *testing.T) {
 		})
 	}
 	// 原 stream_options 中的其他字段必须保留
-	out, _, _ := Adapter{}.PrepareBody([]byte(tests[1].body), "m", true)
+	out, _, _ := prepareBody([]byte(tests[1].body), "m", true)
 	if v, ok := jsonx.GetInt64(out, "stream_options", "x"); !ok || v != 1 {
 		t.Fatalf("stream_options.x lost: %s", out)
 	}
@@ -48,7 +49,7 @@ func TestPrepareBodyInjectsUsage(t *testing.T) {
 
 func TestPrepareBodyNonStreamNoInject(t *testing.T) {
 	t.Skip("TODO(T09B)")
-	out, injected, err := Adapter{}.PrepareBody([]byte(`{"model":"a","messages":[]}`), "b", false)
+	out, injected, err := prepareBody([]byte(`{"model":"a","messages":[]}`), "b", false)
 	if err != nil || injected {
 		t.Fatalf("injected=%v err=%v", injected, err)
 	}
@@ -63,7 +64,7 @@ func TestNewRequestHeaders(t *testing.T) {
 	in := http.Header{}
 	in.Set("Authorization", "Bearer uai_live_client")
 	in.Set("OpenAI-Organization", "org-x")
-	req, err := Adapter{}.NewRequest(context.Background(), "https://api.deepseek.com", []byte("sk-up"), []byte(`{}`), in)
+	req, err := Egress{}.newRequest(context.Background(), "https://api.deepseek.com", []byte("sk-up"), []byte(`{}`), in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,18 +88,18 @@ func TestUsageCachedTokens(t *testing.T) {
 		want pricing.Usage
 	}{
 		{"openai", `{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":60}}}`,
-			pricing.Usage{InputTokens: 40, OutputTokens: 20, CacheReadTokens: 60}},
+			pricing.Usage{pricing.UnitInputTokens: 40, pricing.UnitOutputTokens: 20, pricing.UnitCacheReadTokens: 60}},
 		{"deepseek", `{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_cache_hit_tokens":30,"prompt_cache_miss_tokens":70}}`,
-			pricing.Usage{InputTokens: 70, OutputTokens: 20, CacheReadTokens: 30}},
-		{"no cache", `{"usage":{"prompt_tokens":10,"completion_tokens":2}}`, pricing.Usage{InputTokens: 10, OutputTokens: 2}},
+			pricing.Usage{pricing.UnitInputTokens: 70, pricing.UnitOutputTokens: 20, pricing.UnitCacheReadTokens: 30}},
+		{"no cache", `{"usage":{"prompt_tokens":10,"completion_tokens":2}}`, pricing.Usage{pricing.UnitInputTokens: 10, pricing.UnitOutputTokens: 2}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tap := Adapter{}.NewUsageTap()
-			tap.ObserveBody([]byte(tt.body))
-			got, ok := tap.Usage()
-			if !ok || got != tt.want {
-				t.Fatalf("Usage() = %+v, %v; want %+v", got, ok, tt.want)
+			tap := &meter{}
+			tap.observeBody([]byte(tt.body))
+			got, src := tap.Usage()
+			if src != protocol.UsageUpstream || !got.Equal(tt.want) {
+				t.Fatalf("Usage() = %v, %v; want %v", got, src, tt.want)
 			}
 		})
 	}
@@ -107,16 +108,26 @@ func TestUsageCachedTokens(t *testing.T) {
 // USE-05、USE-06：流式，最后一个 chunk 带 usage
 func TestUsageStream(t *testing.T) {
 	t.Skip("TODO(T09B)")
-	tap := Adapter{}.NewUsageTap()
+	tap := &meter{}
 	for _, d := range []string{
 		`{"choices":[{"index":0,"delta":{"content":"hi"}}],"usage":null}`,
 		`{"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":3}}`,
 		`[DONE]`,
 	} {
-		tap.ObserveEvent(sse.Event{Data: []byte(d)})
+		tap.observeEvent(sse.Event{Data: []byte(d)})
 	}
-	if got, ok := tap.Usage(); !ok || got != (pricing.Usage{InputTokens: 9, OutputTokens: 3}) {
-		t.Fatalf("Usage() = %+v, %v", got, ok)
+	if got, src := tap.Usage(); src != protocol.UsageUpstream || !got.Equal(pricing.Usage{pricing.UnitInputTokens: 9, pricing.UnitOutputTokens: 3}) {
+		t.Fatalf("Usage() = %v, %v", got, src)
+	}
+}
+
+// USE-07：没有 usage 时按已观察到的文本字节估算输出
+func TestMeterEstimatesOutputWithoutUsage(t *testing.T) {
+	t.Skip("TODO(T09B)")
+	tap := &meter{}
+	tap.observeEvent(sse.Event{Data: []byte(`{"choices":[{"index":0,"delta":{"content":"12345"}}],"usage":null}`)})
+	if got, src := tap.Usage(); src != protocol.UsageEstimated || got.Get(pricing.UnitOutputTokens) != 2 {
+		t.Fatalf("Usage() = %v, %v; want output 2 (ceil(5/4)), estimated", got, src)
 	}
 }
 
@@ -126,14 +137,13 @@ func TestShouldForwardFiltersInjectedUsageChunk(t *testing.T) {
 	usageChunk := sse.Event{Data: []byte(`{"id":"x","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)}
 	normal := sse.Event{Data: []byte(`{"id":"x","choices":[{"index":0,"delta":{"content":"a"}}],"usage":null}`)}
 	done := sse.Event{Data: []byte(`[DONE]`)}
-	a := Adapter{}
-	if a.ShouldForward(usageChunk, true) {
+	if shouldForward(usageChunk, true) {
 		t.Error("usage-only chunk forwarded although usage was injected by gateway")
 	}
-	if !a.ShouldForward(usageChunk, false) {
+	if !shouldForward(usageChunk, false) {
 		t.Error("usage-only chunk dropped although client requested usage")
 	}
-	if !a.ShouldForward(normal, true) || !a.ShouldForward(done, true) {
+	if !shouldForward(normal, true) || !shouldForward(done, true) {
 		t.Error("normal chunk or [DONE] dropped")
 	}
 }

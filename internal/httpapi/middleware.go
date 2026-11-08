@@ -1,11 +1,13 @@
 // Package httpapi 实现数据面 HTTP 路由与中间件（spec/09 §1，任务卡 T11）。
+//
+// 本包不认识任何具体协议：路由来自 protocol.Registry 中各入站适配器声明的 Routes()，
+// 错误格式由对应入站适配器的 WriteError 决定。
 package httpapi
 
 import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"strings"
 	"sync/atomic"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
@@ -15,12 +17,11 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ratelimit"
 )
 
-// FormatForPath 按路径决定错误格式：/v1/messages 用 Anthropic，其余用 OpenAI（spec/09 §1.1）。
-func FormatForPath(path string) apperr.Format {
-	if strings.HasPrefix(path, "/v1/messages") {
-		return apperr.FormatAnthropic
-	}
-	return apperr.FormatOpenAI
+// ErrorWriter 按某个协议的格式写错误响应；通常就是 protocol.Ingress.WriteError。
+type ErrorWriter func(w http.ResponseWriter, requestID string, err *apperr.Error)
+
+func writeErr(w http.ResponseWriter, r *http.Request, ew ErrorWriter, err error) {
+	ew(w, obs.RequestIDFrom(r.Context()), apperr.Normalize(err))
 }
 
 // RequestID 实现 MW-01：总是生成新的请求 ID，忽略客户端传入的同名头。
@@ -42,7 +43,7 @@ func ClientIP(trusted clientip.Trusted) func(http.Handler) http.Handler {
 }
 
 // IPRateLimit 实现 MW-07：鉴权之前按来源 IP 限流（spec/09 §5，OVL-04、OVL-05）。rpm <= 0 时直接放行。
-func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler {
+func IPRateLimit(l *ratelimit.Limiter, rpm int, ew ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// TODO(T11): 键为 "ip:" + clientip.FromContext(ctx).String()；拒绝时 429 rate_limited + Retry-After。
 		return next
@@ -64,10 +65,13 @@ func NewOverloadGuard(maxRequests int, maxBodyBytes, maxSingleBody int64) *Overl
 	return &OverloadGuard{maxRequests: int64(maxRequests), maxBodyBytes: maxBodyBytes, maxSingleBody: maxSingleBody}
 }
 
-// Middleware 实现 MW-08：占用失败返回 503 overloaded（Retry-After: 1），请求结束后归还。
-func (g *OverloadGuard) Middleware(next http.Handler) http.Handler {
-	// TODO(T11): 按 OVL-01 ~ OVL-03 实现；用 CAS 循环占用，禁止「先检查再 Add」。
-	return next
+// Middleware 实现 MW-08：占用失败用 ew 写 503 overloaded（Retry-After: 1），请求结束后归还。
+// buffered 为 false 时（BodyStream / BodyNone 路由，请求体不进内存）只占并发名额，不占请求体预算（OVL-02）。
+func (g *OverloadGuard) Middleware(ew ErrorWriter, buffered bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		// TODO(T11): 按 OVL-01 ~ OVL-03 实现；用 CAS 循环占用，禁止「先检查再 Add」。
+		return next
+	}
 }
 
 // InFlight 返回当前占用的请求数与请求体字节数（供测试与管理 API 展示）。
@@ -75,8 +79,8 @@ func (g *OverloadGuard) InFlight() (requests, bodyBytes int64) {
 	return g.inFlight.Load(), g.bodyBytes.Load()
 }
 
-// Recover 实现 MW-03。
-func Recover(log *slog.Logger) func(http.Handler) http.Handler {
+// Recover 实现 MW-03。ew 是兜底协议的错误格式（全局中间件此时还不知道请求属于哪个协议）。
+func Recover(log *slog.Logger, ew ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tw := &trackingWriter{ResponseWriter: w}
@@ -91,8 +95,7 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 				log.Error("panic in handler", "request_id", obs.RequestIDFrom(r.Context()),
 					"panic", v, "stack", string(debug.Stack()))
 				if !tw.wroteHeader {
-					apperr.WriteHTTP(tw, FormatForPath(r.URL.Path), obs.RequestIDFrom(r.Context()),
-						apperr.New(apperr.CodeInternal, "internal error"))
+					writeErr(tw, r, ew, apperr.New(apperr.CodeInternal, "internal error"))
 				}
 			}()
 			next.ServeHTTP(tw, r)
@@ -109,17 +112,17 @@ func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 }
 
 // Authenticate 实现 MW-04。
-func Authenticate(ix *auth.Index, pepper []byte) func(http.Handler) http.Handler {
+func Authenticate(ix *auth.Index, pepper []byte, ew ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// TODO(T11): ExtractCredential → HashToken → Lookup；401 / 403；auth.WithPrincipal。
-			apperr.WriteHTTP(w, FormatForPath(r.URL.Path), obs.RequestIDFrom(r.Context()), apperr.NotImplemented("T11"))
+			writeErr(w, r, ew, apperr.NotImplemented("T11"))
 		})
 	}
 }
 
 // RateLimit 实现 MW-05。必须位于 Authenticate 之后。
-func RateLimit(l *ratelimit.Limiter) func(http.Handler) http.Handler {
+func RateLimit(l *ratelimit.Limiter, ew ErrorWriter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		// TODO(T11)
 		return next

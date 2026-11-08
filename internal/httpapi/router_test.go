@@ -6,9 +6,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/anthropic"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openai"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/core"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ratelimit"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
@@ -20,15 +25,22 @@ const (
 	disabledToken = auth.TokenPrefix + "disabled"
 )
 
-// newTestRouter 组装一个不带上游的路由：Proxy 为 nil，所以只能测试中间件、/v1/models、/healthz。
+// newTestRouter 组装一个不带上游的路由：内核只用于模型列表，所以只能测试中间件、/v1/models、/healthz。
+// 注册真实的 anthropic 与 openai 入站适配器（测试文件可以导入具体适配器）。
 func newTestRouter(t *testing.T, rpm int) http.Handler {
+	t.Helper()
+	return NewDataRouter(testDataDeps(t, rpm))
+}
+
+// testDataDeps 组装 newTestRouter 使用的依赖，供需要额外字段（如 MCP）的测试修改后再构造路由。
+func testDataDeps(t *testing.T, rpm int) DataDeps {
 	t.Helper()
 	cfg, err := config.Parse([]byte(`
 server: { data_dir: ./data, master_key_file: ./secrets/master.key }
 pools: [ { name: p, protocol: anthropic, base_url: "https://example.com" } ]
 models:
-  - { name: zeta, pool: p, upstream_model: z, max_output_tokens: 10 }
-  - { name: alpha, pool: p, upstream_model: a, max_output_tokens: 10 }
+  - { name: zeta, pool: p, upstream_model: z, price: &free { input_tokens: "0", output_tokens: "0", cache_read_tokens: "0", cache_write_tokens: "0" } }
+  - { name: alpha, pool: p, upstream_model: a, price: *free }
 `))
 	if err != nil {
 		t.Fatal(err)
@@ -38,8 +50,22 @@ models:
 		{ID: 1, TokenHash: auth.HashToken(pepper, userToken), Role: store.RoleUser, RPMLimit: rpm, AllowedModels: []string{"alpha"}},
 		{ID: 2, TokenHash: auth.HashToken(pepper, disabledToken), Role: store.RoleUser, Disabled: true},
 	})
-	return NewDataRouter(DataDeps{Config: cfg, Index: ix, Pepper: pepper, Limiter: ratelimit.New(nil), IPLimiter: ratelimit.New(nil),
-		Overload: NewOverloadGuard(16, 1<<30, 32<<20), Logger: obs.Discard()})
+	reg := protocol.NewRegistry()
+	if err := anthropic.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := openai.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	c, err := core.New(core.Deps{Config: cfg, Registry: reg, Logger: obs.Discard()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return DataDeps{Config: cfg, Core: c, Registry: reg, Index: ix, Pepper: pepper, Limiter: ratelimit.New(nil),
+		IPLimiter: ratelimit.New(nil), Overload: NewOverloadGuard(16, 1<<30, 32<<20), Logger: obs.Discard()}
 }
 
 func serve(h http.Handler, method, path, token string, header map[string]string) *httptest.ResponseRecorder {
@@ -56,7 +82,6 @@ func serve(h http.Handler, method, path, token string, header map[string]string)
 }
 
 func TestHealthzNoAuth(t *testing.T) {
-	t.Skip("TODO(T11)")
 	rec := serve(newTestRouter(t, 0), http.MethodGet, "/healthz", "", nil)
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
@@ -124,5 +149,43 @@ func TestUnknownPath404(t *testing.T) {
 	rec := serve(newTestRouter(t, 0), http.MethodGet, "/nope", "", nil)
 	if rec.Code != 404 {
 		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// RTE-04：未知路径用兜底协议（OpenAI）格式返回 404
+func TestUnknownPathUsesFallbackFormat(t *testing.T) {
+	rec := serve(newTestRouter(t, 0), http.MethodGet, "/nope", "", nil)
+	if rec.Code != 404 || !strings.Contains(rec.Body.String(), `"code":"not_found"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// RTE-05：未配置 MCP 时 /mcp 不存在（已可运行）
+func TestMCPNotMountedWhenNil(t *testing.T) {
+	if rec := serve(newTestRouter(t, 0), http.MethodPost, "/mcp", userToken, nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+// RTE-05：/mcp 经过鉴权，错误格式用 MCPErrorWriter；鉴权后 Principal 可用
+func TestMCPMountedBehindAuth(t *testing.T) {
+	t.Skip("TODO(T11)")
+	d := testDataDeps(t, 0)
+	d.MCP = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p, ok := auth.PrincipalFrom(r.Context()); !ok || p.ClientID != 1 {
+			t.Errorf("principal = %+v, %v", p, ok)
+		}
+		w.WriteHeader(http.StatusAccepted)
+	})
+	d.MCPErrorWriter = func(w http.ResponseWriter, _ string, err *apperr.Error) {
+		w.Header().Set("X-Mcp-Error", "1")
+		apperr.WriteJSON(w, err, map[string]string{"m": err.Message})
+	}
+	h := NewDataRouter(d)
+	if rec := serve(h, http.MethodPost, "/mcp", "", nil); rec.Code != 401 || rec.Header().Get("X-Mcp-Error") != "1" {
+		t.Fatalf("no token: status=%d header=%v", rec.Code, rec.Header())
+	}
+	if rec := serve(h, http.MethodPost, "/mcp", userToken, nil); rec.Code != http.StatusAccepted {
+		t.Fatalf("with token: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

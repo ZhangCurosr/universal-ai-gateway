@@ -9,8 +9,9 @@ import (
 )
 
 func ev(reqID string, client int64, model string, cost int64, at time.Time) store.UsageEvent {
-	return store.UsageEvent{RequestID: reqID, ClientID: client, KeyID: 1, Model: model,
-		InputTokens: 10, OutputTokens: 5, CostNanoUSD: cost, UsageSource: store.UsageSourceUpstream, CreatedAt: at}
+	return store.UsageEvent{RequestID: reqID, ClientID: client, KeyID: 1, Model: model, Op: "call",
+		Usage: map[string]int64{"input_tokens": 10, "output_tokens": 5}, CostNanoUSD: cost,
+		UsageSource: store.UsageSourceUpstream, CreatedAt: at}
 }
 
 // STO-10：request_id 幂等
@@ -57,7 +58,8 @@ func TestQueryUsage(t *testing.T) {
 	_ = db.InsertUsageEvents(ctx, []store.UsageEvent{
 		ev("a", 1, "m1", 10, t0),
 		ev("b", 1, "m1", 10, t0.Add(time.Minute)),
-		ev("c", 1, "m2", 7, t0.Add(time.Minute)),
+		{RequestID: "c", ClientID: 1, KeyID: 1, Model: "m2", Op: "search", Usage: map[string]int64{"credits": 2},
+			CostNanoUSD: 7, UsageSource: store.UsageSourceUpstream, CreatedAt: t0.Add(time.Minute)},
 		ev("d", 2, "m1", 99, t0.Add(time.Hour)), // 恰好等于 To，不计入
 	})
 	got, err := db.QueryUsage(ctx, store.UsageQuery{From: t0, To: t0.Add(time.Hour)})
@@ -67,10 +69,11 @@ func TestQueryUsage(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("QueryUsage() = %+v, want 2 groups", got)
 	}
-	if got[0].Model != "m1" || got[0].Requests != 2 || got[0].CostNanoUSD != 20 || got[0].InputTokens != 20 {
+	if got[0].Model != "m1" || got[0].Requests != 2 || got[0].CostNanoUSD != 20 ||
+		got[0].Usage["input_tokens"] != 20 || got[0].Usage["output_tokens"] != 10 || len(got[0].Usage) != 2 {
 		t.Errorf("group 0 = %+v", got[0])
 	}
-	if got[1].Model != "m2" || got[1].Requests != 1 {
+	if got[1].Model != "m2" || got[1].Requests != 1 || got[1].Usage["credits"] != 2 || len(got[1].Usage) != 1 {
 		t.Errorf("group 1 = %+v", got[1])
 	}
 }

@@ -13,7 +13,7 @@
 
 1. [评审结论速览（Top 7）](#1-评审结论速览top-7)
 2. [问题清单（按严重度分级）](#2-问题清单按严重度分级)
-3. [修订后的架构决策（ADR-01 ~ ADR-11）](#3-修订后的架构决策adr-01--adr-11)
+3. [修订后的架构决策（ADR-01 ~ ADR-14）](#3-修订后的架构决策adr-01--adr-14)
 4. [修订后的请求生命周期](#4-修订后的请求生命周期)
 5. [本次已同步修改的原文内容](#5-本次已同步修改的原文内容)
 6. [遗留待办](#6-遗留待办)
@@ -88,7 +88,7 @@
 
 ---
 
-## 3. 修订后的架构决策（ADR-01 ~ ADR-11）
+## 3. 修订后的架构决策（ADR-01 ~ ADR-14）
 
 ### ADR-01：部署形态分两档，存储与账本通过接口隔离
 
@@ -300,6 +300,33 @@ CREATE INDEX IF NOT EXISTS idx_ledger_client_time ON usage_ledger(client_id, cre
 - 订阅账号（Claude Pro/Max、ChatGPT Plus 等）的 OAuth 逆向池化、uTLS 伪造 Node.js/Chrome 的 JA3/JA4 指纹、住宅代理 1:1 绑定以规避风控，均违反上游服务条款，存在账号封禁与法律风险，**不进入本项目目标架构**。
 - 01 中对 sub2api 的分析保留为「竞品调研」，但其 §6「逆向与防封对抗层」不再作为设计输入。
 - 资源类型保留：`DirectKey`、云厂商托管（Bedrock / Vertex / Azure）、企业授权的服务账号、自托管端点。`Smart`/`Pace` 算法仍可用于**有窗口配额的合法凭据**（如按日/按月预算的企业 Key）。
+
+### ADR-12：微内核 —— 输入端、输出端可插拔，内核协议无关
+
+- **背景**：输入协议与输出厂商会持续增加，内核如果认识具体协议，每加一个协议都要改内核，稳定性无法保证。
+- **决策**：契约集中在冻结的 `internal/protocol`（Ingress / Egress / Translator / Registry）；具体协议放在 `internal/adapter/<name>`，只由 `cmd/gateway/adapters.go` 注册；内核 `internal/core` 不出现协议名与请求体字段。所有适配器必须通过同一套一致性测试 `adaptertest`；archtest 的 ARCH-07 / ARCH-08 强制依赖方向。
+- **后果**：新增协议 = 新包 + 一行注册，不改内核；契约变更必须走 ADR（spec/13 §7）。
+
+### ADR-13：契约泛化到非大模型 API
+
+- **背景**：ADR-12 的第一版契约仍隐含大模型假设——请求必有 `model`、每个协议恰好一个端点、请求体整体读入内存、一次尝试只调用一次上游、响应只有 JSON / SSE、按 4 种 token 计费。搜索 API（Tavily）、文档解析 API（MinerU）等无法接入。
+- **决策**：
+  1. 入站：一个协议可声明任意多个调用端点，每个是一个操作（`Route.Op`）；请求体分缓冲 / 流式 / 无三种模式；`Envelope.Model` 改称「服务名」，可来自请求、请求头或适配器常量；适配器提取的参数放 `Envelope.Params`。
+  2. 计费：`pricing.Usage` 改为「计量单位 → 数量」的 map，价目表为「单位 → USD/PER」；预留用量 = 请求估计 + 模型 `reserve`（上限兼默认值）。出站适配器声明 `Units()`，启动时校验价目表完整。存储改为 `usage` JSON 列。
+  3. 出站：`Egress` 收敛为 `Prepare`（每请求一次）+ `Do`（每次尝试一次，可含多次上游调用）；`Do` 返回三种形态的 `Response`（缓冲体 / SSE 事件流 / 原样字节流）与 `Meter`（用量 + 流中错误），失败返回 `AttemptError` 供内核决定重试。
+  4. 异步任务：`Response.Pins` + `AffinityHint{Strict}` 把任务 ID 固定到创建它的 Key；严格亲和未命中返回 404，不换 Key。
+  5. 公共 HTTP 细节（错误分类、错误体截断、限长读取、SSE 包装）放进 `protocol/httpx.go`，适配器不再各写一遍。
+- **验证**：用临时的搜索适配器（多端点、按 credits 计费）与文档解析适配器（流式上传、同步封装轮询、任务固定、字节流下载）跑通一致性套件，并确认套件能抓出凭据泄露；内核测试中保留一个测试专用的非大模型协议 `jobs`。
+- **后果（ADR-13）**：大模型适配器的公开方法变少（`PrepareBody` / `NewRequest` / `UsageTap` / `ShouldForward` 变为包内函数），其规则不变；`limits.default_max_output_tokens` 与 `models[].max_output_tokens` 由 `models[].reserve` 取代；价格配置由浮点「USD/百万 token」改为字符串 `"3/1M"`，精确换算、不经过浮点。
+
+### ADR-14：OpenAI Responses 协议与「供 AI 调用」的出口（MCP / 命令行）
+
+- **背景**：Codex CLI 等新客户端只说 Responses API；AI 智能体希望把网关接入的服务（搜索、文档解析、其他模型）当作工具调用，而不是自己实现每个厂商的 HTTP 协议。
+- **决策**：
+  1. 新增 `openai_responses` 适配器。Responses 是有状态的：`store` 缺省为 true 时，响应 ID 通过 `Response.Pins` 固定到创建它的 Key；`previous_response_id` 与按 ID 的操作使用严格亲和。按 ID 的操作不带服务名，契约允许「严格亲和 + 空服务名」，内核用固定记录所在的池确定路由（CORE-11，调度器新增 `PinnedPool`）。
+  2. 工具契约 `protocol.ToolSource` 是入站适配器的**可选**接口：工具调用被转换为对本协议调用端点的内部请求，交给内核。因此 MCP / 命令行与协议端点共用鉴权、白名单、计费、选 Key 与重试，工具层不需要任何协议知识，协议也不需要知道 MCP。
+  3. `internal/mcp` 实现无状态的 Streamable HTTP MCP 服务端（`/mcp`，JSON 回复、不签发会话），以及客户端与 stdio 桥；`gateway mcp` / `tools` / `call` 子命令只是网关的 HTTP 客户端，不持有上游 Key。
+- **后果**：新增协议若想被 AI 当作工具使用，只需在适配器里实现 `ToolSource`；MCP 层、内核都不改。MCP 的 OAuth 授权与服务端推送不在 M1 范围内。
 
 ---
 

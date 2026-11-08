@@ -20,7 +20,8 @@ models:
   - name: m1
     pool: p1
     upstream_model: up-m1
-    max_output_tokens: 1000
+    price: { input_tokens: "3/1M", output_tokens: "15/1M" }
+    reserve: { output_tokens: 1000 }
 `
 
 func TestParseAppliesDefaults(t *testing.T) {
@@ -35,8 +36,18 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if p.Strategy != StrategyLeastInflight || p.MaxAttempts != 3 || p.AffinityTTL != 5*time.Minute {
 		t.Errorf("pool defaults not applied: %+v", p)
 	}
-	if p.Timeouts.NonStreamTotal != 10*time.Minute {
-		t.Errorf("NonStreamTotal = %v, want 10m", p.Timeouts.NonStreamTotal)
+	if p.Timeouts.NonStreamTotal != 10*time.Minute || p.PinTTL != 24*time.Hour {
+		t.Errorf("NonStreamTotal = %v, PinTTL = %v; want 10m, 24h", p.Timeouts.NonStreamTotal, p.PinTTL)
+	}
+}
+
+func TestUpstreamModelDefaultsToName(t *testing.T) {
+	cfg, err := Parse([]byte(strings.Replace(minimalYAML, "    upstream_model: up-m1\n", "", 1)))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if cfg.Models[0].UpstreamModel != "m1" {
+		t.Errorf("UpstreamModel = %q, want m1", cfg.Models[0].UpstreamModel)
 	}
 }
 
@@ -56,11 +67,13 @@ func TestValidate(t *testing.T) {
 		{"CFG-02 admin not loopback", func(c *Config) { c.Server.AdminListen = "0.0.0.0:8081" }, "admin_listen"},
 		{"CFG-03 key inside data dir", func(c *Config) { c.Server.MasterKeyFile = "./data/master.key" }, "master_key_file"},
 		{"CFG-04 duplicate pool", func(c *Config) { c.Pools = append(c.Pools, c.Pools[0]) }, "duplicate"},
-		{"CFG-04 bad protocol", func(c *Config) { c.Pools[0].Protocol = "gemini" }, "protocol"},
+		{"CFG-04 bad protocol name", func(c *Config) { c.Pools[0].Protocol = "Open-AI" }, "protocol"},
 		{"CFG-04 bad base_url", func(c *Config) { c.Pools[0].BaseURL = "api.anthropic.com" }, "base_url"},
 		{"CFG-05 max_attempts", func(c *Config) { c.Pools[0].MaxAttempts = 9 }, "max_attempts"},
 		{"CFG-06 unknown pool", func(c *Config) { c.Models[0].Pool = "nope" }, "unknown pool"},
-		{"CFG-07 negative price", func(c *Config) { c.Models[0].Price.Input = -1 }, "price"},
+		{"CFG-07 negative price", func(c *Config) { c.Models[0].Price["input_tokens"] = "-1" }, "price.input_tokens"},
+		{"CFG-07 bad unit name", func(c *Config) { c.Models[0].Price["Pages"] = "0.01" }, "invalid unit"},
+		{"CFG-07 negative reserve", func(c *Config) { c.Models[0].Reserve["output_tokens"] = -1 }, "reserve"},
 		{"CFG-08 watermark", func(c *Config) { c.Ledger.AdmissionHighWatermark = 1.5 }, "watermark"},
 		{"CFG-09 no models", func(c *Config) { c.Models = nil }, "models"},
 		{"CFG-10 header timeout > read timeout", func(c *Config) { c.Server.ReadHeaderTimeout = 2 * time.Minute }, "read_header_timeout"},

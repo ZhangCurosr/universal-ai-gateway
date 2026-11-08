@@ -8,9 +8,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 )
 
 // Load 读取配置文件：Default → YAML 覆盖 → Normalize → Validate。
@@ -87,8 +90,11 @@ func (c *Config) Validate() error {
 	if c.Limits.MaxRequestBodyBytes <= 0 {
 		return fieldErr("limits.max_request_body_bytes", "must be > 0")
 	}
-	if c.Limits.DefaultMaxOutputTokens <= 0 {
-		return fieldErr("limits.default_max_output_tokens", "must be > 0")
+	if c.Limits.MaxStreamBodyBytes <= 0 {
+		return fieldErr("limits.max_stream_body_bytes", "must be > 0")
+	}
+	if c.MCP.MaxResultBytes <= 0 {
+		return fieldErr("mcp.max_result_bytes", "must be > 0")
 	}
 	if c.Ledger.FlushInterval <= 0 || c.Ledger.EventQueueCapacity <= 0 {
 		return fieldErr("ledger", "flush_interval and event_queue_capacity must be > 0")
@@ -119,8 +125,9 @@ func (c *Config) Validate() error {
 			return fieldErr(path+".name", "duplicate %q", p.Name)
 		}
 		seenPool[p.Name] = true
-		if p.Protocol != ProtocolAnthropic && p.Protocol != ProtocolOpenAIChat {
-			return fieldErr(path+".protocol", "unknown protocol %q", p.Protocol)
+		// 协议名是否有对应的适配器由 core.New 检查（CORE-01）；这里只校验格式。
+		if !protocolName.MatchString(p.Protocol) {
+			return fieldErr(path+".protocol", "must match [a-z][a-z0-9_]*, got %q", p.Protocol)
 		}
 		u, err := url.Parse(p.BaseURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
@@ -162,17 +169,25 @@ func (c *Config) Validate() error {
 		if m.UpstreamModel == "" {
 			return fieldErr(path+".upstream_model", "must not be empty")
 		}
-		// CFG-07
-		if m.MaxOutputTokens <= 0 {
-			return fieldErr(path+".max_output_tokens", "must be > 0")
+		// CFG-07：单位名合法、价格可解析、预留量非负。价目表是否覆盖出站适配器的全部单位由 core.New 检查（CORE-05）。
+		for unit, v := range m.Price {
+			if !pricing.ValidUnit(unit) {
+				return fieldErr(path+".price", "invalid unit name %q", unit)
+			}
+			if _, err := pricing.ParseRate(v); err != nil {
+				return fieldErr(path+".price."+unit, "%v", err)
+			}
 		}
-		pr := m.Price
-		if pr.Input < 0 || pr.Output < 0 || pr.CacheRead < 0 || pr.CacheWrite < 0 {
-			return fieldErr(path+".price", "prices must be >= 0")
+		for unit, v := range m.Reserve {
+			if !pricing.ValidUnit(unit) || v < 0 {
+				return fieldErr(path+".reserve", "unit %q: name must be valid and value >= 0", unit)
+			}
 		}
 	}
 	return nil
 }
+
+var protocolName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
 func fieldErr(path, format string, args ...any) error {
 	return fmt.Errorf("config: %s: %s", path, fmt.Sprintf(format, args...))

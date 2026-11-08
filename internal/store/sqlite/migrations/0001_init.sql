@@ -39,10 +39,8 @@ CREATE TABLE usage_events (
     client_id          INTEGER NOT NULL,
     key_id             INTEGER NOT NULL,
     model              TEXT    NOT NULL,
-    input_tokens       INTEGER NOT NULL,
-    output_tokens      INTEGER NOT NULL,
-    cache_read_tokens  INTEGER NOT NULL,
-    cache_write_tokens INTEGER NOT NULL,
+    op                 TEXT    NOT NULL,
+    usage              TEXT    NOT NULL,          -- JSON 对象：计量单位 → 数量，键按字母序
     cost_nano_usd      INTEGER NOT NULL,
     usage_source       TEXT    NOT NULL CHECK (usage_source IN ('upstream', 'estimated')),
     created_at         INTEGER NOT NULL

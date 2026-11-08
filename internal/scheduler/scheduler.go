@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
-	"github.com/ZhangCurosr/universal-ai-gateway/internal/provider"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
 // Options 是调度器的可选依赖。
@@ -23,8 +23,11 @@ type Options struct {
 // AcquireRequest 是一次选择请求。
 type AcquireRequest struct {
 	Pool        string
-	AffinityKey string  // 空 = 无亲和
-	Exclude     []int64 // 本请求已尝试失败的 Key
+	AffinityKey string // 空 = 无亲和
+	// Strict 为 true 时只能选 AffinityKey 记录的 Key：未命中返回 CodeNotFound，
+	// 该 Key 不可用（禁用、冷却、熔断、满载或在 Exclude 中）返回 CodeUpstreamUnavailable（SCH-17）。
+	Strict  bool
+	Exclude []int64 // 本请求已尝试失败的 Key
 }
 
 // Lease 是对一个 Key 的占用。必须且只需调用一次 Finish。
@@ -92,8 +95,21 @@ func (s *Scheduler) Acquire(req AcquireRequest) (*Lease, error) {
 }
 
 // Finish 释放占用并按 Outcome 更新 Key 状态（spec/07 §5，ST-01 ~ ST-09）。重复调用无效。
-func (l *Lease) Finish(o provider.Outcome) {
+func (l *Lease) Finish(o protocol.Outcome) {
 	// TODO(T08)
+}
+
+// Pin 把 affinityKey 固定到本 Lease 的 Key，有效期 ttl（SCH-18，用于 Response.Pins）。
+// 与普通亲和共用同一个缓存；可以在 Finish 之前或之后调用。
+func (l *Lease) Pin(affinityKey string, ttl time.Duration) {
+	// TODO(T08)
+}
+
+// PinnedPool 返回 affinityKey 当前固定到的 Key 所在的池（SCH-19）；未命中、已过期或该 Key 已不存在返回 ok=false。
+// 不刷新 TTL。内核用它为不带服务名的严格亲和请求（如 GET /v1/responses/{id}）确定路由（CORE-11）。
+func (s *Scheduler) PinnedPool(affinityKey string) (pool string, ok bool) {
+	// TODO(T08)
+	return "", false
 }
 
 // KeyStatus 返回全部 Key 的状态快照，按 ID 升序。

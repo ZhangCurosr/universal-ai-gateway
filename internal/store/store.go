@@ -82,17 +82,15 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 
 // UsageEvent 是一条计费事件（usage_events 表）。
 type UsageEvent struct {
-	RequestID        string
-	ClientID         int64
-	KeyID            int64
-	Model            string
-	InputTokens      int64
-	OutputTokens     int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	CostNanoUSD      int64
-	UsageSource      string
-	CreatedAt        time.Time
+	RequestID   string
+	ClientID    int64
+	KeyID       int64
+	Model       string
+	Op          string           // 操作名（protocol.Envelope.Op）
+	Usage       map[string]int64 // 计量单位 → 数量（只含 > 0 的单位）
+	CostNanoUSD int64
+	UsageSource string
+	CreatedAt   time.Time
 }
 
 // UsageQuery 是用量汇总查询条件，时间区间为 [From, To)。ClientID 为 0 表示全部客户端。
@@ -104,14 +102,11 @@ type UsageQuery struct {
 
 // UsageSummary 是按 (client_id, model) 分组的汇总。
 type UsageSummary struct {
-	ClientID         int64
-	Model            string
-	Requests         int64
-	InputTokens      int64
-	OutputTokens     int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	CostNanoUSD      int64
+	ClientID    int64
+	Model       string
+	Requests    int64
+	Usage       map[string]int64 // 各计量单位之和；没有用量时为空 map（非 nil）
+	CostNanoUSD int64
 }
 
 // AuditRecord 是一条审计记录（audit_records 表）。不包含任何请求/响应正文。

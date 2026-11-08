@@ -3,6 +3,12 @@
 > **M1 不实现本章。** M1 完成（任务 T01–T14 全部 `DONE`）后才开始 T20 起的任务。
 > 代码位置：`internal/ir`（类型已提供）、`internal/translate`（T20–T24）。
 
+## 0. 接入方式
+
+转换器实现 `protocol.Translator`（`internal/protocol/translate.go`）：`Request(env, upstreamModel) (*protocol.Call, error)` 生成上游协议的 Call（`Op` 取上游协议的操作名常量，`Body` 为转换后的请求体）；`Response(env, resp) (*protocol.Response, error)` 转换上游响应：`ResponseBuffered` 转换 `Body`，`ResponseEvents` 返回包装了 `resp.Events` 的新 `EventStream`（逐个转换事件，上游 `io.EOF` 时先输出收尾事件再返回 `io.EOF`）。实现放在 `internal/translate/`，每个方向一个类型（如 `OpenAIToAnthropic`），由 `translate.Register(r *protocol.Registry) error` 统一注册，并在 `cmd/gateway/adapters.go` 中调用。**内核的转译路径在 M1 的 T10 中已经实现并用假转换器测试过（CORE-04），M2 只需要编写转换器本身，不修改内核。**
+
+`internal/translate` 不得导入具体适配器包；需要的协议常量直接写字符串（如 `protocol.Protocol("anthropic")`），并在包内集中定义。
+
 ## 1. 原则
 
 1. 转译只用于「入站协议 ≠ 上游协议」。同协议永远走透传（08）。
@@ -71,7 +77,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `ThinkingPart{Vendor: anthropic}` | `{"type":"thinking","thinking","signature"}` / `redacted_thinking` | 其他 Vendor → 丢弃 |
 | `Tools` | `tools[{name, description, input_schema}]` | |
 | `ToolChoice` | `{"type":"auto"|"any"|"tool","name"}`；`none` → 不发送 `tools` 与 `tool_choice` | |
-| `MaxTokens == 0` | `max_tokens = 模型 max_output_tokens 与 default_max_output_tokens 的较小值` | Anthropic 必填 |
+| `MaxTokens == 0` | `max_tokens = translate.DefaultMaxTokens`（8192） | Anthropic 必填 |
 | `StopSequences` | `stop_sequences` | |
 | `User` | `metadata.user_id` | |
 
@@ -102,7 +108,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `content_block_delta` `signature_delta`、`content_block_stop`、`ping` | 无输出 |
 | `message_delta` | `delta: {}`、`finish_reason` 按 §5.1 映射 |
 | `message_stop` | 若客户端请求了 `stream_options.include_usage`：先发 usage chunk（`choices: []`）；然后 `data: [DONE]` |
-| `error` | 按 08 §6.4 OpenAI 格式输出错误并结束 |
+| `error` | 返回入站适配器 `StreamError` 生成的事件（spec/08 §2.6）并结束 |
 
 所有 chunk 的 `id` 相同、`object = "chat.completion.chunk"`、`created` 相同、`model` 为客户端请求的模型名。
 

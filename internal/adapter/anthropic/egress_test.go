@@ -12,7 +12,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
-	"github.com/ZhangCurosr/universal-ai-gateway/internal/provider"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
 )
 
@@ -23,9 +23,9 @@ func TestPrepareBodyRewritesModelOnly(t *testing.T) {
 	system := `[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"1h"}}]`
 	tools := `[{"name":"t","input_schema":{"type":"object"}}]`
 	body := []byte(`{"model":"alias","max_tokens":10,"messages":` + messages + `,"system":` + system + `,"tools":` + tools + `}`)
-	out, injected, err := Adapter{}.PrepareBody(body, "claude-sonnet-4-5", true)
-	if err != nil || injected {
-		t.Fatalf("PrepareBody() injected=%v err=%v", injected, err)
+	out, err := prepareBody(body, "claude-sonnet-4-5")
+	if err != nil {
+		t.Fatalf("prepareBody() err=%v", err)
 	}
 	if m, _ := jsonx.GetString(out, "model"); m != "claude-sonnet-4-5" {
 		t.Fatalf("model = %q", m)
@@ -40,7 +40,7 @@ func TestPrepareBodyRewritesModelOnly(t *testing.T) {
 // PT-02
 func TestPrepareBodyRejectsNonObject(t *testing.T) {
 	t.Skip("TODO(T09A)")
-	_, _, err := Adapter{}.PrepareBody([]byte(`[1,2]`), "m", false)
+	_, err := prepareBody([]byte(`[1,2]`), "m")
 	if apperr.CodeOf(err) != apperr.CodeInvalidRequest {
 		t.Fatalf("PrepareBody(array) error = %v, want invalid_request", err)
 	}
@@ -55,7 +55,7 @@ func TestNewRequestHeaders(t *testing.T) {
 	in.Set("Cookie", "a=b")
 	in.Add("anthropic-beta", "prompt-caching-2024-07-31")
 	in.Add("anthropic-beta", "output-128k-2025-02-19")
-	req, err := Adapter{UserAgent: "uaig/test"}.NewRequest(context.Background(), "https://api.example.com/", []byte("sk-ant-upstream"), []byte(`{}`), in)
+	req, err := Egress{UserAgent: "uaig/test"}.newRequest(context.Background(), "https://api.example.com/", []byte("sk-ant-upstream"), []byte(`{}`), in)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +91,7 @@ func TestUsageTapStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	tap := Adapter{}.NewUsageTap()
+	tap := &meter{}
 	r := sse.NewReader(f)
 	for {
 		ev, err := r.Next()
@@ -101,22 +101,34 @@ func TestUsageTapStream(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tap.ObserveEvent(ev)
+		tap.observeEvent(ev)
 	}
-	got, ok := tap.Usage()
-	want := pricing.Usage{InputTokens: 25, OutputTokens: 15, CacheReadTokens: 2000, CacheWriteTokens: 100}
-	if !ok || got != want {
-		t.Fatalf("Usage() = %+v, %v; want %+v, true", got, ok, want)
+	got, src := tap.Usage()
+	want := pricing.Usage{pricing.UnitInputTokens: 25, pricing.UnitOutputTokens: 15, pricing.UnitCacheReadTokens: 2000, pricing.UnitCacheWriteTokens: 100}
+	if src != protocol.UsageUpstream || !got.Equal(want) {
+		t.Fatalf("Usage() = %v, %v; want %v, upstream", got, src, want)
 	}
 }
 
 func TestUsageTapBody(t *testing.T) {
 	t.Skip("TODO(T09A)")
-	tap := Adapter{}.NewUsageTap()
-	tap.ObserveBody([]byte(`{"id":"msg","usage":{"input_tokens":3,"output_tokens":4,"cache_read_input_tokens":5}}`))
-	got, ok := tap.Usage()
-	if !ok || got != (pricing.Usage{InputTokens: 3, OutputTokens: 4, CacheReadTokens: 5}) {
-		t.Fatalf("Usage() = %+v, %v", got, ok)
+	tap := &meter{}
+	tap.observeBody([]byte(`{"id":"msg","usage":{"input_tokens":3,"output_tokens":4,"cache_read_input_tokens":5}}`))
+	got, src := tap.Usage()
+	if src != protocol.UsageUpstream || !got.Equal(pricing.Usage{pricing.UnitInputTokens: 3, pricing.UnitOutputTokens: 4, pricing.UnitCacheReadTokens: 5}) {
+		t.Fatalf("Usage() = %v, %v", got, src)
+	}
+}
+
+// USE-07：流在 message_delta 之前中断，输出按已观察到的文本字节估算
+func TestMeterEstimatesOutputWhenStreamCut(t *testing.T) {
+	t.Skip("TODO(T09A)")
+	tap := &meter{}
+	tap.observeEvent(sse.Event{Name: "message_start", Data: []byte(`{"type":"message_start","message":{"usage":{"input_tokens":7,"output_tokens":1}}}`)})
+	tap.observeEvent(sse.Event{Name: "content_block_delta", Data: []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"12345678"}}`)})
+	got, src := tap.Usage()
+	if src != protocol.UsageEstimated || got.Get(pricing.UnitInputTokens) != 7 || got.Get(pricing.UnitOutputTokens) != 2 {
+		t.Fatalf("Usage() = %v, %v; want input 7, output 2 (ceil(8/4)), estimated", got, src)
 	}
 }
 
@@ -125,19 +137,19 @@ func TestClassifyStreamError(t *testing.T) {
 	t.Skip("TODO(T09A)")
 	tests := []struct {
 		data string
-		want provider.OutcomeKind
+		want protocol.OutcomeKind
 	}{
-		{`{"type":"error","error":{"type":"overloaded_error","message":"x"}}`, provider.OutcomeOverloaded},
-		{`{"type":"error","error":{"type":"rate_limit_error","message":"x"}}`, provider.OutcomeRateLimited},
-		{`{"type":"error","error":{"type":"api_error","message":"x"}}`, provider.OutcomeServerError},
+		{`{"type":"error","error":{"type":"overloaded_error","message":"x"}}`, protocol.OutcomeOverloaded},
+		{`{"type":"error","error":{"type":"rate_limit_error","message":"x"}}`, protocol.OutcomeRateLimited},
+		{`{"type":"error","error":{"type":"api_error","message":"x"}}`, protocol.OutcomeServerError},
 	}
 	for _, tt := range tests {
-		o, ok := Adapter{}.ClassifyStreamError(sse.Event{Name: "error", Data: []byte(tt.data)})
+		o, ok := classifyStreamError(sse.Event{Name: "error", Data: []byte(tt.data)})
 		if !ok || o.Kind != tt.want {
 			t.Errorf("ClassifyStreamError(%s) = %v, %v; want %v", tt.data, o.Kind, ok, tt.want)
 		}
 	}
-	if _, ok := (Adapter{}).ClassifyStreamError(sse.Event{Name: "ping", Data: []byte(`{}`)}); ok {
+	if _, ok := classifyStreamError(sse.Event{Name: "ping", Data: []byte(`{}`)}); ok {
 		t.Error("ping classified as error")
 	}
 }
