@@ -2,8 +2,8 @@ package auth
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
 
@@ -20,6 +20,10 @@ type Reloader struct {
 
 // Reload 读取全部客户端并替换索引。
 func (r *Reloader) Reload(ctx context.Context) error {
-	// TODO(T03): ListClients → Index.Replace；错误用 fmt.Errorf("reload clients: %w", err) 包装。
-	return apperr.NotImplemented("T03")
+	clients, err := r.Store.ListClients(ctx)
+	if err != nil {
+		return fmt.Errorf("reload clients: %w", err)
+	}
+	r.Index.Replace(clients)
+	return nil
 }

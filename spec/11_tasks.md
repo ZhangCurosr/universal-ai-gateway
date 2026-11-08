@@ -87,7 +87,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **测试**：`TestInsertUpstreamKeySealUsesID`、`TestInsertUpstreamKeySealErrorRollsBack`、`TestUpstreamKeyUpdates`（`keys_test.go`）；`TestUsageEventsIdempotent`、`TestSumCostByClient`、`TestQueryUsage`、`TestAuditInsertAndDelete`（`usage_test.go`）。
 - **陷阱**：`seal` 必须拿到**真实的自增 id**（`res.LastInsertId()`），这是 AAD 绑定行主键的前提。
 
-## T03 客户端索引重载 — 状态：`TODO`
+## T03 客户端索引重载 — 状态：`DONE`
 
 - **前置**：T01
 - **必读规格**：05 §3.3–§3.4
