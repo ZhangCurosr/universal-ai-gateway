@@ -79,12 +79,26 @@ server {
 
 使用 Cloudflare Tunnel、frp 等时，网关看到的 `RemoteAddr` 是隧道客户端的本机地址：把隧道客户端所在地址（通常是 `127.0.0.1/32`）加入 `trusted_proxies`。注意部分隧道服务对单个请求时长有限制，长流式请求可能被截断，部署前用一个长输出的请求实测。
 
-### 3.4 对外前检查清单
+### 3.4 新端点与 AI 出口的代理要点
+
+上面两个示例用 `location /` / 整站反代，`/v1/responses*`、`/mcp` 与上传端点都会被转发，无需单独配置路径。需要注意的差异：
+
+| 场景 | 要求 |
+|:--|:--|
+| `/mcp`（spec/14） | 必须原样转发 `Authorization`、`MCP-Protocol-Version`、`Origin` 头（Caddy 与上例 nginx 默认都会转发）。服务端只回 JSON、不用 SSE 与 WebSocket，无需 `Upgrade` 配置。浏览器类客户端经代理访问时 `Origin` 是公网域名，会被 SRV-M06 拒绝——M1 只支持非浏览器 MCP 客户端 |
+| `/v1/responses` 流式 | 与其他 SSE 相同：nginx `proxy_buffering off`、Caddy `flush_interval -1` |
+| 文件上传（`BodyStream` 路由，如 MinerU） | 代理的请求体上限要放到 `limits.max_stream_body_bytes`，但只对上传路径放开：nginx 为该路径单独写 `location` 并设 `client_max_body_size 512m; proxy_request_buffering off;`（否则 nginx 会先把整个文件落盘再转发）；Caddy 在对应 `handle_path` 中单独设 `request_body { max_size 512MB }`。网关的 `server.read_timeout` 要按「文件大小 / 最低上行带宽」调大 |
+| 同步封装的长任务（spec/08 §8.2） | 代理的读超时（nginx `proxy_read_timeout`、Caddy `read_timeout`）必须 ≥ 该池的 `timeouts.response_header_base`，否则代理先断开，上游的费用照样产生 |
+| 只想开放部分能力 | 用代理按路径放行（例如只放 `/v1/` 与 `/mcp`），其余返回 404；网关自身的白名单（`allowed_models`）仍然生效 |
+
+### 3.5 对外前检查清单
 
 - [ ] DEP-01：`data_listen` 是 `127.0.0.1:8080`，从公网直连 8080 不通。
 - [ ] `trusted_proxies` 只含反向代理地址；从外部带伪造的 `X-Forwarded-For` 请求，访问日志中的 `client_ip` 仍是真实来源。
 - [ ] 反向代理的请求体上限与 `max_request_body_bytes` 一致。
 - [ ] 流式请求能逐字输出（不是等结束才一次性出现）。
+- [ ] `/mcp` 可用：`UAIG_URL=https://域名 UAIG_TOKEN=... gateway tools` 能列出工具；不带 Token 返回 401。
+- [ ] 如果接入了上传类 API：用接近上限的大文件实测一次，确认代理与 `read_timeout` 不会中途断开。
 - [ ] `limits.preauth_ip_rpm` 已启用（默认 600）。
 - [ ] 每个客户端都设置了额度与 `rpm_limit`；没有给普通客户端 `quota_unlimited`。
 - [ ] `master_key_file` 不在数据目录下，且已离线备份（丢失主密钥 = 所有上游 Key 无法解密）。
@@ -150,4 +164,4 @@ Register-ScheduledTask -TaskName "UniversalAIGateway" -Action $action -Trigger $
 | `deploy/nginx.conf.example` | §3.2 |
 | `deploy/systemd/universal-ai-gateway.service` | §5.1 |
 | `deploy/windows/install-task.ps1` | §5.2，带参数 `-InstallDir`，脚本开头检查管理员权限 |
-| `docs/DEPLOYMENT.md` | 面向用户的中文部署指南：§1 ~ §5 的精简版，含 Claude Code / OpenAI SDK 接入示例 |
+| `docs/DEPLOYMENT.md` | 面向用户的中文部署指南：§1 ~ §5 的精简版；客户端接入示例照搬 spec/14 §4（Claude Code、Codex CLI、OpenAI SDK 作为模型后端；MCP 远程与 stdio；`gateway call` 命令行） |

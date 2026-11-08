@@ -1,7 +1,7 @@
 # 10 跨协议转译（M2：IR & Translation）
 
 > **M1 不实现本章。** M1 完成（任务 T01–T14 全部 `DONE`）后才开始 T20 起的任务。
-> 代码位置：`internal/ir`（类型已提供）、`internal/translate`（T20–T24）。
+> 代码位置：`internal/ir`（类型已提供）、`internal/translate`（T20–T27）。
 
 ## 0. 接入方式
 
@@ -121,3 +121,75 @@ Anthropic 入站 → OpenAI 上游：按 §3/§4 的逆映射实现；任务卡 
 1. 纯文本单轮；2. 多轮对话；3. system 提示；4. 单个工具调用及其结果回填；5. 并行两个工具调用；
 6. 图片输入（base64）；7. 流式文本；8. 流式工具调用（参数分多个 delta）；9. 不支持的字段 → 400；
 10. 思考块跨厂商被丢弃。测试数据放在 `internal/translate/testdata/<用例名>/{input.json, expected.json}`，用黄金文件比较。
+
+## 8. OpenAI Responses 的转译（T25 ~ T27）
+
+目标场景：Codex CLI 等只说 Responses 的客户端使用 Claude、DeepSeek 等非 Responses 上游。只做**入站 Responses → 其他上游**这一个方向（反方向——用 Chat / Anthropic 客户端调用只提供 Responses 的上游——目前没有需求，不做）。
+
+| 转换器 | 组成 | 任务卡 |
+|:--|:--|:--|
+| `openai_responses` → `anthropic` | Responses 请求 → IR（T25）+ IR → Anthropic（T21，复用）；Anthropic 响应/流 → Responses（T26） | T25、T26 |
+| `openai_responses` → `openai_chat` | Responses 请求 → IR（T25，复用）+ IR → Chat（T23，复用）；Chat 响应/流 → Responses（T27） | T27 |
+
+### 8.1 有状态特性（转译路径的硬规则）
+
+被转换到的上游不保存响应，因此 Responses 的状态特性在转译路径上**一律不支持**：
+
+| 编号 | 规则 |
+|:--|:--|
+| RX-01 | 请求带 `previous_response_id` 或 `conversation` → 400 `invalid_request`（`previous_response_id is not supported for model "<name>"; send the full input instead`）。Codex CLI 默认发送完整输入，不受影响 |
+| RX-02 | `store` 视为 false：不产生 `Response.Pins`；响应中的 `store` 字段写 `false` |
+| RX-03 | `background: true` → 400 |
+| RX-04 | 转译路径上不支持按 ID 的操作（get / delete / cancel / input_items）：这些请求没有服务名，只能由固定记录路由，而转译响应从不产生固定记录，因此内核自然返回 404（CORE-11），无需特殊处理 |
+| RX-05 | 响应 ID 由网关生成：`resp_` + 24 位小写 base32（`crypto/rand`）；输出项 ID 为 `msg_` / `fc_` + 同样格式 |
+
+### 8.2 请求 → IR（T25）
+
+| Responses 字段 | IR | 说明 |
+|:--|:--|:--|
+| `instructions` | `System`（一个 TextPart） | |
+| `input` 为字符串 | 一条 user 消息，一个 TextPart | |
+| `input[]` 中 `{"type":"message","role":"system"\|"developer"}` | 追加到 `System` | 只允许出现在其他消息之前，否则 400 |
+| `input[]` 中 `{"type":"message","role":"user"\|"assistant"}` | `Message`；`content` 为字符串或 `input_text` / `output_text` / `input_image` 部件 | `input_image.image_url` 为 data URL 时解码为 `Data`，否则填 `URL`；`input_file` → 400 |
+| `input[]` 中 `{"type":"function_call","call_id","name","arguments"}` | 追加到前一条 assistant 消息的 `ToolCallPart{ID: call_id}`；前面不是 assistant 消息则新建一条 | |
+| `input[]` 中 `{"type":"function_call_output","call_id","output"}` | user 消息中的 `ToolResultPart{ToolCallID: call_id}` | 连续的多个合并为一条 user 消息 |
+| `input[]` 中 `{"type":"reasoning","encrypted_content"}` | `ThinkingPart{Vendor: openai, Encrypted}` | 合成时按 §1 第 3 条跨厂商丢弃 |
+| `tools[]` 中 `{"type":"function","name","description","parameters"}` | `Tool` | `strict` 丢弃 |
+| `tools[]` 中其他类型（`web_search`、`file_search`、`code_interpreter`、`computer_use`、`mcp` 等内置工具） | — | 400（`built-in tool "<type>" is not supported for model "<name>"`） |
+| `tool_choice` | `ToolChoice`：`auto` → auto，`required` → any，`none` → none，`{"type":"function","name"}` → tool | |
+| `max_output_tokens` | `MaxTokens` | |
+| `temperature`、`top_p` | 同名 | |
+| `reasoning.effort` | 丢弃 | 目标上游的思考预算语义不同，不做猜测性映射 |
+| `text.format` 为 `json_schema` / `json_object` | — | 400（无法保证等价） |
+| `parallel_tool_calls`、`truncation`、`metadata`、`prompt_cache_key`、`safety_identifier`、`user`、`include`、`service_tier` | 丢弃（`safety_identifier` 或 `user` 写入 `IR.User`） | |
+| `stream` | `Stream` | 合成 Chat 请求时按 PT-03 加 `stream_options.include_usage` |
+
+### 8.3 响应 → Responses（T26：自 Anthropic，T27：自 Chat）
+
+非流式：生成一个 `{"id","object":"response","created_at","status":"completed","model":<客户端请求的服务名>,"output":[...],"usage":{...}}`：
+
+- 文本 → 一个 `{"type":"message","id","role":"assistant","status":"completed","content":[{"type":"output_text","text","annotations":[]}]}`；
+- 工具调用 → 每个一个 `{"type":"function_call","id","call_id":<上游工具调用 ID>,"name","arguments","status":"completed"}`；
+- 思考内容丢弃（不输出 `reasoning` 项）；
+- 停止原因：正常结束 / 工具调用 → `status: "completed"`；达到输出上限 → `status: "incomplete"`、`incomplete_details: {"reason":"max_output_tokens"}`；
+- `usage`：`input_tokens = input + cache_read + cache_write`、`input_tokens_details.cached_tokens = cache_read`、`output_tokens = output`、`total_tokens` 为两者之和。
+
+流式事件序列（每个事件的 `sequence_number` 从 0 递增，`event:` 名与 `data.type` 相同）：
+
+| 时机 | 输出事件 |
+|:--|:--|
+| 上游流开始 | `response.created`、`response.in_progress`（`response` 为 `status: "in_progress"`、`output: []` 的骨架） |
+| 第一段文本 | `response.output_item.added`（message 项）→ `response.content_part.added`（output_text，`text: ""`） |
+| 每段文本增量 | `response.output_text.delta`（`item_id`、`output_index`、`content_index: 0`、`delta`） |
+| 文本结束（遇到工具调用或流结束） | `response.output_text.done`（完整 text）→ `response.content_part.done` → `response.output_item.done` |
+| 工具调用开始 | `response.output_item.added`（function_call 项，`arguments: ""`） |
+| 工具参数增量 | `response.function_call_arguments.delta` |
+| 工具调用结束 | `response.function_call_arguments.done`（完整 arguments）→ `response.output_item.done` |
+| 上游正常结束 | `response.completed`（完整 response，含 `usage`）；达到输出上限时改为 `response.incomplete` |
+| 上游流中错误 | 入站适配器的 `StreamError`（IN-R07）后结束 |
+
+思考增量（Anthropic `thinking_delta`、Chat `reasoning_content`）不输出。`output_index` 按项出现顺序从 0 编号。
+
+### 8.4 必测用例
+
+§7 的 10 个用例全部适用，另加：`previous_response_id` → 400；内置工具 → 400；`input` 字符串与数组两种形式；`function_call_output` 回填后的多轮；达到输出上限 → `incomplete`。

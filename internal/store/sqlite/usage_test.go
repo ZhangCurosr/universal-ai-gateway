@@ -84,8 +84,8 @@ func TestAuditInsertAndDelete(t *testing.T) {
 	ctx := context.Background()
 	db := newTestDB(t)
 	rec := func(id string, at time.Time) store.AuditRecord {
-		return store.AuditRecord{RequestID: id, ClientID: 1, Model: "m", IngressProtocol: "anthropic",
-			UpstreamProtocol: "anthropic", Status: 200, Attempts: 1, TTFBMillis: -1, CreatedAt: at}
+		return store.AuditRecord{RequestID: id, ClientID: 1, Model: "m", Op: "messages", IngressProtocol: "anthropic",
+			UpstreamProtocol: "anthropic", Status: 200, Outcome: "success", Attempts: 1, TTFBMillis: -1, CreatedAt: at}
 	}
 	if err := db.InsertAuditRecords(ctx, []store.AuditRecord{rec("old", fixedNow.Add(-48*time.Hour)), rec("new", fixedNow)}); err != nil {
 		t.Fatal(err)

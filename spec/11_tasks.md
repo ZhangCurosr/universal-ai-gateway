@@ -19,7 +19,7 @@ M1：
   T14 需要以上全部
   T15 需要 T14
 扩展适配器：T30、T31 无前置（只依赖已冻结的契约与一致性套件），可随时并行
-M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
+M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27（全部需要 T14）
 ```
 
 可以同时开工的第一批：**T01、T04、T05、T07、T09A、T09B、T09C**（互不修改同一文件）。
@@ -178,11 +178,11 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **涉及文件**：`internal/core/core.go`、`internal/core/forward.go`（新建）、`internal/core/affinity.go`、`internal/core/core_test.go`、`internal/core/affinity_test.go`
 - **要做的事**：
   1. `affinity.go`：按 07 §7 实现 `AffinityKey`（含 `Strict` 时忽略请求头）。
-  2. `core.go`：`Handler(in, rt)` 按 13 §2 编排，同时支持透传与转译两条路径（13 §3）、三种请求体模式、任务固定（CORE-08）；收尾动作全部放在一个 `defer` 中。`bodyLimit`、`reserveUsage`、`settledUsage`、`headerTimeout` 已提供，直接使用。
+  2. `core.go`：`Handler(in, rt)` 按 13 §2 编排（审计记录按 13 §2.2 填写），同时支持透传与转译两条路径（13 §3）、三种请求体模式、任务固定（CORE-08）；收尾动作全部放在一个 `defer` 中。`bodyLimit`、`reserveUsage`、`settledUsage`、`headerTimeout` 已提供，直接使用。
   3. `forward.go`：13 §4（三种响应形态、流中异常）与 13 §5 超时。
   4. **K-01 / K-02**：内核代码中不得出现协议名、请求体字段名、`switch` 协议，也不得出现 token 专用逻辑。需要协议相关的行为时，调用 `in`（入站）、`route.Egress`（出站）或转换器的方法。
 - **测试**：`core_test.go` 已提供测试环境 `newTestEnv`（假上游 + 真实 ledger/scheduler/适配器 + 测试专用的非大模型协议 `jobs`）与以下用例：`TestPassthroughNonStream`、`TestPassthroughStreamAnthropic`（含结算金额断言）、`TestRetryOn429ThenSuccess`、`TestNoRetryAfterFirstByte`、`TestClientErrorPassedThrough`、`TestProtocolMismatchRejected`、`TestTranslatorPathUsed`、`TestJobsSubmitStreamsBodyPinsAndBillsPages`、`TestJobsStreamBodyNotRetried`、`TestJobsStrictPinRoutesToSameKey`、`TestJobsRawDownload`；`TestNewRejectsUnknownProtocol`、`TestNewRejectsIncompletePrice`、`TestModelsFiltered`、`TestBodyLimit`、`TestSettledUsage`、`TestHeaderTimeout` 已可运行。`affinity_test.go` 提供 `TestAffinityKeySources`。
-  你还必须**新增**：`TestPassthroughStreamOpenAIInjectedUsageFiltered`、`TestReleaseWhenAllAttemptsFail`（所有 Key 都 500 → 客户端 502，reserved 归零且无计费事件）、`TestModelNotAllowed`（403，上游未被调用）、`TestUnknownModel`（400）、`TestClientCancelStopsUpstream`、`TestInsufficientQuota`（402）、`TestTranslatorStreamPath`（假转换器把每个上游事件变成两个事件、结束时追加一个收尾事件，客户端收到双倍事件与收尾事件）、`TestRequestTooLarge`（413）、`TestStreamBodyTooLarge`（`jobs` 上传超过 `max_stream_body_bytes` → 413）、`TestEventsFirstEventErrorRetried`（`Next` 在第一个事件前返回 `*AttemptError` 时换 Key 重试，13 §4.2）、`TestRawStreamIdleTimeout`（字节流两块之间超过 `stream_idle` → 连接中止，Outcome = Timeout）、`TestDoLocalErrorNotRetried`（CORE-09）、`TestResolveRouteFromPin`（`jobs` 提交后，不带服务名的严格亲和请求路由到 `parser`，CORE-11）、`TestPinsAppendedDuringStream`（流式适配器在转发中追加的 Pins 被记录，CORE-08）。
+  你还必须**新增**：`TestPassthroughStreamOpenAIInjectedUsageFiltered`、`TestReleaseWhenAllAttemptsFail`（所有 Key 都 500 → 客户端 502，reserved 归零且无计费事件）、`TestModelNotAllowed`（403，上游未被调用）、`TestUnknownModel`（400）、`TestClientCancelStopsUpstream`、`TestInsufficientQuota`（402）、`TestTranslatorStreamPath`（假转换器把每个上游事件变成两个事件、结束时追加一个收尾事件，客户端收到双倍事件与收尾事件）、`TestRequestTooLarge`（413）、`TestStreamBodyTooLarge`（`jobs` 上传超过 `max_stream_body_bytes` → 413）、`TestEventsFirstEventErrorRetried`（`Next` 在第一个事件前返回 `*AttemptError` 时换 Key 重试，13 §4.2）、`TestRawStreamIdleTimeout`（字节流两块之间超过 `stream_idle` → 连接中止，Outcome = Timeout）、`TestDoLocalErrorNotRetried`（CORE-09）、`TestResolveRouteFromPin`（`jobs` 提交后，不带服务名的严格亲和请求路由到 `parser`，CORE-11）、`TestPinsAppendedDuringStream`（流式适配器在转发中追加的 Pins 被记录，CORE-08）、`TestAuditRecordFields`（成功、重试后成功、上游 429 全部失败、Parse 失败四种情况下审计记录各字段符合 13 §2.2，且每个请求恰好一条）。
 - **陷阱**：判断「是否已写出首字节」用包装的 `http.ResponseWriter`（13 §4.5）；不要只看局部变量。流式请求体只尝试一次（CORE-07）。
 
 ## T11 数据面路由与中间件 — 状态：`TODO`
@@ -205,6 +205,12 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **前置**：T02、T03、T05、T08
 - **必读规格**：05 §4、09 §4
 - **涉及文件**：`internal/admin/server.go`、`internal/admin/clients.go`（新建）、`internal/admin/keys.go`（新建）、`internal/admin/usage.go`（新建）、`internal/admin/server_test.go`
+- **要做的事**：
+  1. `server.go`：组装 `/admin/api/` 下 09 §4.1 表格中的**全部**端点（用 `http.ServeMux` 的方法 + 路径模式）；中间件依次为请求 ID → 管理员鉴权（ADM-01 ~ ADM-04，05 §4）→ 请求体上限 1 MiB；所有错误用已提供的 `writeError`；JSON 解码用 `DisallowUnknownFields`。
+  2. `clients.go`：创建（生成 Token，明文只在响应中出现一次，存 `HashToken`）、列表、详情、修改（额度、RPM、白名单、禁用、角色）、轮换 Token。每次成功写库后：`auth.Reloader.Reload`（使新 Token 立即生效）与 `ledger.Memory.UpsertAccount`（额度立即生效，LED-10）。禁止禁用或降级最后一个启用的管理员（ADM-03，`CountAdmins`），返回 409 `conflict`。
+  3. `keys.go`：创建（用 `crypto.Keyring` 信封加密 secret，`SealFunc` 绑定行 ID，05 §2.3）、列表（`KeyView` 的运行时字段 `in_flight`、`cooldown_seconds`、`breaker` 取自 `scheduler.KeyStatus()`）、修改（`UpdateKeyRequest`：名称、权重、并发上限、状态）。每次成功写库后调用 `scheduler.LoadKeys` + `SetKeys`。`pool` 必须是配置中存在的池，否则 400。
+  4. `usage.go`：`GET /admin/api/usage?client_id=&from=&to=`（RFC 3339，缺省为最近 24 小时，`to - from` 不得超过 92 天，否则 400）→ `store.QueryUsage` → `{"items":[UsageItem]}`（`usage` 为计量单位 map）。`GET /admin/api/health` 返回版本与运行时长。
+  5. 视图类型（`ClientView`、`KeyView`、`UsageItem` 等）已在 `types.go` 中提供；响应中**不得**出现 secret、`token_hash`、Token 明文（创建与轮换的响应除外）。
 - **测试**：每个端点至少一个成功用例和一个失败用例；另外 `TestCannotDisableLastAdmin`、`TestRotateTokenInvalidatesOld`、`TestNoSecretsInResponses`（对所有响应体做字符串检查，不得出现 secret 明文或 `token_hash`）、`TestAuthFailureIPLockout`。
 
 ## T13 审计日志流水线 — 状态：`TODO`
@@ -295,3 +301,6 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 | T22 | Anthropic 响应/流 → OpenAI 响应/流（10 §5，实现 `Translator.Response`：缓冲体转换 + 包装 `EventStream`）；实现 `translate.Register` 并在 `cmd/gateway/adapters.go` 中注册（内核无需修改） | T21 | 10 §0、§5 |
 | T23 | Anthropic 请求 → IR → OpenAI 请求 | T22 | 10 §6（届时补充） |
 | T24 | OpenAI 响应/流 → Anthropic 响应/流 | T23 | 10 §6（届时补充） |
+| T25 | OpenAI Responses 请求 → IR（10 §8.1、§8.2），含 RX-01 ~ RX-05 的拒绝规则 | T21 | 10 §1、§8 |
+| T26 | Anthropic 响应/流 → Responses 响应/流（10 §8.3）；注册 `openai_responses → anthropic` 转换器 | T25 | 10 §8.3、§8.4 |
+| T27 | Chat 响应/流 → Responses 响应/流（10 §8.3）；注册 `openai_responses → openai_chat` 转换器 | T25、T23 | 10 §8.3、§8.4 |

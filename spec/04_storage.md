@@ -87,10 +87,12 @@ CREATE TABLE audit_records (
     client_id         INTEGER NOT NULL,
     key_id            INTEGER NOT NULL,
     model             TEXT    NOT NULL,
+    op                TEXT    NOT NULL,   -- 操作名（Envelope.Op）
     ingress_protocol  TEXT    NOT NULL,
     upstream_protocol TEXT    NOT NULL,
     status            INTEGER NOT NULL,
     error_code        TEXT    NOT NULL,
+    outcome           TEXT    NOT NULL,   -- 最后一次尝试的 OutcomeKind.String()；未尝试为空串
     attempts          INTEGER NOT NULL,
     stream            INTEGER NOT NULL,
     ttfb_ms           INTEGER NOT NULL,   -- 上游首字节耗时；无则 -1

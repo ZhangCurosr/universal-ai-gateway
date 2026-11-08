@@ -115,10 +115,12 @@ type AuditRecord struct {
 	ClientID         int64
 	KeyID            int64
 	Model            string
+	Op               string
 	IngressProtocol  string
 	UpstreamProtocol string
 	Status           int
 	ErrorCode        string
+	Outcome          string // 最后一次尝试的 protocol.OutcomeKind.String()；未尝试为 ""
 	Attempts         int
 	Stream           bool
 	TTFBMillis       int64 // 无则 -1

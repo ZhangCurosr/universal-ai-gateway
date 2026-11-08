@@ -58,6 +58,30 @@
 | 所有尝试都在得到 `*Response` 之前失败 | `Release` |
 | 在 Reserve 之前失败 | 不需要 |
 
+### 2.2 审计记录（`audit.Submit`）
+
+每个进入 `Core.Handler` 的请求**恰好**提交一条审计记录（在 §2 第 11 步的 `defer` 中，无论成功、失败还是 panic 恢复前）。审计可以丢弃（队列满时 `Submit` 丢弃并计数），但内核不得因审计阻塞。
+
+| 字段 | 取值 |
+|:--|:--|
+| `RequestID` | `obs.RequestIDFrom(ctx)` |
+| `ClientID` | Principal 的 ClientID |
+| `KeyID` | 最后一次 `Acquire` 成功的 Key ID；从未选中 Key 为 0 |
+| `Model` | 路由的服务名 `route.Model.Name`；路由解析之前失败时取 `env.Model`（可能为空）；`Parse` 之前失败为空串 |
+| `Op` | `rt.Op`（不依赖 Parse 是否成功） |
+| `IngressProtocol` | `in.Protocol()` |
+| `UpstreamProtocol` | `route.Upstream`；路由解析之前失败为空串 |
+| `Status` | 写给客户端的 HTTP 状态码（取自 §4.5 的包装 `ResponseWriter`；流已开始后出错仍是已写出的 200）；客户端在写出任何字节前断开记 499 |
+| `ErrorCode` | 返回给客户端的 `apperr.Code`（含流中通过 `StreamError` 告知的错误）；成功为空串 |
+| `Outcome` | 最后一次尝试的 `OutcomeKind.String()`（转发结束后的最终 Outcome，见 §4）；从未尝试为空串 |
+| `Attempts` | 调用 `Egress.Do` 的次数（0 表示在尝试之前就失败了） |
+| `Stream` | `env.Stream`；`Parse` 之前失败为 false |
+| `TTFBMillis` | 从进入 Handler 到**写出响应头**的毫秒数；未写出响应头为 -1 |
+| `LatencyMillis` | 从进入 Handler 到 Handler 返回的毫秒数 |
+| `CreatedAt` | 进入 Handler 时的 `Deps.Now()`（UTC） |
+
+审计记录**不得**包含请求体、响应体、请求头、上游 Key 或客户端 Token（spec/02 §5）。
+
 ## 3. 生成上游调用（CORE-03、CORE-04）
 
 ```
