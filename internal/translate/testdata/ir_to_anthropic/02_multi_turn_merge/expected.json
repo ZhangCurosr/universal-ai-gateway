@@ -1,0 +1,37 @@
+{
+  "model": "up-claude",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hi"
+        },
+        {
+          "type": "text",
+          "text": "Are you there?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Yes."
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Tell me a joke"
+        }
+      ]
+    }
+  ],
+  "max_tokens": 8192
+}

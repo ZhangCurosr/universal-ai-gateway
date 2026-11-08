@@ -1,0 +1,29 @@
+{
+  "model": "up-claude",
+  "system": [
+    {
+      "type": "text",
+      "text": "You are terse."
+    },
+    {
+      "type": "text",
+      "text": "Long context...",
+      "cache_control": {
+        "type": "ephemeral",
+        "ttl": "1h"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hi"
+        }
+      ]
+    }
+  ],
+  "max_tokens": 8192
+}

@@ -1,0 +1,36 @@
+{
+  "model": "up-claude",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Go"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "noop",
+      "input_schema": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "any"
+  },
+  "max_tokens": 256,
+  "temperature": 0.2,
+  "top_p": 0.9,
+  "stop_sequences": [
+    "END"
+  ],
+  "stream": true,
+  "metadata": {
+    "user_id": "u-42"
+  }
+}

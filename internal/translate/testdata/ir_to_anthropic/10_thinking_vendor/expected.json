@@ -1,0 +1,46 @@
+{
+  "model": "up-claude",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "2+2?"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "simple sum",
+          "signature": "sig-1"
+        },
+        {
+          "type": "redacted_thinking",
+          "data": "enc-data"
+        },
+        {
+          "type": "text",
+          "text": "4"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "3+3?"
+        },
+        {
+          "type": "text",
+          "text": "Hello?"
+        }
+      ]
+    }
+  ],
+  "max_tokens": 8192
+}

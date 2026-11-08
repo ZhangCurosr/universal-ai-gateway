@@ -1,0 +1,30 @@
+{
+  "model": "up-claude",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Compare"
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "iVBORw=="
+          }
+        },
+        {
+          "type": "image",
+          "source": {
+            "type": "url",
+            "url": "https://example.com/cat.jpg"
+          }
+        }
+      ]
+    }
+  ],
+  "max_tokens": 8192
+}
