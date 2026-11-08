@@ -226,7 +226,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   - `AUD-05` `Dropped()` 返回累计丢弃数；每次 flush 时若自上次以来有新增丢弃，输出一条 `Warn`。
 - **测试**：`TestSubmitDropsWhenFull`、`TestWriterBatches`、`TestWriterDrainsOnShutdown`、`TestRetentionDeletesOld`。
 
-## T14 进程装配与端到端测试 — 状态：`TODO`
+## T14 进程装配与端到端测试 — 状态：`DONE`
 
 - **前置**：T01 ~ T13 全部
 - **必读规格**：03 全章（含 §6 SRV-01 ~ SRV-03、§7）、05 §5、09 §5、13 §6
