@@ -138,7 +138,7 @@
 
 ```bash
 # 克隆仓库并进入根目录
-git clone https://github.com/universal-ai-gateway/gateway.git
+git clone https://github.com/ZhangCurosr/universal-ai-gateway.git
 cd gateway
 
 # 编译纯 Go 单静态二进制 (零 CGO，支持任意平台交叉编译)
