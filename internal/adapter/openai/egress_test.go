@@ -13,7 +13,6 @@ import (
 
 // PT-03
 func TestPrepareBodyInjectsUsage(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	tests := []struct {
 		name         string
 		body         string
@@ -48,7 +47,6 @@ func TestPrepareBodyInjectsUsage(t *testing.T) {
 }
 
 func TestPrepareBodyNonStreamNoInject(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	out, injected, err := prepareBody([]byte(`{"model":"a","messages":[]}`), "b", false)
 	if err != nil || injected {
 		t.Fatalf("injected=%v err=%v", injected, err)
@@ -60,7 +58,6 @@ func TestPrepareBodyNonStreamNoInject(t *testing.T) {
 
 // HDR-02、HDR-04
 func TestNewRequestHeaders(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	in := http.Header{}
 	in.Set("Authorization", "Bearer uai_live_client")
 	in.Set("OpenAI-Organization", "org-x")
@@ -81,7 +78,6 @@ func TestNewRequestHeaders(t *testing.T) {
 
 // USE-03、USE-04
 func TestUsageCachedTokens(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	tests := []struct {
 		name string
 		body string
@@ -107,7 +103,6 @@ func TestUsageCachedTokens(t *testing.T) {
 
 // USE-05、USE-06：流式，最后一个 chunk 带 usage
 func TestUsageStream(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	tap := &meter{}
 	for _, d := range []string{
 		`{"choices":[{"index":0,"delta":{"content":"hi"}}],"usage":null}`,
@@ -123,7 +118,6 @@ func TestUsageStream(t *testing.T) {
 
 // USE-07：没有 usage 时按已观察到的文本字节估算输出
 func TestMeterEstimatesOutputWithoutUsage(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	tap := &meter{}
 	tap.observeEvent(sse.Event{Data: []byte(`{"choices":[{"index":0,"delta":{"content":"12345"}}],"usage":null}`)})
 	if got, src := tap.Usage(); src != protocol.UsageEstimated || got.Get(pricing.UnitOutputTokens) != 2 {
@@ -133,7 +127,6 @@ func TestMeterEstimatesOutputWithoutUsage(t *testing.T) {
 
 // FWD-02、FWD-03
 func TestShouldForwardFiltersInjectedUsageChunk(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	usageChunk := sse.Event{Data: []byte(`{"id":"x","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)}
 	normal := sse.Event{Data: []byte(`{"id":"x","choices":[{"index":0,"delta":{"content":"a"}}],"usage":null}`)}
 	done := sse.Event{Data: []byte(`[DONE]`)}

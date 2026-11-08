@@ -1,11 +1,14 @@
 package openai
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
@@ -79,22 +82,60 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	return &protocol.Response{Kind: protocol.ResponseBuffered, Status: resp.StatusCode, Header: h, Body: body, Meter: m}, nil
 }
 
-// prepareBody 实现 PT-01 ~ PT-03。
+// prepareBody 实现 PT-01 ~ PT-03：改写 model；流式且客户端没有要求 usage 时注入 stream_options.include_usage。
 func prepareBody(body []byte, upstreamModel string, stream bool) ([]byte, bool, error) {
-	// TODO(T09B): 改写 model；stream 时按 PT-03 注入 stream_options.include_usage。
-	return nil, false, apperr.NotImplemented("T09B")
+	out, err := jsonx.SetTopLevelString(body, "model", upstreamModel)
+	if err != nil {
+		return nil, false, apperr.New(apperr.CodeInvalidRequest, "request body must be a JSON object")
+	}
+	if !stream {
+		return out, false, nil
+	}
+	if v, ok := jsonx.GetBool(out, "stream_options", "include_usage"); ok && v {
+		return out, false, nil
+	}
+	opts, ok := jsonx.Get(out, "stream_options")
+	if !ok {
+		opts = json.RawMessage(`{}`)
+	}
+	opts, err = jsonx.SetTopLevel(opts, "include_usage", json.RawMessage("true"))
+	if err != nil {
+		return nil, false, apperr.New(apperr.CodeInvalidRequest, "stream_options must be an object")
+	}
+	if out, err = jsonx.SetTopLevel(out, "stream_options", opts); err != nil {
+		return nil, false, apperr.Wrap(apperr.CodeInternal, "rewrite stream_options", err)
+	}
+	return out, true, nil
 }
 
 // newRequest 实现 HDR-01、HDR-02、HDR-04、HDR-05。
 func (e Egress) newRequest(ctx context.Context, baseURL string, secret []byte, body []byte, inbound http.Header) (*http.Request, error) {
-	// TODO(T09B): URL = protocol.JoinURL(baseURL, "/v1/chat/completions")；Authorization: Bearer <secret>。
-	return nil, apperr.NotImplemented("T09B")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, protocol.JoinURL(baseURL, "/v1/chat/completions"), bytes.NewReader(body))
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternal, "build upstream request", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+string(secret))
+	ua := e.UserAgent
+	if ua == "" {
+		ua = "universal-ai-gateway"
+	}
+	req.Header.Set("User-Agent", ua)
+	return req, nil
 }
 
 // shouldForward 实现 FWD-02、FWD-03。
 func shouldForward(ev sse.Event, injectedUsage bool) bool {
-	// TODO(T09B): injectedUsage 时过滤「choices 为空且 usage 非 null」的 chunk。
-	return true
+	if !injectedUsage {
+		return true
+	}
+	choices, ok := jsonx.Get(ev.Data, "choices")
+	if !ok || !bytes.Equal(bytes.TrimSpace(choices), []byte("[]")) {
+		return true
+	}
+	_, hasUsage := jsonx.Get(ev.Data, "usage")
+	return !hasUsage
 }
 
 // meter 累积 OpenAI 响应中的 usage（USE-03 ~ USE-06）。实现 protocol.Meter。
@@ -105,12 +146,51 @@ type meter struct {
 	textBytes int64 // 已观察到的 delta.content 字节数，用于 USE-07 估算
 }
 
+// apply 实现 USE-03、USE-04。
+func (m *meter) apply(u json.RawMessage) {
+	prompt, ok := jsonx.GetInt64(u, "prompt_tokens")
+	if !ok {
+		return
+	}
+	cached, ok := jsonx.GetInt64(u, "prompt_tokens_details", "cached_tokens")
+	if !ok {
+		cached, _ = jsonx.GetInt64(u, "prompt_cache_hit_tokens")
+	}
+	completion, _ := jsonx.GetInt64(u, "completion_tokens")
+	m.usage = pricing.Usage{
+		pricing.UnitInputTokens:     max(prompt-cached, 0),
+		pricing.UnitCacheReadTokens: cached,
+		pricing.UnitOutputTokens:    completion,
+	}
+	m.haveUsage = true
+}
+
 func (m *meter) observeEvent(ev sse.Event) {
-	// TODO(T09B): 忽略 [DONE]；解析 data JSON 中的顶层 usage（USE-03 ~ USE-05）；累计 choices[*].delta.content 字节数。
+	if bytes.Equal(bytes.TrimSpace(ev.Data), []byte("[DONE]")) { // USE-05
+		return
+	}
+	if u, ok := jsonx.Get(ev.Data, "usage"); ok {
+		m.apply(u)
+	}
+	choices, ok := jsonx.Get(ev.Data, "choices")
+	if !ok {
+		return
+	}
+	for i := 0; ; i++ {
+		c, ok := jsonx.ArrayElem(choices, i)
+		if !ok {
+			return
+		}
+		if text, ok := jsonx.GetString(c, "delta", "content"); ok {
+			m.textBytes += int64(len(text))
+		}
+	}
 }
 
 func (m *meter) observeBody(body []byte) {
-	// TODO(T09B)
+	if u, ok := jsonx.Get(body, "usage"); ok {
+		m.apply(u)
+	}
 }
 
 // Usage 实现 USE-07：有 usage → UsageUpstream；没有但有文本 → 只估算输出，UsageEstimated；都没有 → UsageNone。

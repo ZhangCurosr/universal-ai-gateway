@@ -12,7 +12,6 @@ import (
 
 // spec/08 §5：每个适配器都必须通过一致性测试套件。
 func TestIngressConformance(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	gen := []byte(`{"model":"suite-model","max_completion_tokens":512,"max_tokens":99,"messages":[{"role":"user","content":"hi"}]}`)
 	adaptertest.RunIngress(t, Ingress{}, adaptertest.IngressFixture{
 		Valid: []adaptertest.IngressCase{
@@ -32,7 +31,6 @@ func TestIngressConformance(t *testing.T) {
 }
 
 func TestEgressConformance(t *testing.T) {
-	t.Skip("TODO(T09B)")
 	streamReq := []byte(`{"model":"alias","stream":true,"messages":[{"role":"user","content":"hi"}],"temperature":0.2}`)
 	bodyReq := []byte(`{"model":"alias","messages":[{"role":"user","content":"hi"}]}`)
 	checkBody := func(in []byte) func(*testing.T, *http.Request, []byte) {
