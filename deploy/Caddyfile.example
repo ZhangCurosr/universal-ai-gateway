@@ -1,0 +1,52 @@
+# Universal AI Gateway — Caddy 反向代理示例（spec/12 §3.1，形态 C：域名对外）
+#
+# 前提：
+#   - gateway.yaml 中 server.data_listen: "127.0.0.1:8080"（DEP-01：只让本机的 Caddy 访问）
+#   - gateway.yaml 中 server.trusted_proxies: ["127.0.0.1/32", "::1/128"]（DEP-02）
+#   - 域名已解析到本机，80/443 端口对外开放（Caddy 自动申请与续期 HTTPS 证书）
+#
+# 校验：caddy validate --config deploy/Caddyfile.example --adapter caddyfile
+
+gateway.example.com {
+	request_body {
+		# 与 limits.max_request_body_bytes（默认 33554432 = 32 MiB）保持一致。
+		# 注意 Caddy 中 MB 是十进制（10^6），MiB 才是 1024^2。
+		max_size 32MiB
+	}
+
+	reverse_proxy 127.0.0.1:8080 {
+		# 立即转发 SSE（/v1/messages、/v1/chat/completions、/v1/responses 流式），不缓冲
+		flush_interval -1
+		transport http {
+			# 长流式响应；接入同步封装的长任务（如 MinerU）时，必须 >= 该池的 timeouts.response_header_base
+			read_timeout 15m
+			write_timeout 15m
+		}
+	}
+}
+
+# 接入文件上传类 API（BodyStream 路由，如 MinerU）时，只对上传路径放宽请求体上限，
+# 上限与 limits.max_stream_body_bytes（默认 536870912 = 512 MiB）一致，例如：
+#
+# gateway.example.com {
+# 	@upload {
+# 		method POST
+# 		path /v1/parse /v1/tasks
+# 	}
+# 	handle @upload {
+# 		request_body {
+# 			max_size 512MiB
+# 		}
+# 		reverse_proxy 127.0.0.1:8080 {
+# 			flush_interval -1
+# 		}
+# 	}
+# 	handle {
+# 		request_body {
+# 			max_size 32MiB
+# 		}
+# 		reverse_proxy 127.0.0.1:8080 {
+# 			flush_interval -1
+# 		}
+# 	}
+# }

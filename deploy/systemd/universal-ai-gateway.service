@@ -1,0 +1,31 @@
+# Universal AI Gateway — systemd 服务（spec/12 §5.1）
+#
+# 安装：
+#   sudo useradd --system --home /opt/uaig --shell /usr/sbin/nologin uaig
+#   sudo install -d -o uaig -g uaig -m 0700 /opt/uaig/data /opt/uaig/secrets
+#   sudo cp universal-ai-gateway.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now universal-ai-gateway
+# 首次启动后用 journalctl -u universal-ai-gateway 查看只显示一次的 BOOTSTRAP ADMIN TOKEN。
+#
+# 校验：systemd-analyze verify deploy/systemd/universal-ai-gateway.service
+
+[Unit]
+Description=Universal AI Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=uaig
+WorkingDirectory=/opt/uaig
+ExecStart=/opt/uaig/bin/gateway serve --config /opt/uaig/gateway.yaml
+Restart=on-failure
+RestartSec=3
+# 大于 shutdown_grace（默认 30s），留出排空在途请求与计费刷盘的时间
+TimeoutStopSec=40
+LimitNOFILE=65536
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/uaig/data /opt/uaig/secrets
+
+[Install]
+WantedBy=multi-user.target

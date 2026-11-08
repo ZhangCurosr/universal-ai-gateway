@@ -240,7 +240,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   6. `cfg.MCP.Disabled` 为 false 时构造 `mcp.New(mcp.Deps{...})`，作为 `DataDeps.MCP`，`DataDeps.MCPErrorWriter = mcp.WriteHTTPError`。
 - **测试**：`TestE2E`：在 `t.TempDir()` 中写配置，在 goroutine 中启动 `run(ctx, cfg, runOptions{Stderr: &buf, OnListening: ...})`（两个监听地址都设为 `127.0.0.1:0`，通过 `OnListening` 拿到实际地址；bootstrap Token 从 `buf` 中按 BOOT-02 的格式解析），用 bootstrap 管理员 Token 调管理 API 创建客户端与 Key（Key 指向 `httptest` 假上游），然后以客户端身份发流式与非流式请求，最后取消 ctx，再用 `mcp.Client` 对同一网关调用 `tools/list` 与 `ask_model`（假上游实现 `/v1/responses`），断言 `usage_events` 中有 3 条记录、客户端 `spent` > 0、进程干净退出。另新增 `TestSlowHeaderClosed`：把 `read_header_timeout` 设为 200ms，建立 TCP 连接后只发半个请求头，断言 1 秒内连接被服务端关闭。
 
-## T15 部署示例与用户部署指南 — 状态：`TODO`
+## T15 部署示例与用户部署指南 — 状态：`DONE`
 
 - **前置**：T14
 - **必读规格**：12 全章
