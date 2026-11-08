@@ -32,7 +32,6 @@ func wantCode(t *testing.T, err error, code apperr.Code) {
 }
 
 func TestReserveWithinQuota(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	r, err := m.Reserve(1, "r1", 400)
 	if err != nil || r.Amount != 400 {
@@ -45,7 +44,6 @@ func TestReserveWithinQuota(t *testing.T) {
 }
 
 func TestReserveExceedsQuota(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	if _, err := m.Reserve(1, "r1", 800); err != nil {
 		t.Fatal(err)
@@ -58,13 +56,11 @@ func TestReserveExceedsQuota(t *testing.T) {
 }
 
 func TestReserveUnknownClient(t *testing.T) {
-	t.Skip("TODO(T05)")
 	_, err := newTestMemory(16).Reserve(99, "r", 1) // LED-02
 	wantCode(t, err, apperr.CodeUnauthenticated)
 }
 
 func TestUnlimited(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	if _, err := m.Reserve(2, "r", 1<<50); err != nil {
 		t.Fatalf("unlimited Reserve() error = %v", err)
@@ -72,7 +68,6 @@ func TestUnlimited(t *testing.T) {
 }
 
 func TestSettleOverdraft(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	r, _ := m.Reserve(1, "r1", 100)
 	if err := m.Settle(r, costEvent("r1", 1500)); err != nil { // LED-06：允许透支
@@ -90,7 +85,6 @@ func TestSettleOverdraft(t *testing.T) {
 }
 
 func TestSettleTwice(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	r, _ := m.Reserve(1, "r1", 100)
 	if err := m.Settle(r, costEvent("r1", 10)); err != nil {
@@ -109,14 +103,12 @@ func TestSettleTwice(t *testing.T) {
 }
 
 func TestSettleNegativeCost(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	r, _ := m.Reserve(1, "r1", 100)
 	wantCode(t, m.Settle(r, costEvent("r1", -1)), apperr.CodeInternal) // LED-11
 }
 
 func TestReleaseRestores(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	r, _ := m.Reserve(1, "r1", 1000)
 	m.Release(r) // LED-09
@@ -133,7 +125,6 @@ func TestReleaseRestores(t *testing.T) {
 }
 
 func TestAdmissionBackpressure(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(10) // 高水位 = 9
 	for i := 0; i < 9; i++ {
 		r, err := m.Reserve(2, fmt.Sprint(i), 1)
@@ -149,7 +140,6 @@ func TestAdmissionBackpressure(t *testing.T) {
 }
 
 func TestConcurrentReserveNeverExceeds(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := NewMemory(MemoryConfig{EventQueueCapacity: 16})
 	m.LoadAccounts([]Account{{ClientID: 1, QuotaNanoUSD: 500}})
 	var ok atomic.Int64
@@ -170,7 +160,6 @@ func TestConcurrentReserveNeverExceeds(t *testing.T) {
 }
 
 func TestUpsertKeepsSpent(t *testing.T) {
-	t.Skip("TODO(T05)")
 	m := newTestMemory(16)
 	r, _ := m.Reserve(1, "r1", 100)
 	_ = m.Settle(r, costEvent("r1", 300))
@@ -185,5 +174,47 @@ func TestUpsertKeepsSpent(t *testing.T) {
 	m.UpsertAccount(Account{ClientID: 3, QuotaNanoUSD: 10, SpentNanoUSD: 4})
 	if s, ok := m.Snapshot(3); !ok || s.SpentNanoUSD != 4 {
 		t.Fatalf("new account snapshot = %+v, %v", s, ok)
+	}
+}
+
+// LED-01：amount <= 0 按 1 预留
+func TestReserveNonPositiveAmount(t *testing.T) {
+	m := newTestMemory(16)
+	r, err := m.Reserve(1, "r", 0)
+	if err != nil || r.Amount != 1 {
+		t.Fatalf("Reserve(0) = %+v, %v", r, err)
+	}
+}
+
+// LoadAccounts 覆盖已有账户；结算时账户已不存在仍发送事件
+func TestLoadAccountsReplacesAndSettleWithoutAccount(t *testing.T) {
+	m := newTestMemory(16)
+	r, _ := m.Reserve(1, "r1", 10)
+	m.LoadAccounts([]Account{{ClientID: 5, QuotaNanoUSD: 1}})
+	if _, ok := m.Snapshot(1); ok {
+		t.Fatal("old account survived LoadAccounts")
+	}
+	if err := m.Settle(r, costEvent("r1", 7)); err != nil {
+		t.Fatal(err)
+	}
+	if ev := <-m.Events(); ev.CostNanoUSD != 7 {
+		t.Fatalf("event = %+v", ev)
+	}
+}
+
+// LED-11：负成本不消耗 Reservation，之后仍可正常结算
+func TestSettleNegativeCostLeavesReservationOpen(t *testing.T) {
+	m := newTestMemory(16)
+	r, _ := m.Reserve(1, "r1", 100)
+	_ = m.Settle(r, costEvent("r1", -1))
+	if err := m.Settle(r, costEvent("r1", 5)); err != nil {
+		t.Fatalf("Settle after rejected negative cost: %v", err)
+	}
+}
+
+func TestNewMemoryDefaults(t *testing.T) {
+	m := NewMemory(MemoryConfig{})
+	if cap(m.events) != 4096 || m.cfg.AdmissionHighWatermark != 0.9 {
+		t.Fatalf("defaults = %d, %v", cap(m.events), m.cfg.AdmissionHighWatermark)
 	}
 }
