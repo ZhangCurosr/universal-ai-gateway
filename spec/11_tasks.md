@@ -62,7 +62,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 
 ---
 
-## T01 SQLite 仓储：客户端与设置 — 状态：`TODO`
+## T01 SQLite 仓储：客户端与设置 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：04 §1–§4（STO-01 ~ STO-05、STO-15）、02 §4 §10
@@ -95,7 +95,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **要做的事**：实现 `Reloader.Reload(ctx)`：`ListClients` → `Index.Replace`。错误用 `fmt.Errorf("reload clients: %w", err)` 包装。
 - **测试**：`TestReloaderReplacesIndex`（已写好，使用只实现 `ListClients` 的 `fakeLister`）；另补充一个 `ListClients` 返回错误时 `Reload` 返回包装错误、且索引保持旧内容的用例。
 
-## T04 每客户端 RPM 限流 — 状态：`TODO`
+## T04 每客户端 RPM 限流 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：09 §3（RL-01 ~ RL-06）。注意 `Allow` 的键是字符串（`"c:<clientID>"` 或 `"ip:<addr>"`），同一实现服务两种用途
