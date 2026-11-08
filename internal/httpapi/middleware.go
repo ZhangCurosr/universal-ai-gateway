@@ -141,6 +141,9 @@ func (g *OverloadGuard) InFlight() (requests, bodyBytes int64) {
 
 // Recover 实现 MW-03。ew 是兜底协议的错误格式（全局中间件此时还不知道请求属于哪个协议）。
 func Recover(log *slog.Logger, ew ErrorWriter) func(http.Handler) http.Handler {
+	if log == nil {
+		log = obs.Discard() // 否则 handler panic 时 defer 内再次 panic，500 永远写不出去
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			tw := &trackingWriter{ResponseWriter: w}

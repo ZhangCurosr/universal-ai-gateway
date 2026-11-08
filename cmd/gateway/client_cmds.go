@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -40,7 +41,7 @@ func clientEnv(getenv func(string) string, stderr io.Writer) (*mcp.Client, bool)
 		fmt.Fprintf(stderr, "gateway: %s must start with http:// or https://\n", envURL)
 		return nil, false
 	}
-	return &mcp.Client{URL: base + "/mcp", Token: token, HTTP: &http.Client{Timeout: 0}}, true
+	return &mcp.Client{URL: base + "/mcp", Token: token, HTTP: newCLIHTTPClient()}, true
 }
 
 // cmdTools 实现 `gateway tools [--json]`（CLI-06）。
@@ -148,4 +149,17 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// newCLIHTTPClient 返回 CLI 用的 HTTP 客户端：不设 Client.Timeout（同步封装的工具调用可能
+// 持续数分钟，总时长由网关侧的超时控制），但连接与 TLS 握手必须有上限，否则网关地址
+// 不可达时 `gateway tools` / `gateway mcp` 会无限挂起（AGENTS §3 #6）。
+func newCLIHTTPClient() *http.Client {
+	return &http.Client{Transport: &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}}
 }

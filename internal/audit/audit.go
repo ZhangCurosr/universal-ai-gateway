@@ -121,6 +121,14 @@ func (w *Writer) Run(ctx context.Context) error {
 		buf = buf[:0]
 	}
 
+	// 主循环中的写入：不随 ctx 取消而中断（否则正在写的一批会被丢弃），但设上限，
+	// 防止 SQLite 卡住时 Run 永远阻塞（AGENTS §3 #6）。
+	flushBounded := func() {
+		fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		flush(fctx)
+	}
+
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
 
@@ -141,17 +149,19 @@ mainLoop:
 				break mainLoop
 			}
 			if len(buf) >= batchSize {
-				flush(ctx)
+				flushBounded()
 				ticker.Reset(flushInterval)
 			}
 		case <-ticker.C:
-			flush(ctx)
+			flushBounded()
 		}
 	}
 
 	// AUD-03: ctx 取消后读空队列做最后一次写入（5 秒超时），然后返回。
+	// 最多读取一个队列容量的记录：关停期间生产者仍可能持续 Submit，不设上限 Run 可能永不返回。
+	maxDrain := cap(w.p.ch)
 drainLoop:
-	for {
+	for drained := 0; drained < maxDrain; drained++ {
 		select {
 		case rec, ok := <-w.p.ch:
 			if !ok {

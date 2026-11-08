@@ -47,6 +47,16 @@ func TestRecoverReturns500(t *testing.T) {
 	}
 }
 
+// 未注入 Logger 时 Recover 不能在 defer 里二次 panic。
+func TestRecoverNilLogger(t *testing.T) {
+	h := Recover(nil, testErrorWriter)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
+	if rec.Code != 500 {
+		t.Fatalf("status=%d, want 500", rec.Code)
+	}
+}
+
 // OVL-01 / OVL-02：并发上限
 func TestOverloadGuardRejectsWhenFull(t *testing.T) {
 	g := NewOverloadGuard(1, 1<<20, 1<<10)
