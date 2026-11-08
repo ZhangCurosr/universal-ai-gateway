@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
@@ -97,7 +98,9 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 
 // upstreamEndpoint 返回各操作的上游方法与路径（EG-R01）。已实现。
 func upstreamEndpoint(call *protocol.Call) (method, path string, ok bool) {
-	id := call.Params["id"]
+	// r.PathValue 已做百分号解码："%2F" 会还原成 "/"。不转义就拼进路径，客户端可以把
+	// 带着上游 Key 的请求引到上游的任意路径。
+	id := url.PathEscape(call.Params["id"])
 	q := ""
 	if raw := call.Params["query"]; raw != "" {
 		q = "?" + raw

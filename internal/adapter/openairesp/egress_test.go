@@ -22,6 +22,8 @@ func TestUpstreamEndpoint(t *testing.T) {
 		{protocol.Call{Op: OpDelete, Params: map[string]string{"id": "r1"}}, "DELETE", "/v1/responses/r1"},
 		{protocol.Call{Op: OpCancel, Params: map[string]string{"id": "r1"}}, "POST", "/v1/responses/r1/cancel"},
 		{protocol.Call{Op: OpInputItems, Params: map[string]string{"id": "r1"}}, "GET", "/v1/responses/r1/input_items"},
+		// PathValue 解码后的 "/" 必须被转义，不能跳出 /v1/responses/{id}
+		{protocol.Call{Op: OpGet, Params: map[string]string{"id": "x/../../v1/models"}}, "GET", "/v1/responses/x%2F..%2F..%2Fv1%2Fmodels"},
 	}
 	for _, tt := range tests {
 		m, p, ok := upstreamEndpoint(&tt.call)

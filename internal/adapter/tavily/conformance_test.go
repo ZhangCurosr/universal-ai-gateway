@@ -96,8 +96,8 @@ func TestEgressConformance(t *testing.T) {
 				Envelope:   protocol.Envelope{Op: OpCrawl, Model: ModelCrawl, Body: []byte(`{"urls":["https://example.com"]}`)},
 				Upstream:   adaptertest.ServeBody("application/json", crawlResp),
 				WantKind:   protocol.ResponseBuffered,
-				WantUsage:  pricing.Usage{UnitCredits: 1},
-				WantSource: protocol.UsageEstimated,
+				WantUsage:  pricing.Usage{}, // spec/08 §8.1：没有估计用量，由 reserve 决定
+				WantSource: protocol.UsageNone,
 				WantClient: crawlResp,
 			},
 		},

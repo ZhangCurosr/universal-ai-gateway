@@ -3,9 +3,12 @@ package mineru
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -137,7 +140,7 @@ func (e Egress) doTaskCreate(ctx context.Context, up protocol.Upstream, call *pr
 
 func (e Egress) doTaskGet(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
 	id := call.Params["id"]
-	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+id)
+	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(id))
 	if q := call.Params["query"]; q != "" {
 		reqURL += "?" + q
 	}
@@ -180,7 +183,7 @@ func (e Egress) doTaskGet(ctx context.Context, up protocol.Upstream, call *proto
 
 func (e Egress) doTaskResult(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
 	id := call.Params["id"]
-	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+id+"/result")
+	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(id)+"/result")
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
@@ -250,17 +253,17 @@ pollLoop:
 		select {
 		case <-ctx.Done():
 			outcome := protocol.ClassifyNetError(ctx.Err(), ctx)
-			return nil, &protocol.AttemptError{
+			return nil, afterSubmit(taskID, &protocol.AttemptError{
 				Outcome: outcome,
 				Err:     ctx.Err(),
-			}
+			})
 		case <-time.After(interval):
 		}
 
-		pollURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+taskID)
+		pollURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(taskID))
 		pollReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
 		if err != nil {
-			return nil, err
+			return nil, afterSubmit(taskID, err)
 		}
 		pollReq.Header.Set("Authorization", "Bearer "+string(up.Secret))
 		pollReq.Header.Set("User-Agent", e.userAgent())
@@ -268,11 +271,11 @@ pollLoop:
 
 		pollResp, err := protocol.Send(up, pollReq)
 		if err != nil {
-			return nil, err
+			return nil, afterSubmit(taskID, err)
 		}
 		pollBody, err := protocol.ReadBody(up, pollResp)
 		if err != nil {
-			return nil, err
+			return nil, afterSubmit(taskID, err)
 		}
 
 		status := extractTaskStatus(pollBody)
@@ -298,10 +301,10 @@ pollLoop:
 	}
 
 	// 3. 下载结果 GET /v1/tasks/{id}/result
-	resultURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+taskID+"/result")
+	resultURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(taskID)+"/result")
 	resReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resultURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, afterSubmit(taskID, err)
 	}
 	resReq.Header.Set("Authorization", "Bearer "+string(up.Secret))
 	resReq.Header.Set("User-Agent", e.userAgent())
@@ -309,11 +312,11 @@ pollLoop:
 
 	resResp, err := protocol.Send(up, resReq)
 	if err != nil {
-		return nil, err
+		return nil, afterSubmit(taskID, err)
 	}
 	resultBody, err := protocol.ReadBody(up, resResp)
 	if err != nil {
-		return nil, err
+		return nil, afterSubmit(taskID, err)
 	}
 
 	if actualPages == 0 {
@@ -326,12 +329,12 @@ pollLoop:
 		h.Set("Content-Type", "text/markdown; charset=utf-8")
 	}
 
-	// spec/08 §8.2: 同步封装完成时按上游报告的实际页数结算（UsageUpstream）
-	usage := pricing.Usage{UnitRequests: 1}
+	// spec/08 §8.2: 同步封装完成时按上游报告的实际页数结算（UsageUpstream）。
+	// 上游没报告页数时不能按 0 页结算（少计费），返回 UsageNone 让内核按预留用量结算（spec/06 §3.3）。
+	m := &meter{src: protocol.UsageNone}
 	if actualPages > 0 {
-		usage[UnitPages] = actualPages
+		m = &meter{usage: pricing.Usage{UnitRequests: 1, UnitPages: actualPages}, src: protocol.UsageUpstream}
 	}
-	m := &meter{usage: usage, src: protocol.UsageUpstream}
 
 	return &protocol.Response{
 		Kind:   protocol.ResponseBuffered,
@@ -340,6 +343,25 @@ pollLoop:
 		Body:   resultBody,
 		Meter:  m,
 	}, nil
+}
+
+// afterSubmit 把任务提交成功之后的失败改写成不可重试。
+//
+// SPEC-GAP(T31): 任务一旦创建，上游就会按页计费；如果内核在轮询/下载失败时换 Key 重试，
+// 会重新上传并创建第二个付费任务。这里选择最保守的做法：提交之后的任何失败都不重试，
+// 错误信息带上任务 ID，便于运维用 GET /v1/tasks/{id} 找回结果。客户端断开保持 Canceled。
+func afterSubmit(taskID string, err error) error {
+	var ae *protocol.AttemptError
+	if !errors.As(err, &ae) {
+		ae = &protocol.AttemptError{Outcome: protocol.Outcome{Kind: protocol.OutcomeNetworkError}, Err: err}
+	}
+	if !ae.Outcome.Kind.Retryable() {
+		return ae
+	}
+	out := *ae
+	out.Outcome.Kind = protocol.OutcomeLocalError // 不可重试且不惩罚 Key
+	out.Err = fmt.Errorf("mineru task %s submitted but not completed (%s): %w", taskID, ae.Outcome.Kind, ae.Err)
+	return &out
 }
 
 func (e Egress) userAgent() string {
@@ -371,7 +393,10 @@ func makeBodyReader(call *protocol.Call) io.Reader {
 		return bytes.NewReader(call.Body)
 	}
 	if u := call.Params["url"]; u != "" {
-		return strings.NewReader(`{"url":"` + u + `"}`)
+		b, err := json.Marshal(map[string]string{"url": u})
+		if err == nil { // map[string]string 的 Marshal 不会失败
+			return bytes.NewReader(b)
+		}
 	}
 	return http.NoBody
 }
@@ -383,7 +408,7 @@ func setupRequestHeaders(req *http.Request, call *protocol.Call, secret []byte, 
 
 	if call.Header != nil && call.Header.Get("Content-Type") != "" {
 		req.Header.Set("Content-Type", call.Header.Get("Content-Type"))
-	} else if (call.Params != nil && call.Params["url"] != "") || (len(call.Body) > 0 && bytes.TrimSpace(call.Body)[0] == '{') {
+	} else if (call.Params != nil && call.Params["url"] != "") || bytes.HasPrefix(bytes.TrimSpace(call.Body), []byte("{")) {
 		req.Header.Set("Content-Type", "application/json")
 	} else if call.BodyStream != nil {
 		req.Header.Set("Content-Type", "application/octet-stream")

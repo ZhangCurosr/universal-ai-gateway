@@ -36,8 +36,10 @@ func (Egress) Prepare(env *protocol.Envelope, upstreamModel string) (*protocol.C
 		return nil, err
 	}
 
-	estCredits := int64(1)
+	// spec/08 §8.1：只有 search 有估计用量；extract / crawl 为 0，由 reserve 决定。
+	var estCredits int64
 	if env.Op == OpSearch {
+		estCredits = 1
 		if depth, ok := jsonx.GetString(env.Body, "search_depth"); ok && depth == "advanced" {
 			estCredits = 2
 		}
@@ -94,13 +96,13 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	if c, ok := extractCredits(body); ok {
 		usage = pricing.Usage{UnitCredits: c}
 		src = protocol.UsageUpstream
-	} else {
-		est, _ := call.State.(int64)
-		if est <= 0 {
-			est = 1
-		}
+	} else if est, _ := call.State.(int64); est > 0 {
 		usage = pricing.Usage{UnitCredits: est}
 		src = protocol.UsageEstimated
+	} else {
+		// spec/08 §8.1：extract / crawl 没有估计用量——UsageNone 让内核按 reserve 结算，
+		// 而不是按 1 credit 少计费（Tavily 按 URL 批次计费）。
+		src = protocol.UsageNone
 	}
 
 	h := http.Header{}

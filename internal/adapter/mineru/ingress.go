@@ -246,9 +246,6 @@ func (Ingress) ToolResult(name string, status int, _ http.Header, body []byte) (
 
 	trimmed := bytes.TrimSpace(body)
 	if len(trimmed) > 0 && trimmed[0] == '{' {
-		var structured map[string]any
-		_ = json.Unmarshal(trimmed, &structured)
-
 		md := extractMarkdown(trimmed)
 		if md != "" {
 			return &protocol.ToolResult{

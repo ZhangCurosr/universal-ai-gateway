@@ -214,3 +214,72 @@ func TestEgressDo_UnsupportedOp(t *testing.T) {
 		t.Errorf("unsupported op error = %v, want invalid_request", err)
 	}
 }
+
+// mineruStub 返回一个模拟 MinerU：提交返回 task_1，轮询按 poll 应答，结果返回 Markdown。
+func mineruStub(t *testing.T, poll http.HandlerFunc) (*httptest.Server, protocol.Upstream) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/tasks":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"task_1","status":"pending"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/task_1":
+			poll(w, r)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/tasks/task_1/result":
+			w.Header().Set("Content-Type", "text/markdown")
+			_, _ = w.Write([]byte("# doc"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv, protocol.Upstream{BaseURL: srv.URL, Secret: []byte("test_secret"), Client: srv.Client(), MaxBufferedBytes: 1 << 20}
+}
+
+var fastPoll = Egress{InitialPollInterval: time.Millisecond, MaxPollInterval: 2 * time.Millisecond}
+
+// spec/08 §8.2 + spec/06 §3.3：上游完成但没报告页数时不能按 0 页结算，交给内核按预留结算。
+func TestEgressDo_NoPageCountFallsBackToReserve(t *testing.T) {
+	_, up := mineruStub(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"task_1","status":"completed"}`))
+	})
+	resp, err := fastPoll.Do(context.Background(), up, &protocol.Call{Op: OpParse, Model: ModelParse})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if _, src := resp.Meter.Usage(); src != protocol.UsageNone {
+		t.Errorf("usage source = %v, want UsageNone", src)
+	}
+}
+
+func TestEgressDo_PageCountBilledFromUpstream(t *testing.T) {
+	_, up := mineruStub(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"task_1","status":"completed","pages":7}`))
+	})
+	resp, err := fastPoll.Do(context.Background(), up, &protocol.Call{Op: OpParse, Model: ModelParse})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	u, src := resp.Meter.Usage()
+	if src != protocol.UsageUpstream || u[UnitPages] != 7 {
+		t.Errorf("usage = %v (%v), want pages=7 upstream", u, src)
+	}
+}
+
+// SPEC-GAP(T31)：任务提交后轮询失败不得重试，否则会重复上传、产生第二个付费任务。
+func TestEgressDo_FailureAfterSubmitNotRetryable(t *testing.T) {
+	_, up := mineruStub(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	_, err := fastPoll.Do(context.Background(), up, &protocol.Call{Op: OpParse, Model: ModelParse})
+	var ae *protocol.AttemptError
+	if !errors.As(err, &ae) {
+		t.Fatalf("Do() error = %v, want *protocol.AttemptError", err)
+	}
+	if ae.Outcome.Kind.Retryable() {
+		t.Errorf("Outcome.Kind = %v, want non-retryable", ae.Outcome.Kind)
+	}
+	if !strings.Contains(ae.Err.Error(), "task_1") {
+		t.Errorf("error %q should carry the task id", ae.Err)
+	}
+}
