@@ -103,7 +103,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **测试**：`TestUnlimited`、`TestBurstThenReject`、`TestRefill`、`TestRPMChange`、`TestSweep`、`TestConcurrentAllow`（100 个 goroutine 共调用 1000 次、rpm=600 时，放行次数必须恰好 600）。
 - **陷阱**：用注入的 `now`，不要在实现里调用 `time.Now()`。
 
-## T05 内存账本 — 状态：`TODO`
+## T05 内存账本 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：06 §1–§3（LED-01 ~ LED-11）
@@ -120,7 +120,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **测试**：`TestFlushByBatchSize`、`TestFlushByInterval`、`TestRetryKeepsBatch`（假 Store 前两次返回错误，第三次成功，最终数据库中事件不重不漏）、`TestShutdownDrains`、`TestShutdownWritesUnflushedFile`、`TestRecoverUnflushed`。
 - **陷阱**：`Run` 退出前的最终写入必须用新的 `context.WithTimeout(context.Background(), 5*time.Second)`。
 
-## T07 调度器亲和缓存 — 状态：`TODO`
+## T07 调度器亲和缓存 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：07 §4（AFF-01 ~ AFF-06）
@@ -128,7 +128,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **要做的事**：16 分片，每片 `sync.Mutex` + `map[string]*list.Element` + `container/list`。
 - **测试**：`TestAffinityGetPut`、`TestAffinityExpire`、`TestAffinityTouchExtends`、`TestAffinityLRUEviction`（容量 16 时每片 1 个，向同一分片写两个 key，先写的被淘汰）、`TestAffinityConcurrent`。
 
-## T08 调度器：选择、状态机、熔断、加载 — 状态：`TODO`
+## T08 调度器：选择、状态机、熔断、加载 — 状态：`DONE`
 
 - **前置**：T02、T07
 - **必读规格**：07 §1–§5（SCH-01 ~ SCH-15、ST-01 ~ ST-09、§5.1）
@@ -140,7 +140,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **测试**：`scheduler_test.go` 中已写好的全部用例（`TestRateLimitedCooldown`、`TestAcquireSkipsCooldown`、`TestAcquireRespectsMaxInFlight`、`TestAffinityPreferred`、`TestAffinityFallbackWhenBusy`、`TestExcludeTried`、`TestLeastInflightOrder`、`TestWeightedRoundRobinDistribution`、`TestFinishOnce`、`TestAuthFailedTwiceQuarantines`、`TestOverloadedNoPenalty`、`TestNoKeyRetryAfter`、`TestBreakerOpensAndHalfOpen`、`TestSetKeysPreservesRuntime`、`TestSetKeysChangedFieldsKeepCooldown`、`TestStrictPin`）；`breaker_test.go` 覆盖：窗口过期后统计清零、`MinRequests` 未达到时不打开、探测失败后打开时长翻倍且不超过上限；`load_test.go` 覆盖：解密失败的 Key 被跳过。
 - **陷阱**：`OnQuarantine` 回调**不能**在持锁时调用；用 `go` 调用或在释放锁后调用。
 
-## T09A Anthropic 适配器（入站 + 出站） — 状态：`TODO`
+## T09A Anthropic 适配器（入站 + 出站） — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 全章（重点 §2、§3、§5）；13 §1
@@ -150,7 +150,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   2. 出站：`prepareBody`（PT-01、PT-02、PT-04）、`newRequest`（HDR-01 ~ HDR-03、HDR-05）、`meter.observeEvent` / `observeBody`（USE-01、USE-02、USE-07 的文本字节计数）、`classifyStreamError`（STR-05）。`Prepare`、`Do`、`meter.Usage`、`meter.Fault` 已提供，不要改。
 - **测试**：`conformance_test.go` 的 `TestIngressConformance`、`TestEgressConformance`（一致性套件，必须全部通过）；`egress_test.go` 中已写好的用例（含 `TestMeterEstimatesOutputWhenStreamCut`）；`ingress_test.go` 新增：亲和线索（有 `metadata.user_id` → `u`；没有 → `p`，且追加后续消息不改变 `Value`；都没有 → 零值）、`max_tokens` 为负数或字符串 → `invalid_request`、`WriteCatalog` 空列表时 `first_id` 为 `null`。
 
-## T09B OpenAI 兼容适配器（入站 + 出站） — 状态：`TODO`
+## T09B OpenAI 兼容适配器（入站 + 出站） — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 全章（重点 §2、§3、§5）；13 §1
@@ -171,7 +171,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   3. 工具：`ToolRequest`、`ToolResult`（TL-R01、TL-R02）。
 - **测试**：两个一致性测试；`egress_test.go` 中的 `TestPrepareBodyStoreFlag`、`TestNewRequestHeaders`、`TestMeterFailedAndCutStreams`、`TestAskModelTool`；`ingress_test.go` 新增：亲和线索四种来源（`previous_response_id` 严格、`prompt_cache_key`、`user`、前缀）、`input` 为数组时前缀只取第一个元素、`StreamError` 的格式。
 
-## T10 内核（core） — 状态：`TODO`
+## T10 内核（core） — 状态：`DONE`
 
 - **前置**：T05、T08、T09A、T09B
 - **必读规格**：**13 全章**；08 §1、§3 开头的「Do 的返回约定」；01 §6；06 §2–§3；07 §6–§7

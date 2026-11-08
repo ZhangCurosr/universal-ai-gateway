@@ -1,7 +1,10 @@
 package core
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
+	"strconv"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
@@ -14,6 +17,21 @@ const SessionHeader = "X-UAIG-Session"
 // 格式："c<clientID>:<h|u|p|j>:<hex(sha256(value))[:16]>"。
 // 记录 Response.Pins 时，内核对每个 pin 调用 AffinityKey(clientID, nil, AffinityHint{Source: AffinityPin, Value: pin})。
 func AffinityKey(clientID int64, h http.Header, hint protocol.AffinityHint) string {
-	// TODO(T10)
-	return ""
+	source, value := "", []byte(nil)
+	if !hint.Strict && h != nil {
+		if v := h.Get(SessionHeader); v != "" && len(v) <= maxSessionHeaderBytes {
+			source, value = "h", []byte(v)
+		}
+	}
+	if source == "" && len(hint.Value) > 0 && hint.Source != "" {
+		source, value = hint.Source, hint.Value
+	}
+	if source == "" {
+		return ""
+	}
+	sum := sha256.Sum256(value)
+	return "c" + strconv.FormatInt(clientID, 10) + ":" + source + ":" + hex.EncodeToString(sum[:])[:16]
 }
+
+// maxSessionHeaderBytes 是 X-UAIG-Session 的长度上限；超长视为不存在（spec/07 §7）。
+const maxSessionHeaderBytes = 128

@@ -10,7 +10,6 @@ import (
 
 // spec/07 §7
 func TestAffinityKeySources(t *testing.T) {
-	t.Skip("TODO(T10)")
 	withHeader := http.Header{}
 	withHeader.Set(SessionHeader, "my-session")
 	user := protocol.AffinityHint{Source: protocol.AffinityUser, Value: []byte("user_abc")}

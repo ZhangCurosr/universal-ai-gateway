@@ -76,7 +76,7 @@
 | `Outcome` | 最后一次尝试的 `OutcomeKind.String()`（转发结束后的最终 Outcome，见 §4）；从未尝试为空串 |
 | `Attempts` | 调用 `Egress.Do` 的次数（0 表示在尝试之前就失败了） |
 | `Stream` | `env.Stream`；`Parse` 之前失败为 false |
-| `TTFBMillis` | 从进入 Handler 到**写出响应头**的毫秒数；未写出响应头为 -1 |
+| `TTFBMillis` | 从进入 Handler 到**开始转发上游响应**（写出其响应头）的毫秒数；没有转发上游响应（含内核自己写的错误响应）为 -1 |
 | `LatencyMillis` | 从进入 Handler 到 Handler 返回的毫秒数 |
 | `CreatedAt` | 进入 Handler 时的 `Deps.Now()`（UTC） |
 
@@ -139,9 +139,10 @@ headerTimeout = response_header_base + response_header_per_mib × ceil(请求体
 
 请求体字节：缓冲时取 `len(body)`，流式时取 `r.ContentLength`（未知为 0）。
 
-- 实现：`ctx, cancel := context.WithCancel(r.Context())` + `time.AfterFunc(headerTimeout, cancel)`，把 `ctx` 传给 `Do`。
+- 实现：`ctx, cancel := context.WithCancel(r.Context())` + `time.AfterFunc(d, cancel)`，把 `ctx` 传给 `Do`。`d` 的取值：
+  - 客户端要求流式（`env.Stream`）：`d = headerTimeout`——`Do` 拿到响应头就返回事件流；
+  - 非流式：`d = max(headerTimeout, non_stream_total)`——缓冲响应在 `Do` 内读完整个响应体，非流式的大模型生成常常需要几分钟，只用 `headerTimeout` 会把正常请求截断。
 - `Do` 返回后 `Stop()` 该定时器：此后缓冲响应已完整；事件流与字节流改用 `stream_idle` 定时器（每读到一个事件或一块数据 `Reset`）。
-- 缓冲响应的整个 `Do` 另受 `non_stream_total` 约束（取两者中先到者）。
 - 异步任务的「同步封装」在 `Do` 内轮询，因此受 `headerTimeout` 约束——这类池要把 `response_header_base` 配成分钟级（spec/08 §8.2）。
 
 ## 6. 上游 HTTP 客户端（`cmd/gateway` 创建，全局共享）
