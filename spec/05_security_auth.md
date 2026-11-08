@@ -115,7 +115,7 @@ func (p *Principal) ModelAllowed(model string) bool
 | ADM-01 | 管理面所有 `/admin/api/*` 端点都要求凭据，提取方式同 AUTH-01/02 |
 | ADM-02 | 凭据对应的 Principal 必须 `Role == "admin"` 且未禁用，否则：无凭据/未知 → 401；非 admin → 403 |
 | ADM-03 | 管理员不能禁用或降级**最后一个**未禁用的管理员（`CountAdmins` 检查），返回 409 `conflict` |
-| ADM-04 | 同一来源 IP 在 1 分钟内鉴权失败 ≥ 20 次后，该 IP 后续请求直接返回 429（内存计数，不 sleep） |
+| ADM-04 | 同一来源 IP（`clientip.Trusted.From(r)`，管理面与数据面共用同一个 `trusted_proxies`）在 1 分钟内鉴权失败 ≥ 20 次后，该 IP 后续请求直接返回 429（内存计数，不 sleep） |
 
 ## 5. 管理员引导
 

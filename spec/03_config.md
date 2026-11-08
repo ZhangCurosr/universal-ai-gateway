@@ -25,10 +25,18 @@ server:
   master_key_file: "./secrets/master.key"
   shutdown_grace: 30s              # 优雅关闭等待在途请求的最长时间
   log_level: info                  # debug | info | warn | error
+  read_header_timeout: 10s         # §6：读完请求头的最长时间（防慢速攻击）
+  read_timeout: 60s                # §6：读完整个请求（头 + 体）的最长时间
+  idle_timeout: 120s               # §6：keep-alive 空闲连接保留时间
+  max_header_bytes: 65536          # §6：请求头总大小上限
+  trusted_proxies: []              # §7：可信反向代理 CIDR，例如 ["127.0.0.1/32", "::1/128"]
 
 limits:
-  max_request_body_bytes: 33554432 # 32 MiB
+  max_request_body_bytes: 33554432 # 32 MiB，单个请求体上限
   default_max_output_tokens: 8192  # 请求未给 max_tokens 时用于预留估算
+  max_in_flight_requests: 256      # spec/09 §5：数据面模型请求的全局并发上限
+  max_buffered_body_bytes: 536870912 # spec/09 §5：所有在途请求体合计的内存预算（512 MiB）
+  preauth_ip_rpm: 600              # spec/09 §5：鉴权之前每个来源 IP 每分钟请求数；0 = 关闭
 
 ledger:
   flush_interval: 250ms
@@ -88,8 +96,14 @@ models:
 | `server.master_key_file` | `./secrets/master.key` |
 | `server.shutdown_grace` | `30s` |
 | `server.log_level` | `info` |
+| `server.read_header_timeout` / `read_timeout` / `idle_timeout` | `10s` / `60s` / `120s` |
+| `server.max_header_bytes` | `65536` |
+| `server.trusted_proxies` | `[]` |
 | `limits.max_request_body_bytes` | `33554432` |
 | `limits.default_max_output_tokens` | `8192` |
+| `limits.max_in_flight_requests` | `256` |
+| `limits.max_buffered_body_bytes` | `536870912` |
+| `limits.preauth_ip_rpm` | `600` |
 | `ledger.flush_interval` | `250ms` |
 | `ledger.event_queue_capacity` | `4096` |
 | `ledger.admission_high_watermark` | `0.9` |
@@ -116,6 +130,9 @@ models:
 | CFG-07 | 价格各项 `>= 0`；`max_output_tokens > 0` |
 | CFG-08 | `ledger.admission_high_watermark` 在 `(0, 1]`；所有容量、批量大小 `> 0`；所有时长 `> 0` |
 | CFG-09 | 至少有 1 个池、1 个模型 |
+| CFG-10 | `read_header_timeout`、`read_timeout`、`idle_timeout`、`max_header_bytes` 都 `> 0`，且 `read_header_timeout <= read_timeout` |
+| CFG-11 | `trusted_proxies` 每一项都必须是 CIDR（`netip.ParsePrefix` 可解析）；单个 IP 要写成 `/32` 或 `/128` |
+| CFG-12 | `max_in_flight_requests > 0`、`preauth_ip_rpm >= 0`、`max_buffered_body_bytes >= max_request_body_bytes` |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 
@@ -138,3 +155,45 @@ models:
 2. 管理面 `Server.Shutdown`。
 3. 取消 worker 的 `ctx`，等待 `ledger.Flusher` 与 `audit.Writer` 完成最后一次刷盘（它们的 `Run` 返回）。
 4. 关闭数据库、释放目录锁，退出码 0。
+
+## 6. HTTP 服务端参数（`cmd/gateway` 创建 `http.Server` 时使用，任务卡 T14）
+
+数据面与管理面的 `http.Server` 都必须设置：
+
+```go
+&http.Server{
+    Addr:              addr,
+    Handler:           handler,
+    ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout,
+    ReadTimeout:       cfg.Server.ReadTimeout,
+    WriteTimeout:      0, // 必须为 0：流式响应可能持续数分钟，写超时会把它截断；流式超时由 spec/08 §7 控制
+    IdleTimeout:       cfg.Server.IdleTimeout,
+    MaxHeaderBytes:    cfg.Server.MaxHeaderBytes,
+    ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
+}
+```
+
+| 编号 | 规则 |
+|:--|:--|
+| SRV-01 | **禁止**使用 `http.ListenAndServe` 或零值 `http.Server`（它们没有任何超时，会被慢速攻击耗尽连接） |
+| SRV-02 | 先 `net.Listen` 再 `Server.Serve(ln)`，以便测试中用 `127.0.0.1:0` 并通过 `ln.Addr()` 拿到实际端口 |
+| SRV-03 | `ReadTimeout` 覆盖读取请求体的全过程，60 秒足以在 5 Mbps 链路上读完 32 MiB；调大 `max_request_body_bytes` 时应同步调大它 |
+
+## 7. 客户端 IP 与可信代理（`internal/clientip`，已提供参考实现）
+
+经过反向代理（Caddy、nginx、云负载均衡）后，`r.RemoteAddr` 恒为代理的地址。网关通过 `trusted_proxies` 判断是否信任 `X-Forwarded-For`：
+
+```go
+func clientip.ParseTrusted(cidrs []string) (clientip.Trusted, error)
+func (t clientip.Trusted) From(r *http.Request) netip.Addr
+```
+
+| 编号 | 规则 |
+|:--|:--|
+| CIP-01 | `RemoteAddr` 不在可信列表中：直接返回 `RemoteAddr` 的 IP，**完全忽略** `X-Forwarded-For`（否则任何人都能伪造来源 IP） |
+| CIP-02 | `RemoteAddr` 在可信列表中：把所有 `X-Forwarded-For` 头按逗号拆开、去空格，**从右往左**找第一个不在可信列表中的合法 IP 并返回 |
+| CIP-03 | CIP-02 中所有条目都可信或都无法解析：返回最左边的合法 IP；一个合法 IP 都没有则返回 `RemoteAddr` 的 IP |
+| CIP-04 | IPv4 映射的 IPv6 地址（`::ffff:1.2.3.4`）统一转换为 IPv4 后再比较与返回 |
+| CIP-05 | 不读取 `X-Real-IP`、`Forwarded` 等其他头（只支持一种来源，避免多种头互相矛盾） |
+
+客户端 IP 用于：鉴权前的按 IP 限流（spec/09 §5）、管理面鉴权失败封禁（ADM-04）、访问日志（`client_ip` 字段）。

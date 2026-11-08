@@ -16,16 +16,21 @@
 ### 1.1 中间件顺序
 
 ```
-RequestID → AccessLog → Recover → [模型端点: Authenticate → RateLimit] → handler
+RequestID → ClientIP → AccessLog → Recover → [模型端点与 /v1/models: IPRateLimit → Overload → Authenticate → RateLimit] → handler
 ```
+
+顺序的理由：`IPRateLimit` 与 `Overload` 放在鉴权之前，使未鉴权的洪泛请求在计算 HMAC、读取请求体之前就被挡掉；`RateLimit`（每客户端）必须在鉴权之后，因为它需要 clientID。
 
 | 编号 | 中间件 | 行为 |
 |:--|:--|:--|
 | MW-01 | `RequestID` | 生成 `req_` + 24 位小写 base32 随机串，存入 context，写响应头 `X-Request-Id`。**忽略**客户端传来的同名头 |
-| MW-02 | `AccessLog` | 请求结束后输出一条 `Info` 日志：`request_id, method, path, status, latency_ms, client_id`（未鉴权为 0）。不记录请求体与头部 |
+| MW-02 | `AccessLog` | 请求结束后输出一条 `Info` 日志：`request_id, method, path, status, latency_ms, client_id`（未鉴权为 0）、`client_ip`（取自 MW-06）。不记录请求体与头部 |
 | MW-03 | `Recover` | 捕获 panic：`Error` 日志（含堆栈）；若尚未写响应头则返回 500 `internal` |
 | MW-04 | `Authenticate` | `auth.ExtractCredential` → `HashToken` → `Index.Lookup`；失败 401；`Disabled` 为 403；成功后用 `auth.WithPrincipal(ctx, p)` 存入 context，下游用 `auth.PrincipalFrom(ctx)` 取出。请求 ID 用 `obs.WithRequestID` / `obs.RequestIDFrom` |
-| MW-05 | `RateLimit` | `ratelimit.Limiter.Allow(clientID, rpm)`；拒绝时 429 `rate_limited`，`Retry-After` 为秒数（向上取整） |
+| MW-05 | `RateLimit` | `ratelimit.Limiter.Allow("c:"+clientID, rpm)`；拒绝时 429 `rate_limited`，`Retry-After` 为秒数（向上取整） |
+| MW-06 | `ClientIP` | `clientip.Trusted.From(r)` 解析真实 IP（spec/03 §7），`clientip.WithIP` 存入 context（**已提供**） |
+| MW-07 | `IPRateLimit` | 见 §5 OVL-04、OVL-05 |
+| MW-08 | `OverloadGuard.Middleware` | 见 §5 OVL-01 ~ OVL-03 |
 
 错误格式由**路径决定**：`/v1/messages` 用 Anthropic 格式，其余用 OpenAI 格式（MW-04/05 也遵守这一点）。
 
@@ -93,11 +98,13 @@ func WriteHTTP(w http.ResponseWriter, format apperr.Format, requestID string, er
 - `RetryAfter > 0` 时写 `Retry-After` 头（秒，向上取整）。
 - 已经开始写响应体后**禁止**再调用 `WriteError`（流式场景改用 08 §6.4 的错误事件）。
 
-## 3. 每客户端限流（`internal/ratelimit`，T04）
+## 3. 令牌桶限流（`internal/ratelimit`，T04）
+
+同一实现用于两处：每客户端限流（键 `"c:<clientID>"`）与鉴权前每 IP 限流（键 `"ip:<addr>"`）。两处使用**不同的 `Limiter` 实例**。
 
 ```go
 func New(now func() time.Time) *Limiter
-func (l *Limiter) Allow(clientID int64, rpm int) (ok bool, retryAfter time.Duration)
+func (l *Limiter) Allow(key string, rpm int) (ok bool, retryAfter time.Duration)
 ```
 
 | 编号 | 行为 |
@@ -105,7 +112,7 @@ func (l *Limiter) Allow(clientID int64, rpm int) (ok bool, retryAfter time.Durat
 | RL-01 | `rpm <= 0`：永远允许 |
 | RL-02 | 令牌桶：容量 `rpm`，每秒补充 `rpm/60` 个（浮点），新客户端的桶初始为满 |
 | RL-03 | 每次请求消耗 1 个；不足 1 个时拒绝，`retryAfter = (1 - 当前令牌) / 每秒补充量` 秒 |
-| RL-04 | 同一客户端的 `rpm` 改变时：容量改为新值，当前令牌数截断到新容量 |
+| RL-04 | 同一个键的 `rpm` 改变时：容量改为新值，当前令牌数截断到新容量 |
 | RL-05 | 并发安全：每个桶一个 mutex；桶表用 `sync.Map` |
 | RL-06 | 超过 10 分钟未访问的桶由 `Sweep(now)` 删除；`cmd/gateway` 每 5 分钟调用一次 |
 
@@ -178,3 +185,28 @@ type UsageItem struct {
 | ADM-15 | `PATCH keys` 的 `state` 只接受 `ready` / `disabled`；设为 `ready` 会清除 `quarantined` 状态与 `state_reason` |
 | ADM-16 | 响应中**永远不出现** `secret`、`token_hash`、`wrapped_dek`、`ciphertext` |
 | ADM-17 | `usage` 查询：`from`/`to` 缺省为「最近 24 小时」；`from >= to` 返回 400 |
+
+## 5. 全局过载保护（`internal/httpapi`，T11）
+
+目的：网关暴露到局域网或公网后，防止大量并发请求或超大请求体把内存打满。只作用于模型端点与 `/v1/models`；`/healthz` 与管理面不受影响。
+
+```go
+func NewOverloadGuard(maxRequests int, maxBodyBytes, maxSingleBody int64) *OverloadGuard
+func (g *OverloadGuard) Middleware(next http.Handler) http.Handler
+func (g *OverloadGuard) InFlight() (requests, bodyBytes int64)
+func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
+```
+
+`cmd/gateway` 用 `limits.max_in_flight_requests`、`limits.max_buffered_body_bytes`、`limits.max_request_body_bytes`、`limits.preauth_ip_rpm` 构造它们。
+
+| 编号 | 行为 |
+|:--|:--|
+| OVL-01 | 每个请求占用 1 个并发名额；当前在途数已达 `maxRequests` 时拒绝 |
+| OVL-02 | 每个请求按 `n = r.ContentLength` 占用请求体预算；`ContentLength < 0`（未知长度）或 `> maxSingleBody` 时按 `maxSingleBody` 占用；占用后总量会超过 `maxBodyBytes` 时拒绝。两种占用都用 **CAS 循环**，任一失败时已占用的部分必须归还 |
+| OVL-03 | 拒绝时返回 503 `overloaded`、`Retry-After: 1`，错误格式按 `FormatForPath`，并且**不读取请求体**；放行时在 `next` 返回后（`defer`）归还全部占用。流式请求的占用持续到流结束 |
+| OVL-04 | `IPRateLimit`：`rpm <= 0` 直接放行；否则以 `"ip:" + clientip.FromContext(ctx).String()` 为键调用 `Limiter.Allow`，拒绝时 429 `rate_limited` 并带 `Retry-After` |
+| OVL-05 | 客户端 IP 为零值（无法解析）时以键 `"ip:unknown"` 计数，不放行也不报错 |
+
+### 5.1 内存估算（写进部署文档，供用户调参）
+
+一个在途请求在网关中大约持有 3 份请求体（原文、解析出的顶层字段、改写后的请求体），因此最坏情况下请求体相关内存约为 `3 × max_buffered_body_bytes`。默认 512 MiB 预算对应约 1.5 GiB 峰值；内存较小的机器应调小 `max_buffered_body_bytes` 与 `max_request_body_bytes`。非流式响应另外最多缓冲 64 MiB / 请求（spec/08 §6.5）。

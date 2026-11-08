@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -58,6 +59,28 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fieldErr("server.log_level", "unknown level %q", c.Server.LogLevel)
+	}
+
+	// CFG-10
+	s := c.Server
+	if s.ReadHeaderTimeout <= 0 || s.ReadTimeout <= 0 || s.IdleTimeout <= 0 || s.MaxHeaderBytes <= 0 {
+		return fieldErr("server", "read_header_timeout, read_timeout, idle_timeout, max_header_bytes must be > 0")
+	}
+	if s.ReadHeaderTimeout > s.ReadTimeout {
+		return fieldErr("server.read_header_timeout", "must be <= read_timeout")
+	}
+	// CFG-11
+	for i, cidr := range s.TrustedProxies {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			return fieldErr(fmt.Sprintf("server.trusted_proxies[%d]", i), "invalid CIDR %q", cidr)
+		}
+	}
+	// CFG-12
+	if c.Limits.MaxInFlightRequests <= 0 || c.Limits.PreAuthIPRPM < 0 {
+		return fieldErr("limits", "max_in_flight_requests must be > 0 and preauth_ip_rpm >= 0")
+	}
+	if c.Limits.MaxBufferedBodyBytes < c.Limits.MaxRequestBodyBytes {
+		return fieldErr("limits.max_buffered_body_bytes", "must be >= max_request_body_bytes")
 	}
 
 	// CFG-08

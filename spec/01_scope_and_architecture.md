@@ -49,6 +49,7 @@ internal/
   apperr/               统一错误类型与错误码（所有包都可以用）
   config/               配置结构、加载、默认值、校验
   obs/                  日志初始化、凭据脱敏
+  clientip/             按可信代理解析真实客户端 IP
   crypto/               主密钥、HKDF 派生、信封加密
   jsonx/                JSON 顶层字段局部改写工具
   sse/                  SSE 事件读取器与写入器
@@ -81,7 +82,7 @@ tools/check/            一键检查程序（go run ./tools/check）
 第 4 层  httpapi   admin
 第 3 层  proxy
 第 2 层  ledger  audit  scheduler  auth  ratelimit  provider/*  translate  store/sqlite
-第 1 层  provider  store  pricing  sse  jsonx  crypto  ir  config  obs
+第 1 层  provider  store  pricing  sse  jsonx  crypto  ir  config  obs  clientip
 第 0 层  apperr
 ```
 
@@ -135,10 +136,11 @@ tools/check/            一键检查程序（go run ./tools/check）
 |:-:|:--|:--|:--|
 | 1 | LIFE-01 | 路由按路径确定入站协议（不做内容嗅探） | 404 |
 | 2 | LIFE-02 | 分配 `request_id`（`req_` + 24 位 base32 随机），写入响应头 `X-Request-Id` | — |
-| 3 | LIFE-03 | 读取请求体，上限 `limits.max_request_body_bytes` | 413 `invalid_request` |
+| 2a | LIFE-02a | 解析真实客户端 IP（可信代理，spec/03 §7）；按 IP 限流；占用全局并发与请求体预算（spec/09 §5） | 429 `rate_limited` / 503 `overloaded` |
 | 4 | LIFE-04 | 提取凭据（`Authorization: Bearer` → `x-api-key` → `x-goog-api-key`），HMAC 后查内存索引 | 401 `unauthenticated` |
 | 5 | LIFE-05 | 客户端被禁用 | 403 `permission_denied` |
 | 6 | LIFE-06 | RPM 令牌桶取 1 个令牌 | 429 `rate_limited`，带 `Retry-After` |
+| 6a | LIFE-03 | （在 `proxy` 中）读取请求体，上限 `limits.max_request_body_bytes` | 413 `request_too_large` |
 | 7 | LIFE-07 | 解析请求体中的 `model` 与 `stream` 字段；按 `models` 配置解析出模型路由；检查客户端模型白名单 | 400 / 403 |
 | 8 | LIFE-08 | 入站协议 ≠ 路由的上游协议 → M1 返回 400 | 400 `invalid_request` |
 | 9 | LIFE-09 | 估算预留金额，`ledger.Reserve` | 402 `insufficient_quota` / 503 `overloaded` |

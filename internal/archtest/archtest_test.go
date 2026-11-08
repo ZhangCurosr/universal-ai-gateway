@@ -31,6 +31,7 @@ var layers = map[string]int{
 	"internal/store":    1,
 	"internal/provider": 1,
 	"internal/ir":       1,
+	"internal/clientip": 1,
 
 	"internal/store/sqlite":       2,
 	"internal/auth":               2,

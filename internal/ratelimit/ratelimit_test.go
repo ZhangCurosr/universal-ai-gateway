@@ -30,7 +30,7 @@ func TestUnlimited(t *testing.T) {
 	t.Skip("TODO(T04)")
 	l := New(newClock().Now)
 	for i := 0; i < 1000; i++ {
-		if ok, _ := l.Allow(1, 0); !ok { // RL-01
+		if ok, _ := l.Allow("c:1", 0); !ok { // RL-01
 			t.Fatalf("Allow(rpm=0) #%d = false", i)
 		}
 	}
@@ -40,11 +40,11 @@ func TestBurstThenReject(t *testing.T) {
 	t.Skip("TODO(T04)")
 	l := New(newClock().Now)
 	for i := 0; i < 60; i++ { // RL-02：初始满桶
-		if ok, _ := l.Allow(1, 60); !ok {
+		if ok, _ := l.Allow("c:1", 60); !ok {
 			t.Fatalf("Allow #%d rejected within burst", i)
 		}
 	}
-	ok, retry := l.Allow(1, 60) // RL-03
+	ok, retry := l.Allow("c:1", 60) // RL-03
 	if ok {
 		t.Fatal("61st Allow = true, want false")
 	}
@@ -58,15 +58,15 @@ func TestRefill(t *testing.T) {
 	c := newClock()
 	l := New(c.Now)
 	for i := 0; i < 60; i++ {
-		l.Allow(1, 60)
+		l.Allow("c:1", 60)
 	}
 	c.Advance(2 * time.Second) // 补充 2 个
 	for i := 0; i < 2; i++ {
-		if ok, _ := l.Allow(1, 60); !ok {
+		if ok, _ := l.Allow("c:1", 60); !ok {
 			t.Fatalf("Allow after refill #%d = false", i)
 		}
 	}
-	if ok, _ := l.Allow(1, 60); ok {
+	if ok, _ := l.Allow("c:1", 60); ok {
 		t.Fatal("third Allow after 2s = true, want false")
 	}
 }
@@ -74,10 +74,10 @@ func TestRefill(t *testing.T) {
 func TestRPMChange(t *testing.T) {
 	t.Skip("TODO(T04)")
 	l := New(newClock().Now)
-	l.Allow(1, 100) // 桶容量 100，剩 99
+	l.Allow("c:1", 100) // 桶容量 100，剩 99
 	allowed := 0
 	for i := 0; i < 50; i++ { // RL-04：容量降为 10，令牌截断到 10
-		if ok, _ := l.Allow(1, 10); ok {
+		if ok, _ := l.Allow("c:1", 10); ok {
 			allowed++
 		}
 	}
@@ -90,7 +90,7 @@ func TestSweep(t *testing.T) {
 	t.Skip("TODO(T04)")
 	c := newClock()
 	l := New(c.Now)
-	l.Allow(1, 60)
+	l.Allow("c:1", 60)
 	c.Advance(11 * time.Minute)
 	l.Sweep(c.Now()) // RL-06
 	n := 0
@@ -110,7 +110,7 @@ func TestConcurrentAllow(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < 10; i++ {
-				if ok, _ := l.Allow(1, 600); ok {
+				if ok, _ := l.Allow("c:1", 600); ok {
 					allowed.Add(1)
 				}
 			}

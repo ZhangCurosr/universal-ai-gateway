@@ -38,7 +38,8 @@ models:
 		{ID: 1, TokenHash: auth.HashToken(pepper, userToken), Role: store.RoleUser, RPMLimit: rpm, AllowedModels: []string{"alpha"}},
 		{ID: 2, TokenHash: auth.HashToken(pepper, disabledToken), Role: store.RoleUser, Disabled: true},
 	})
-	return NewDataRouter(DataDeps{Config: cfg, Index: ix, Pepper: pepper, Limiter: ratelimit.New(nil), Logger: obs.Discard()})
+	return NewDataRouter(DataDeps{Config: cfg, Index: ix, Pepper: pepper, Limiter: ratelimit.New(nil), IPLimiter: ratelimit.New(nil),
+		Overload: NewOverloadGuard(16, 1<<30, 32<<20), Logger: obs.Discard()})
 }
 
 func serve(h http.Handler, method, path, token string, header map[string]string) *httptest.ResponseRecorder {

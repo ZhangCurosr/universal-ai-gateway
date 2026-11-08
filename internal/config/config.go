@@ -20,11 +20,25 @@ type ServerConfig struct {
 	MasterKeyFile string        `yaml:"master_key_file"`
 	ShutdownGrace time.Duration `yaml:"shutdown_grace"`
 	LogLevel      string        `yaml:"log_level"`
+
+	// http.Server 超时（spec/03 §6）。WriteTimeout 固定为 0（会截断长流），不提供配置项。
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
+	ReadTimeout       time.Duration `yaml:"read_timeout"`
+	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+	MaxHeaderBytes    int           `yaml:"max_header_bytes"`
+
+	// TrustedProxies 是可信反向代理的 CIDR 列表（spec/03 §7）。空 = 不信任任何 X-Forwarded-For。
+	TrustedProxies []string `yaml:"trusted_proxies"`
 }
 
 type LimitsConfig struct {
 	MaxRequestBodyBytes    int64 `yaml:"max_request_body_bytes"`
 	DefaultMaxOutputTokens int64 `yaml:"default_max_output_tokens"`
+
+	// 全局过载保护（spec/09 §5）。
+	MaxInFlightRequests  int   `yaml:"max_in_flight_requests"`  // 数据面模型请求的全局并发上限
+	MaxBufferedBodyBytes int64 `yaml:"max_buffered_body_bytes"` // 在途请求体字节总预算
+	PreAuthIPRPM         int   `yaml:"preauth_ip_rpm"`          // 鉴权前每个来源 IP 的 RPM；0 = 关闭
 }
 
 type LedgerConfig struct {
@@ -105,16 +119,23 @@ type PriceConfig struct {
 func Default() Config {
 	return Config{
 		Server: ServerConfig{
-			DataListen:    "0.0.0.0:8080",
-			AdminListen:   "127.0.0.1:8081",
-			DataDir:       "./data",
-			MasterKeyFile: "./secrets/master.key",
-			ShutdownGrace: 30 * time.Second,
-			LogLevel:      "info",
+			DataListen:        "0.0.0.0:8080",
+			AdminListen:       "127.0.0.1:8081",
+			DataDir:           "./data",
+			MasterKeyFile:     "./secrets/master.key",
+			ShutdownGrace:     30 * time.Second,
+			LogLevel:          "info",
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       60 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			MaxHeaderBytes:    64 << 10,
 		},
 		Limits: LimitsConfig{
 			MaxRequestBodyBytes:    32 << 20,
 			DefaultMaxOutputTokens: 8192,
+			MaxInFlightRequests:    256,
+			MaxBufferedBodyBytes:   512 << 20,
+			PreAuthIPRPM:           600,
 		},
 		Ledger: LedgerConfig{
 			FlushInterval:          250 * time.Millisecond,

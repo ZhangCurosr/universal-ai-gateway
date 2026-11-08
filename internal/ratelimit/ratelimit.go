@@ -1,4 +1,5 @@
-// Package ratelimit 实现每客户端 RPM 令牌桶（spec/09 §3，RL-01 ~ RL-06）。
+// Package ratelimit 实现按键的 RPM 令牌桶（spec/09 §3，RL-01 ~ RL-06）。
+// 同一实现既用于每客户端限流（键 "c:<clientID>"），也用于鉴权前的每 IP 限流（键 "ip:<addr>"）。
 package ratelimit
 
 import (
@@ -6,10 +7,10 @@ import (
 	"time"
 )
 
-// Limiter 为每个客户端维护一个令牌桶。并发安全。
+// Limiter 为每个键维护一个令牌桶。并发安全。
 type Limiter struct {
 	now     func() time.Time
-	buckets sync.Map // int64 → *bucket
+	buckets sync.Map // string → *bucket
 }
 
 // bucket 是单个客户端的令牌桶。
@@ -29,8 +30,8 @@ func New(now func() time.Time) *Limiter {
 	return &Limiter{now: now}
 }
 
-// Allow 尝试为 clientID 消耗 1 个令牌。拒绝时返回需要等待的时长。
-func (l *Limiter) Allow(clientID int64, rpm int) (ok bool, retryAfter time.Duration) {
+// Allow 尝试为 key 消耗 1 个令牌。拒绝时返回需要等待的时长。
+func (l *Limiter) Allow(key string, rpm int) (ok bool, retryAfter time.Duration) {
 	// TODO(T04): 实现 RL-01 ~ RL-05。
 	return true, 0
 }

@@ -63,6 +63,9 @@ func TestValidate(t *testing.T) {
 		{"CFG-07 negative price", func(c *Config) { c.Models[0].Price.Input = -1 }, "price"},
 		{"CFG-08 watermark", func(c *Config) { c.Ledger.AdmissionHighWatermark = 1.5 }, "watermark"},
 		{"CFG-09 no models", func(c *Config) { c.Models = nil }, "models"},
+		{"CFG-10 header timeout > read timeout", func(c *Config) { c.Server.ReadHeaderTimeout = 2 * time.Minute }, "read_header_timeout"},
+		{"CFG-11 bad trusted proxy", func(c *Config) { c.Server.TrustedProxies = []string{"10.0.0.1"} }, "trusted_proxies[0]"},
+		{"CFG-12 body budget too small", func(c *Config) { c.Limits.MaxBufferedBodyBytes = 1 }, "max_buffered_body_bytes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

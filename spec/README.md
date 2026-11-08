@@ -10,7 +10,7 @@
 |:-:|:--|:--|:--|
 | 1 | [01_scope_and_architecture.md](./01_scope_and_architecture.md) | 做什么/不做什么、模块地图、分层规则、请求生命周期 | 所有人 |
 | 2 | [02_engineering_rules.md](./02_engineering_rules.md) | Go 编码规范、错误处理、并发、日志、测试、依赖白名单 | 所有人 |
-| 3 | [03_config.md](./03_config.md) | 配置文件结构、默认值、校验规则、命令行参数 | 改 `config`、`cmd` 的人 |
+| 3 | [03_config.md](./03_config.md) | 配置文件结构、默认值、校验规则、命令行参数、HTTP 服务端超时、可信代理 | 改 `config`、`cmd` 的人 |
 | 4 | [04_storage.md](./04_storage.md) | SQLite 表结构、迁移、仓储接口与语义 | 改 `store` 的人 |
 | 5 | [05_security_auth.md](./05_security_auth.md) | 主密钥、信封加密、Token、鉴权、管理员引导 | 改 `crypto`、`auth`、`admin` 的人 |
 | 6 | [06_billing_ledger.md](./06_billing_ledger.md) | 价格、成本计算、预留-结算账本、计费事件、崩溃语义 | 改 `pricing`、`ledger`、`proxy` 的人 |
@@ -19,6 +19,7 @@
 | 9 | [09_http_api.md](./09_http_api.md) | 数据面端点、错误响应格式、中间件、管理 API | 改 `httpapi`、`admin` 的人 |
 | 10 | [10_ir_translation.md](./10_ir_translation.md) | （M2）跨协议 IR 与转译规则 | 改 `ir`、`translate` 的人 |
 | 11 | [11_tasks.md](./11_tasks.md) | **任务卡**：顺序、依赖、涉及文件、验收标准 | 所有人 |
+| 12 | [12_deployment.md](./12_deployment.md) | 局域网 / 域名对外部署、反向代理示例、调参、开机自启 | 部署者；做 T14、T15 的人 |
 
 ## 规格写法约定
 

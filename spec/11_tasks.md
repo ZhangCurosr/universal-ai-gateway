@@ -16,6 +16,7 @@ M1：
   T11 需要 T03、T04、T10
   T12 需要 T02、T03、T05、T08
   T14 需要以上全部
+  T15 需要 T14
 M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 ```
 
@@ -46,7 +47,8 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 | `auth` | Token 生成/哈希、`ExtractCredential`、`Index`、Principal 的 context 存取 |
 | `provider` | 接口、`OutcomeKind.Retryable`、`ClassifyHTTP` / `ClassifyNetError` / `ParseRetryAfter` |
 | `scheduler` | `Key`、`NewKey`、`tryAcquire`、`PoolsFromConfig` |
-| `httpapi` | `RequestID`、`Recover`、`FormatForPath`、`trackingWriter`、`chain` |
+| `clientip` | 可信代理解析真实客户端 IP（CIP-01 ~ CIP-05） |
+| `httpapi` | `RequestID`、`ClientIP`、`Recover`、`FormatForPath`、`trackingWriter`、`chain`；`OverloadGuard` 结构 |
 | `cmd/gateway` | `version`、`check-config` 子命令 |
 | `archtest`、`tools/check` | 分层检查与一键检查 |
 
@@ -90,7 +92,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 ## T04 每客户端 RPM 限流 — 状态：`TODO`
 
 - **前置**：无
-- **必读规格**：09 §3（RL-01 ~ RL-06）
+- **必读规格**：09 §3（RL-01 ~ RL-06）。注意 `Allow` 的键是字符串（`"c:<clientID>"` 或 `"ip:<addr>"`），同一实现服务两种用途
 - **涉及文件**：`internal/ratelimit/ratelimit.go`、`internal/ratelimit/ratelimit_test.go`
 - **测试**：`TestUnlimited`、`TestBurstThenReject`、`TestRefill`、`TestRPMChange`、`TestSweep`、`TestConcurrentAllow`（100 个 goroutine 共调用 1000 次、rpm=600 时，放行次数必须恰好 600）。
 - **陷阱**：用注入的 `now`，不要在实现里调用 `time.Now()`。
@@ -162,11 +164,17 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 ## T11 数据面路由与中间件 — 状态：`TODO`
 
 - **前置**：T03、T04、T10
-- **必读规格**：09 §1–§2
-- **涉及文件**：`internal/httpapi/router.go`、`internal/httpapi/middleware.go`、`internal/httpapi/models.go`（新建）、`internal/httpapi/router_test.go`
-- **要做的事**：实现 `Authenticate`、`RateLimit`、`AccessLog` 中间件（`RequestID`、`Recover` 已提供）与 `NewDataRouter`；实现 `/v1/models`、`/healthz`。
-- **测试**：`router_test.go` 中已写好的 `TestHealthzNoAuth`、`TestUnauthenticatedAnthropicFormat`、`TestUnauthenticatedOpenAIFormat`、`TestDisabledClient403`、`TestRateLimited429RetryAfter`、`TestModelsOpenAIFormat`（含白名单过滤）、`TestModelsAnthropicFormat`；另新增 `TestAccessLogFields`（用 `slog.NewJSONHandler` 写到 `bytes.Buffer`，断言日志含 `request_id`、`status`、`client_id`，且不含 Token）。
-- **注意**：`DataDeps.Proxy` 在测试中为 nil；`/v1/models` 需要模型列表时从 `DataDeps.Config.Models` 读取，不要依赖 `Proxy`。
+- **必读规格**：09 §1–§2、§5；03 §7
+- **涉及文件**：`internal/httpapi/router.go`、`internal/httpapi/middleware.go`、`internal/httpapi/models.go`（新建）、`internal/httpapi/router_test.go`、`internal/httpapi/middleware_test.go`
+- **要做的事**：
+  1. 实现 `Authenticate`、`RateLimit`、`AccessLog`、`IPRateLimit`、`OverloadGuard.Middleware`（`RequestID`、`ClientIP`、`Recover` 已提供）。
+  2. `NewDataRouter` 按 09 §1.1 的顺序注册端点与中间件；实现 `/v1/models`、`/healthz`。
+  3. `OverloadGuard` 的两种占用（请求数、请求体字节）都用 CAS 循环；第二种占用失败时必须先归还第一种。
+- **测试**：`router_test.go` 中已写好的 `TestHealthzNoAuth`、`TestUnauthenticatedAnthropicFormat`、`TestUnauthenticatedOpenAIFormat`、`TestDisabledClient403`、`TestRateLimited429RetryAfter`、`TestModelsOpenAIFormat`（含白名单过滤）、`TestModelsAnthropicFormat`；`middleware_test.go` 中的 `TestOverloadGuardRejectsWhenFull`、`TestOverloadGuardBodyBudget`、`TestIPRateLimit`。另新增：
+  - `TestAccessLogFields`（用 `slog.NewJSONHandler` 写到 `bytes.Buffer`，断言日志含 `request_id`、`status`、`client_id`、`client_ip`，且不含 Token）；
+  - `TestOverloadGuardConcurrent`（并发 200 个请求、上限 50，任一时刻 `InFlight()` 不超过 50，结束后归零）；
+  - `TestSpoofedXFFIgnored`（`Trusted` 为空时，客户端伪造 `X-Forwarded-For` 不影响 IP 限流的键）。
+- **注意**：`DataDeps.Proxy` 在测试中为 nil；`/v1/models` 需要模型列表时从 `DataDeps.Config.Models` 读取，不要依赖 `Proxy`。`Limiter` 与 `IPLimiter` 必须是两个不同的实例。
 
 ## T12 管理面 API — 状态：`TODO`
 
@@ -191,10 +199,24 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 ## T14 进程装配与端到端测试 — 状态：`TODO`
 
 - **前置**：T01 ~ T13 全部
-- **必读规格**：03 全章、05 §5
+- **必读规格**：03 全章（含 §6 SRV-01 ~ SRV-03、§7）、05 §5、09 §5
 - **涉及文件**：`cmd/gateway/serve.go`、`cmd/gateway/e2e_test.go`（新建）
-- **要做的事**：按 03 §5 的顺序实现 `serve`；实现 BOOT-01 ~ BOOT-03；SIGINT/SIGTERM 优雅关闭。
-- **测试**：`TestE2E`：在 `t.TempDir()` 中写配置，在 goroutine 中启动 `run(ctx, cfg, runOptions{Stderr: &buf, OnListening: ...})`（两个监听地址都设为 `127.0.0.1:0`，通过 `OnListening` 拿到实际地址；bootstrap Token 从 `buf` 中按 BOOT-02 的格式解析），用 bootstrap 管理员 Token 调管理 API 创建客户端与 Key（Key 指向 `httptest` 假上游），然后以客户端身份发流式与非流式请求，最后取消 ctx，断言 `usage_events` 中有 2 条记录、客户端 `spent` > 0、进程干净退出。
+- **要做的事**：
+  1. 按 03 §5 的顺序实现 `serve`；实现 BOOT-01 ~ BOOT-03；SIGINT/SIGTERM 优雅关闭。
+  2. 两个 `http.Server` 都按 03 §6 设置超时，`WriteTimeout` 为 0；先 `net.Listen` 再 `Serve`。
+  3. 用 `clientip.ParseTrusted(cfg.Server.TrustedProxies)` 构造 `Trusted`，同时传给数据面路由与管理面。
+  4. 构造两个独立的 `ratelimit.Limiter`（客户端、IP）与一个 `httpapi.NewOverloadGuard`；每 5 分钟对两个 Limiter 调用 `Sweep`。
+- **测试**：`TestE2E`：在 `t.TempDir()` 中写配置，在 goroutine 中启动 `run(ctx, cfg, runOptions{Stderr: &buf, OnListening: ...})`（两个监听地址都设为 `127.0.0.1:0`，通过 `OnListening` 拿到实际地址；bootstrap Token 从 `buf` 中按 BOOT-02 的格式解析），用 bootstrap 管理员 Token 调管理 API 创建客户端与 Key（Key 指向 `httptest` 假上游），然后以客户端身份发流式与非流式请求，最后取消 ctx，断言 `usage_events` 中有 2 条记录、客户端 `spent` > 0、进程干净退出。另新增 `TestSlowHeaderClosed`：把 `read_header_timeout` 设为 200ms，建立 TCP 连接后只发半个请求头，断言 1 秒内连接被服务端关闭。
+
+## T15 部署示例与用户部署指南 — 状态：`TODO`
+
+- **前置**：T14
+- **必读规格**：12 全章
+- **涉及文件**：12 §6 表格中列出的 5 个文件（全部新建）
+- **要做的事**：按 12 §3 ~ §5 编写示例文件与 `docs/DEPLOYMENT.md`。示例中的数值必须与 `gateway.example.yaml` 的默认值一致。
+- **验收**：
+  - 用 `caddy validate --config deploy/Caddyfile.example --adapter caddyfile`、`nginx -t -c`（在临时目录中构造最小 nginx.conf 引入该片段）、`systemd-analyze verify` 校验示例文件；本机没有对应工具时在交付说明中写明「未验证」，不得声称已验证。
+  - `install-task.ps1` 在非管理员 PowerShell 中运行时给出明确提示并以非零码退出。
 
 ---
 

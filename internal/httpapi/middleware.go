@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"runtime/debug"
 	"strings"
+	"sync/atomic"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/clientip"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ratelimit"
 )
@@ -28,6 +30,49 @@ func RequestID(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-Id", id)
 		next.ServeHTTP(w, r.WithContext(obs.WithRequestID(r.Context(), id)))
 	})
+}
+
+// ClientIP 实现 MW-06：按可信代理解析真实客户端 IP 并存入 context（spec/03 §7）。
+func ClientIP(trusted clientip.Trusted) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next.ServeHTTP(w, r.WithContext(clientip.WithIP(r.Context(), trusted.From(r))))
+		})
+	}
+}
+
+// IPRateLimit 实现 MW-07：鉴权之前按来源 IP 限流（spec/09 §5，OVL-04、OVL-05）。rpm <= 0 时直接放行。
+func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		// TODO(T11): 键为 "ip:" + clientip.FromContext(ctx).String()；拒绝时 429 rate_limited + Retry-After。
+		return next
+	}
+}
+
+// OverloadGuard 是全局并发与请求体内存预算（spec/09 §5，OVL-01 ~ OVL-03）。并发安全。
+type OverloadGuard struct {
+	maxRequests   int64
+	maxBodyBytes  int64
+	maxSingleBody int64
+
+	inFlight  atomic.Int64
+	bodyBytes atomic.Int64
+}
+
+// NewOverloadGuard 创建过载保护。maxSingleBody 为单个请求体上限（limits.max_request_body_bytes）。
+func NewOverloadGuard(maxRequests int, maxBodyBytes, maxSingleBody int64) *OverloadGuard {
+	return &OverloadGuard{maxRequests: int64(maxRequests), maxBodyBytes: maxBodyBytes, maxSingleBody: maxSingleBody}
+}
+
+// Middleware 实现 MW-08：占用失败返回 503 overloaded（Retry-After: 1），请求结束后归还。
+func (g *OverloadGuard) Middleware(next http.Handler) http.Handler {
+	// TODO(T11): 按 OVL-01 ~ OVL-03 实现；用 CAS 循环占用，禁止「先检查再 Add」。
+	return next
+}
+
+// InFlight 返回当前占用的请求数与请求体字节数（供测试与管理 API 展示）。
+func (g *OverloadGuard) InFlight() (requests, bodyBytes int64) {
+	return g.inFlight.Load(), g.bodyBytes.Load()
 }
 
 // Recover 实现 MW-03。
@@ -58,7 +103,7 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 // AccessLog 实现 MW-02。
 func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		// TODO(T11): 请求结束后输出一条 Info：request_id, method, path, status, latency_ms, client_id。
+		// TODO(T11): 请求结束后输出一条 Info：request_id, method, path, status, latency_ms, client_id, client_ip。
 		return next
 	}
 }

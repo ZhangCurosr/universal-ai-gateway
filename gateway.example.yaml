@@ -6,10 +6,19 @@ server:
   master_key_file: "./secrets/master.key"   # 不得位于 data_dir 之下
   shutdown_grace: 30s
   log_level: info
+  read_header_timeout: 10s
+  read_timeout: 60s
+  idle_timeout: 120s
+  max_header_bytes: 65536
+  # 通过 Caddy / nginx 等反向代理对外时，填写代理所在地址，网关才会信任 X-Forwarded-For
+  trusted_proxies: []        # 例如 ["127.0.0.1/32", "::1/128"]
 
 limits:
   max_request_body_bytes: 33554432
   default_max_output_tokens: 8192
+  max_in_flight_requests: 256
+  max_buffered_body_bytes: 536870912
+  preauth_ip_rpm: 600
 
 ledger:
   flush_interval: 250ms
