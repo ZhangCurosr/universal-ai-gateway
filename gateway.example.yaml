@@ -1,0 +1,49 @@
+# Universal AI Gateway 示例配置（复制为 gateway.yaml 后修改）。字段说明见 spec/03_config.md。
+server:
+  data_listen: "0.0.0.0:8080"
+  admin_listen: "127.0.0.1:8081"
+  data_dir: "./data"
+  master_key_file: "./secrets/master.key"   # 不得位于 data_dir 之下
+  shutdown_grace: 30s
+  log_level: info
+
+limits:
+  max_request_body_bytes: 33554432
+  default_max_output_tokens: 8192
+
+ledger:
+  flush_interval: 250ms
+  event_queue_capacity: 4096
+  admission_high_watermark: 0.9
+
+audit:
+  queue_capacity: 8192
+  batch_size: 256
+  flush_interval: 250ms
+  retention_days: 30
+
+pools:
+  - name: anthropic-main
+    protocol: anthropic
+    base_url: "https://api.anthropic.com"
+    strategy: least_inflight
+    affinity_ttl: 5m
+    max_attempts: 3
+
+  - name: deepseek
+    protocol: openai_chat
+    base_url: "https://api.deepseek.com"
+    strategy: weighted_round_robin
+
+models:
+  - name: "claude-sonnet-4-5"
+    pool: anthropic-main
+    upstream_model: "claude-sonnet-4-5"
+    max_output_tokens: 64000
+    price: { input: 3.0, output: 15.0, cache_read: 0.30, cache_write: 3.75 }
+
+  - name: "deepseek-chat"
+    pool: deepseek
+    upstream_model: "deepseek-chat"
+    max_output_tokens: 8192
+    price: { input: 0.27, output: 1.10, cache_read: 0.07, cache_write: 0 }

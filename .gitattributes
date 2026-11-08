@@ -1,0 +1,6 @@
+* text=auto eol=lf
+*.go text eol=lf
+*.md text eol=lf
+*.sql text eol=lf
+*.sse text eol=lf
+*.yaml text eol=lf

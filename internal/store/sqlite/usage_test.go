@@ -1,0 +1,94 @@
+package sqlite
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
+)
+
+func ev(reqID string, client int64, model string, cost int64, at time.Time) store.UsageEvent {
+	return store.UsageEvent{RequestID: reqID, ClientID: client, KeyID: 1, Model: model,
+		InputTokens: 10, OutputTokens: 5, CostNanoUSD: cost, UsageSource: store.UsageSourceUpstream, CreatedAt: at}
+}
+
+// STO-10：request_id 幂等
+func TestUsageEventsIdempotent(t *testing.T) {
+	t.Skip("TODO(T02)")
+	ctx := context.Background()
+	db := newTestDB(t)
+	batch := []store.UsageEvent{ev("r1", 1, "m", 100, fixedNow), ev("r2", 1, "m", 50, fixedNow)}
+	if err := db.InsertUsageEvents(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertUsageEvents(ctx, batch); err != nil { // 重放同一批
+		t.Fatalf("replay InsertUsageEvents() error = %v", err)
+	}
+	if err := db.InsertUsageEvents(ctx, nil); err != nil {
+		t.Fatalf("InsertUsageEvents(nil) error = %v", err)
+	}
+	sums, err := db.SumCostByClient(ctx)
+	if err != nil || sums[1] != 150 {
+		t.Fatalf("SumCostByClient() = %v, %v; want client 1 = 150", sums, err)
+	}
+}
+
+// STO-11
+func TestSumCostByClient(t *testing.T) {
+	t.Skip("TODO(T02)")
+	ctx := context.Background()
+	db := newTestDB(t)
+	_ = db.InsertUsageEvents(ctx, []store.UsageEvent{
+		ev("a", 1, "m", 10, fixedNow), ev("b", 2, "m", 20, fixedNow), ev("c", 2, "m", 5, fixedNow),
+	})
+	sums, err := db.SumCostByClient(ctx)
+	if err != nil || sums[1] != 10 || sums[2] != 25 || len(sums) != 2 {
+		t.Fatalf("SumCostByClient() = %v, %v", sums, err)
+	}
+}
+
+// STO-12：[From, To) 区间与分组
+func TestQueryUsage(t *testing.T) {
+	t.Skip("TODO(T02)")
+	ctx := context.Background()
+	db := newTestDB(t)
+	t0 := fixedNow
+	_ = db.InsertUsageEvents(ctx, []store.UsageEvent{
+		ev("a", 1, "m1", 10, t0),
+		ev("b", 1, "m1", 10, t0.Add(time.Minute)),
+		ev("c", 1, "m2", 7, t0.Add(time.Minute)),
+		ev("d", 2, "m1", 99, t0.Add(time.Hour)), // 恰好等于 To，不计入
+	})
+	got, err := db.QueryUsage(ctx, store.UsageQuery{From: t0, To: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("QueryUsage() = %+v, want 2 groups", got)
+	}
+	if got[0].Model != "m1" || got[0].Requests != 2 || got[0].CostNanoUSD != 20 || got[0].InputTokens != 20 {
+		t.Errorf("group 0 = %+v", got[0])
+	}
+	if got[1].Model != "m2" || got[1].Requests != 1 {
+		t.Errorf("group 1 = %+v", got[1])
+	}
+}
+
+// STO-13 / STO-14
+func TestAuditInsertAndDelete(t *testing.T) {
+	t.Skip("TODO(T02)")
+	ctx := context.Background()
+	db := newTestDB(t)
+	rec := func(id string, at time.Time) store.AuditRecord {
+		return store.AuditRecord{RequestID: id, ClientID: 1, Model: "m", IngressProtocol: "anthropic",
+			UpstreamProtocol: "anthropic", Status: 200, Attempts: 1, TTFBMillis: -1, CreatedAt: at}
+	}
+	if err := db.InsertAuditRecords(ctx, []store.AuditRecord{rec("old", fixedNow.Add(-48*time.Hour)), rec("new", fixedNow)}); err != nil {
+		t.Fatal(err)
+	}
+	n, err := db.DeleteAuditBefore(ctx, fixedNow.Add(-24*time.Hour))
+	if err != nil || n != 1 {
+		t.Fatalf("DeleteAuditBefore() = %d, %v; want 1", n, err)
+	}
+}

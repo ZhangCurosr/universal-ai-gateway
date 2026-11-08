@@ -2,6 +2,13 @@
 
 > **项目代号**：Project Titan | **核心语言**：Pure Go 1.24+ (Zero CGO) | **运行环境**：Cross-Platform (Linux / Windows / macOS)
 
+> **开发者（包括 AI 编码助手）请从这里开始**：
+> 1. [`AGENTS.md`](./AGENTS.md) —— 工作守则、禁止事项、完成的定义；
+> 2. [`spec/README.md`](./spec/README.md) —— 实现规格（唯一实现依据）；
+> 3. [`spec/11_tasks.md`](./spec/11_tasks.md) —— 任务卡，一次领一张。
+>
+> 一键检查：`go run ./tools/check`。本页与 `00`–`06` 白皮书只作设计背景，与 `spec/` 冲突时以 `spec/` 为准。
+
 ---
 
 ## 1. 项目总览与定位

@@ -1,0 +1,159 @@
+// Package store 定义持久化接口与记录类型（spec/04 §4）。实现在 internal/store/sqlite。
+//
+// 只有控制面（cmd/gateway、admin、ledger.Flusher、audit.Writer、auth.Reloader）可以调用本接口；
+// 数据面请求路径禁止访问存储（ARCH-01）。
+package store
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/crypto"
+)
+
+// 哨兵错误。实现必须返回（或包装）这些值，调用方用 errors.Is 判断。
+var (
+	ErrNotFound        = errors.New("store: not found")
+	ErrConflict        = errors.New("store: conflict")
+	ErrInvalidArgument = errors.New("store: invalid argument")
+)
+
+// 客户端角色。
+const (
+	RoleUser  = "user"
+	RoleAdmin = "admin"
+)
+
+// 上游 Key 的持久化状态（瞬时状态如冷却、熔断只在内存）。
+const (
+	KeyStateReady       = "ready"
+	KeyStateQuarantined = "quarantined"
+	KeyStateDisabled    = "disabled"
+)
+
+// 用量来源。
+const (
+	UsageSourceUpstream  = "upstream"
+	UsageSourceEstimated = "estimated"
+)
+
+// Client 是 clients 表的一行。
+type Client struct {
+	ID             int64
+	Name           string
+	Role           string
+	TokenHash      string
+	TokenDisplay   string
+	QuotaUnlimited bool
+	QuotaNanoUSD   int64
+	RPMLimit       int
+	AllowedModels  []string
+	Disabled       bool
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+}
+
+// UpstreamKey 是 upstream_keys 表的一行。
+type UpstreamKey struct {
+	ID          int64
+	Pool        string
+	Name        string
+	Fingerprint string
+	SecretHint  string
+	Sealed      crypto.Sealed
+	Weight      int
+	MaxInFlight int
+	State       string
+	StateReason string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+// UpstreamKeyUpdate 中为 nil 的字段不修改（STO-08）。
+type UpstreamKeyUpdate struct {
+	Name        *string
+	Weight      *int
+	MaxInFlight *int
+}
+
+// SealFunc 在插入事务中、拿到自增 id 之后被调用，返回该行的密文（STO-06）。
+type SealFunc func(id int64) (crypto.Sealed, error)
+
+// UsageEvent 是一条计费事件（usage_events 表）。
+type UsageEvent struct {
+	RequestID        string
+	ClientID         int64
+	KeyID            int64
+	Model            string
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	CostNanoUSD      int64
+	UsageSource      string
+	CreatedAt        time.Time
+}
+
+// UsageQuery 是用量汇总查询条件，时间区间为 [From, To)。ClientID 为 0 表示全部客户端。
+type UsageQuery struct {
+	ClientID int64
+	From     time.Time
+	To       time.Time
+}
+
+// UsageSummary 是按 (client_id, model) 分组的汇总。
+type UsageSummary struct {
+	ClientID         int64
+	Model            string
+	Requests         int64
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	CostNanoUSD      int64
+}
+
+// AuditRecord 是一条审计记录（audit_records 表）。不包含任何请求/响应正文。
+type AuditRecord struct {
+	RequestID        string
+	ClientID         int64
+	KeyID            int64
+	Model            string
+	IngressProtocol  string
+	UpstreamProtocol string
+	Status           int
+	ErrorCode        string
+	Attempts         int
+	Stream           bool
+	TTFBMillis       int64 // 无则 -1
+	LatencyMillis    int64
+	CreatedAt        time.Time
+}
+
+// Store 是全部持久化操作。方法语义见 spec/04 §4.1（STO-01 ~ STO-15）。
+type Store interface {
+	CreateClient(ctx context.Context, c *Client) (int64, error)
+	GetClient(ctx context.Context, id int64) (*Client, error)
+	ListClients(ctx context.Context) ([]Client, error)
+	UpdateClient(ctx context.Context, c *Client) error
+	CountAdmins(ctx context.Context) (int, error)
+
+	InsertUpstreamKey(ctx context.Context, k *UpstreamKey, seal SealFunc) (int64, error)
+	ListUpstreamKeys(ctx context.Context) ([]UpstreamKey, error)
+	GetUpstreamKey(ctx context.Context, id int64) (*UpstreamKey, error)
+	UpdateUpstreamKeyMeta(ctx context.Context, id int64, upd UpstreamKeyUpdate) error
+	SetUpstreamKeyState(ctx context.Context, id int64, state, reason string) error
+
+	InsertUsageEvents(ctx context.Context, events []UsageEvent) error
+	SumCostByClient(ctx context.Context) (map[int64]int64, error)
+	QueryUsage(ctx context.Context, q UsageQuery) ([]UsageSummary, error)
+
+	InsertAuditRecords(ctx context.Context, recs []AuditRecord) error
+	DeleteAuditBefore(ctx context.Context, before time.Time) (int64, error)
+
+	GetSetting(ctx context.Context, key string) (string, bool, error)
+	PutSetting(ctx context.Context, key, value string) error
+
+	Close() error
+}
