@@ -1,11 +1,14 @@
 package openairesp
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
@@ -116,16 +119,39 @@ func upstreamEndpoint(call *protocol.Call) (method, path string, ok bool) {
 
 // prepareBody 实现 PT-R01 ~ PT-R03：改写 model；返回是否需要固定响应 ID（store 缺省为 true）。
 func prepareBody(body []byte, upstreamModel string) (out []byte, store bool, err error) {
-	// TODO(T09C): jsonx.SetTopLevelString(body, "model", upstreamModel)；非 JSON 对象 → CodeInvalidRequest；
-	// store = jsonx.GetBool(body, "store")，不存在时为 true。不注入任何字段（Responses 总是返回 usage）。
-	return nil, false, apperr.NotImplemented("T09C")
+	store = true
+	if val, ok := jsonx.GetBool(body, "store"); ok && !val {
+		store = false
+	}
+	out, err = jsonx.SetTopLevelString(body, "model", upstreamModel)
+	if err != nil {
+		return nil, false, apperr.New(apperr.CodeInvalidRequest, "request body must be a JSON object")
+	}
+	return out, store, nil
 }
 
 // newRequest 实现 HDR-R01 ~ HDR-R03。
 func (e Egress) newRequest(ctx context.Context, method, url string, secret, body []byte, inbound http.Header) (*http.Request, error) {
-	// TODO(T09C): body 为空时不设 Content-Type；Authorization: Bearer <secret>；
-	// 白名单复制 OpenAI-Beta；User-Agent 同 HDR-05。
-	return nil, apperr.NotImplemented("T09C")
+	var reader io.Reader
+	if len(body) > 0 {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+string(secret))
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	ua := e.UserAgent
+	if ua == "" {
+		ua = "universal-ai-gateway"
+	}
+	req.Header.Set("User-Agent", ua)
+	if len(body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	protocol.CopyHeaders(req.Header, inbound, "OpenAI-Beta")
+	return req, nil
 }
 
 // meter 实现 USE-R01 ~ USE-R04 与 STR-R01。实现 protocol.Meter。
@@ -141,14 +167,81 @@ type meter struct {
 }
 
 func (m *meter) observeEvent(ev sse.Event) {
-	// TODO(T09C): response.created → responseID = data.response.id；
-	// response.output_text.delta → textBytes += len(data.delta)；
-	// response.completed / response.incomplete / response.failed → usage 取 data.response.usage（USE-R01）；
-	// response.failed 与 error 事件 → fault（STR-R01）。
+	name := ev.Name
+	if name == "" {
+		name, _ = jsonx.GetString(ev.Data, "type")
+	}
+	switch name {
+	case "response.created":
+		if id, ok := jsonx.GetString(ev.Data, "response", "id"); ok && id != "" {
+			m.responseID = id
+		}
+	case "response.output_text.delta":
+		if delta, ok := jsonx.GetString(ev.Data, "delta"); ok && len(delta) > 0 {
+			m.textBytes += int64(len(delta))
+		}
+	case "response.completed", "response.incomplete", "response.failed":
+		if id, ok := jsonx.GetString(ev.Data, "response", "id"); ok && id != "" && m.responseID == "" {
+			m.responseID = id
+		}
+		if rawUsage, ok := jsonx.Get(ev.Data, "response", "usage"); ok {
+			m.extractUsage(rawUsage)
+		}
+		if name == "response.failed" {
+			code, _ := jsonx.GetString(ev.Data, "response", "error", "code")
+			if code == "" {
+				code, _ = jsonx.GetString(ev.Data, "error", "code")
+			}
+			m.recordFault(code)
+		}
+	case "error":
+		code, _ := jsonx.GetString(ev.Data, "code")
+		if code == "" {
+			code, _ = jsonx.GetString(ev.Data, "error", "code")
+		}
+		m.recordFault(code)
+	}
 }
 
 func (m *meter) observeBody(body []byte) {
-	// TODO(T09C): responseID = 顶层 id；usage 取顶层 usage（USE-R01）。
+	if id, ok := jsonx.GetString(body, "id"); ok && id != "" {
+		m.responseID = id
+	}
+	if rawUsage, ok := jsonx.Get(body, "usage"); ok {
+		m.extractUsage(rawUsage)
+	}
+}
+
+func (m *meter) extractUsage(rawUsage []byte) {
+	inputTokens, _ := jsonx.GetInt64(rawUsage, "input_tokens")
+	outputTokens, _ := jsonx.GetInt64(rawUsage, "output_tokens")
+	cachedTokens, _ := jsonx.GetInt64(rawUsage, "input_tokens_details", "cached_tokens")
+	u := pricing.Usage{}
+	if in := inputTokens - cachedTokens; in > 0 {
+		u[pricing.UnitInputTokens] = in
+	}
+	if cachedTokens > 0 {
+		u[pricing.UnitCacheReadTokens] = cachedTokens
+	}
+	if outputTokens > 0 {
+		u[pricing.UnitOutputTokens] = outputTokens
+	}
+	m.usage = u
+	m.haveUsage = true
+}
+
+func (m *meter) recordFault(code string) {
+	var kind protocol.OutcomeKind
+	switch code {
+	case "rate_limit_exceeded":
+		kind = protocol.OutcomeRateLimited
+	case "server_error", "server_is_overloaded", "slow_down":
+		kind = protocol.OutcomeOverloaded
+	default:
+		kind = protocol.OutcomeServerError
+	}
+	m.fault = protocol.Outcome{Kind: kind}
+	m.hasFault = true
 }
 
 // Usage 实现 USE-R04。

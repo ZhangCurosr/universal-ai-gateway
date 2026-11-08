@@ -23,7 +23,6 @@ func sampleClient(hash string) *store.Client {
 
 // STO-01 ~ STO-04
 func TestClientsCRUD(t *testing.T) {
-	t.Skip("TODO(T01)")
 	ctx := context.Background()
 	db := newTestDB(t)
 
@@ -67,7 +66,6 @@ func TestClientsCRUD(t *testing.T) {
 
 // STO-01：token_hash 唯一
 func TestClientConflict(t *testing.T) {
-	t.Skip("TODO(T01)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	if _, err := db.CreateClient(ctx, sampleClient("dup")); err != nil {
@@ -78,9 +76,53 @@ func TestClientConflict(t *testing.T) {
 	}
 }
 
+// STO-04：UpdateClient 不存在返回 ErrNotFound
+func TestUpdateClientNotFound(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	c := sampleClient("missing")
+	c.ID = 9999
+	if err := db.UpdateClient(ctx, c); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("UpdateClient(missing) error = %v, want ErrNotFound", err)
+	}
+}
+
+// STO-04：UpdateClient token_hash 冲突返回 ErrConflict
+func TestUpdateClientConflict(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if _, err := db.CreateClient(ctx, sampleClient("h1")); err != nil {
+		t.Fatal(err)
+	}
+	id2, err := db.CreateClient(ctx, sampleClient("h2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := db.GetClient(ctx, id2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.TokenHash = "h1"
+	if err := db.UpdateClient(ctx, c2); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("UpdateClient(dup token_hash) error = %v, want ErrConflict", err)
+	}
+}
+
+// STO-03：空表返回空切片
+func TestListClientsEmpty(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	list, err := db.ListClients(ctx)
+	if err != nil {
+		t.Fatalf("ListClients() error = %v", err)
+	}
+	if list == nil || len(list) != 0 {
+		t.Fatalf("ListClients() empty = %+v, want empty non-nil slice", list)
+	}
+}
+
 // STO-05
 func TestCountAdmins(t *testing.T) {
-	t.Skip("TODO(T01)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	a := sampleClient("a")
@@ -100,7 +142,6 @@ func TestCountAdmins(t *testing.T) {
 
 // STO-15
 func TestSettings(t *testing.T) {
-	t.Skip("TODO(T01)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	if v, ok, err := db.GetSetting(ctx, "k"); err != nil || ok || v != "" {

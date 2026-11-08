@@ -62,7 +62,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 
 ---
 
-## T01 SQLite 仓储：客户端与设置 — 状态：`TODO`
+## T01 SQLite 仓储：客户端与设置 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：04 §1–§4（STO-01 ~ STO-05、STO-15）、02 §4 §10
@@ -75,7 +75,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **测试**：`TestClientsCRUD`、`TestClientConflict`、`TestCountAdmins`、`TestSettings`（文件中已写好，去掉 Skip）；另补充：`UpdateClient` 不存在的 id 返回 `ErrNotFound`。
 - **陷阱**：`database/sql` 扫描 `INTEGER` 布尔值要扫到 `int64` 再转 `bool`；不要用 `SELECT *`，显式列出列名（列顺序以后可能变化）。
 
-## T02 SQLite 仓储：上游 Key、计费事件、审计 — 状态：`TODO`
+## T02 SQLite 仓储：上游 Key、计费事件、审计 — 状态：`DONE`
 
 - **前置**：T01
 - **必读规格**：04 §3–§4（STO-06 ~ STO-15）、05 §2.3
@@ -87,7 +87,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **测试**：`TestInsertUpstreamKeySealUsesID`、`TestInsertUpstreamKeySealErrorRollsBack`、`TestUpstreamKeyUpdates`（`keys_test.go`）；`TestUsageEventsIdempotent`、`TestSumCostByClient`、`TestQueryUsage`、`TestAuditInsertAndDelete`（`usage_test.go`）。
 - **陷阱**：`seal` 必须拿到**真实的自增 id**（`res.LastInsertId()`），这是 AAD 绑定行主键的前提。
 
-## T03 客户端索引重载 — 状态：`TODO`
+## T03 客户端索引重载 — 状态：`DONE`
 
 - **前置**：T01
 - **必读规格**：05 §3.3–§3.4
@@ -95,7 +95,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **要做的事**：实现 `Reloader.Reload(ctx)`：`ListClients` → `Index.Replace`。错误用 `fmt.Errorf("reload clients: %w", err)` 包装。
 - **测试**：`TestReloaderReplacesIndex`（已写好，使用只实现 `ListClients` 的 `fakeLister`）；另补充一个 `ListClients` 返回错误时 `Reload` 返回包装错误、且索引保持旧内容的用例。
 
-## T04 每客户端 RPM 限流 — 状态：`TODO`
+## T04 每客户端 RPM 限流 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：09 §3（RL-01 ~ RL-06）。注意 `Allow` 的键是字符串（`"c:<clientID>"` 或 `"ip:<addr>"`），同一实现服务两种用途
@@ -112,7 +112,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **测试**：`TestReserveWithinQuota`、`TestReserveExceedsQuota`、`TestReserveUnknownClient`、`TestUnlimited`、`TestSettleOverdraft`、`TestSettleTwice`、`TestSettleNegativeCost`、`TestReleaseRestores`、`TestAdmissionBackpressure`、`TestConcurrentReserveNeverExceeds`（1000 个 goroutine 每个预留 1，额度 500，成功次数必须恰好 500）、`TestUpsertKeepsSpent`。
 - **陷阱**：LED-03 失败时不能留下任何修改；`Settle` 的事件发送是阻塞的——测试中记得从 `Events()` 读取，否则测试会卡死。
 
-## T06 计费事件刷盘 — 状态：`TODO`
+## T06 计费事件刷盘 — 状态：`DONE`
 
 - **前置**：T02、T05
 - **必读规格**：06 §4（FLU-01 ~ FLU-05）、02 §5 §6
@@ -160,7 +160,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   2. 出站：`prepareBody`（PT-01 ~ PT-03）、`newRequest`（HDR-01、HDR-02、HDR-04、HDR-05）、`meter.observeEvent` / `observeBody`（USE-03 ~ USE-07）、`shouldForward`（FWD-02、FWD-03）。`Prepare`、`Do`、`meter.Usage` 已提供，不要改。
 - **测试**：两个一致性测试；`egress_test.go` 中已写好的 `TestPrepareBodyInjectsUsage`、`TestPrepareBodyNonStreamNoInject`、`TestNewRequestHeaders`、`TestUsageCachedTokens`、`TestUsageStream`、`TestMeterEstimatesOutputWithoutUsage`、`TestShouldForwardFiltersInjectedUsageChunk`；`ingress_test.go` 新增亲和线索三种来源的用例。
 
-## T09C OpenAI Responses 适配器（入站 + 出站 + 工具） — 状态：`TODO`
+## T09C OpenAI Responses 适配器（入站 + 出站 + 工具） — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 §1 ~ §3、§5、**§9**；07 §7.1；14 §1
@@ -213,7 +213,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   5. 视图类型（`ClientView`、`KeyView`、`UsageItem` 等）已在 `types.go` 中提供；响应中**不得**出现 secret、`token_hash`、Token 明文（创建与轮换的响应除外）。
 - **测试**：每个端点至少一个成功用例和一个失败用例；另外 `TestCannotDisableLastAdmin`、`TestRotateTokenInvalidatesOld`、`TestNoSecretsInResponses`（对所有响应体做字符串检查，不得出现 secret 明文或 `token_hash`）、`TestAuthFailureIPLockout`。
 
-## T13 审计日志流水线 — 状态：`TODO`
+## T13 审计日志流水线 — 状态：`DONE`
 
 - **前置**：T02
 - **必读规格**：本卡；02 §5
@@ -274,7 +274,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 
 这两张卡验证「新增协议不修改内核」：除下列文件外不得修改任何文件。发现契约不够用时停下报告（spec/08 §6）。
 
-## T30 Tavily 搜索适配器 — 状态：`TODO`
+## T30 Tavily 搜索适配器 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 §1、§2.1、§3.1、§3.7、§5、§6、**§8.1**；06 §1–§2；厂商当时的官方 API 文档（核对端点、字段与计费）
@@ -282,7 +282,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **要做的事**：按 08 §8.1 实现；`Units() = ["credits"]`；请求体中的 `api_key` 不得转发给上游；实现 `ToolSource`，提供工具 `tavily_search`、`tavily_extract`（spec/14 §1，结果为「标题 + URL + 摘要」的文本列表），并在 14 §1 的工具表中补上。
 - **测试**：一致性套件全部通过（`Valid` 覆盖全部操作；`EgressCase` 覆盖有用量字段与无用量字段两种响应）；`egress_test.go`：请求体中客户端的 `api_key` 不出现在上游请求中、`search_depth=advanced` 的估计为 2 credits。
 
-## T31 MinerU 文档解析适配器 — 状态：`TODO`
+## T31 MinerU 文档解析适配器 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 §1、§2.1、§3.1、§3.7、§5、§6、**§8.2**；07 §7.1；13 §2（CORE-07、CORE-08）、§5；厂商当时的官方 API 文档

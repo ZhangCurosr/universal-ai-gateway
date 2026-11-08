@@ -15,7 +15,6 @@ func sampleKey(fp string) *store.UpstreamKey {
 
 // STO-06：seal 必须拿到真实自增 id，密文写入该行
 func TestInsertUpstreamKeySealUsesID(t *testing.T) {
-	t.Skip("TODO(T02)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	var sealedID int64
@@ -45,7 +44,6 @@ func TestInsertUpstreamKeySealUsesID(t *testing.T) {
 
 // STO-06：seal 出错时整行回滚
 func TestInsertUpstreamKeySealErrorRollsBack(t *testing.T) {
-	t.Skip("TODO(T02)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	boom := errors.New("boom")
@@ -62,7 +60,6 @@ func TestInsertUpstreamKeySealErrorRollsBack(t *testing.T) {
 
 // STO-08 / STO-09
 func TestUpstreamKeyUpdates(t *testing.T) {
-	t.Skip("TODO(T02)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	id, err := db.InsertUpstreamKey(ctx, sampleKey("fp"), func(int64) (crypto.Sealed, error) {
@@ -87,5 +84,51 @@ func TestUpstreamKeyUpdates(t *testing.T) {
 	}
 	if err := db.UpdateUpstreamKeyMeta(ctx, 999, store.UpstreamKeyUpdate{Weight: &w}); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("UpdateUpstreamKeyMeta(missing) error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetUpstreamKeyNotFound(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	_, err := db.GetUpstreamKey(ctx, 999)
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetUpstreamKey(999) error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSetUpstreamKeyStateNotFound(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	err := db.SetUpstreamKeyState(ctx, 999, store.KeyStateReady, "")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("SetUpstreamKeyState(999) error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdateUpstreamKeyMetaAllFields(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	id, err := db.InsertUpstreamKey(ctx, sampleKey("fp2"), func(int64) (crypto.Sealed, error) {
+		return crypto.Sealed{KEKVersion: 1, WrappedDEK: []byte("w"), Ciphertext: []byte("c")}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newName := "renamed"
+	newMaxInFlight := 32
+	if err := db.UpdateUpstreamKeyMeta(ctx, id, store.UpstreamKeyUpdate{
+		Name:        &newName,
+		MaxInFlight: &newMaxInFlight,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := db.GetUpstreamKey(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "renamed" || got.MaxInFlight != 32 {
+		t.Fatalf("got name=%s max_in_flight=%d, want renamed, 32", got.Name, got.MaxInFlight)
 	}
 }

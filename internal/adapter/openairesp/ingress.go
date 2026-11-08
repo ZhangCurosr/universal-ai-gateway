@@ -1,9 +1,13 @@
 package openairesp
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
 )
@@ -35,12 +39,130 @@ func (Ingress) Claims(*http.Request) bool { return false }
 
 // Parse 实现 IN-R02 ~ IN-R06。
 func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol.Envelope, error) {
-	// TODO(T09C):
-	//   responses.create：IN-L01 ~ IN-L03；Estimate = {input_tokens: EstimateInputTokens(len(body)), output_tokens: max_output_tokens（有则填）}；
-	//     previous_response_id 非空 → Affinity = {AffinityPin, 该 ID, Strict}（IN-R03）；否则亲和线索按 IN-R04。
-	//   其他操作：Model = r.Header.Get("X-UAIG-Model")（可以为空，IN-R05）；Params = {"id": r.PathValue("id"), "query": r.URL.RawQuery}；
-	//     Estimate = 全部单位显式为 0；Affinity = {AffinityPin, id, Strict}。
-	return nil, apperr.NotImplemented("T09C")
+	env := &protocol.Envelope{
+		Protocol: Protocol,
+		Op:       rt.Op,
+		Header:   r.Header,
+	}
+	if rt.Body == protocol.BodyBuffered {
+		env.Body = body
+	}
+
+	if rt.Op != OpCreate {
+		// IN-R05:
+		env.Model = r.Header.Get("X-UAIG-Model")
+		id := r.PathValue("id")
+		params := map[string]string{"id": id}
+		if q := r.URL.RawQuery; q != "" {
+			params["query"] = q
+		}
+		env.Params = params
+		env.Estimate = pricing.Usage{
+			pricing.UnitInputTokens:     0,
+			pricing.UnitOutputTokens:    0,
+			pricing.UnitCacheReadTokens: 0,
+		}
+		env.Affinity = protocol.AffinityHint{
+			Source: protocol.AffinityPin,
+			Value:  []byte(id),
+			Strict: true,
+		}
+		return env, nil
+	}
+
+	// responses.create: IN-L01 ~ IN-L03, IN-R02 ~ IN-R04
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "request body must be a JSON object")
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &top); err != nil {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "request body must be a JSON object")
+	}
+
+	model, ok := jsonx.GetString(body, "model")
+	if !ok || model == "" {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "model: required")
+	}
+	env.Model = model
+
+	if streamRaw, ok := jsonx.Get(body, "stream"); ok {
+		var s bool
+		if err := json.Unmarshal(streamRaw, &s); err != nil {
+			return nil, apperr.New(apperr.CodeInvalidRequest, "stream must be a boolean")
+		}
+		env.Stream = s
+	}
+
+	est := pricing.Usage{
+		pricing.UnitInputTokens: pricing.EstimateInputTokens(len(body)),
+	}
+	if _, ok := jsonx.Get(body, "max_output_tokens"); ok {
+		maxTokens, ok := jsonx.GetInt64(body, "max_output_tokens")
+		if !ok || maxTokens <= 0 {
+			return nil, apperr.New(apperr.CodeInvalidRequest, "max_output_tokens must be a positive integer")
+		}
+		est[pricing.UnitOutputTokens] = maxTokens
+	}
+	env.Estimate = est
+
+	if prevID, ok := jsonx.GetString(body, "previous_response_id"); ok && prevID != "" {
+		env.Affinity = protocol.AffinityHint{
+			Source: protocol.AffinityPin,
+			Value:  []byte(prevID),
+			Strict: true,
+		}
+	} else if cacheKey, ok := jsonx.GetString(body, "prompt_cache_key"); ok && cacheKey != "" {
+		env.Affinity = protocol.AffinityHint{
+			Source: protocol.AffinityUser,
+			Value:  []byte(cacheKey),
+		}
+	} else if safetyID, ok := jsonx.GetString(body, "safety_identifier"); ok && safetyID != "" {
+		env.Affinity = protocol.AffinityHint{
+			Source: protocol.AffinityUser,
+			Value:  []byte(safetyID),
+		}
+	} else if user, ok := jsonx.GetString(body, "user"); ok && user != "" {
+		env.Affinity = protocol.AffinityHint{
+			Source: protocol.AffinityUser,
+			Value:  []byte(user),
+		}
+	} else {
+		var (
+			bInstructions []byte
+			bTools        []byte
+			bInput        []byte
+			hasAny        bool
+		)
+		if raw, ok := jsonx.Get(body, "instructions"); ok {
+			bInstructions = bytes.TrimSpace(raw)
+			hasAny = true
+		}
+		if raw, ok := jsonx.Get(body, "tools"); ok {
+			bTools = bytes.TrimSpace(raw)
+			hasAny = true
+		}
+		if raw, ok := jsonx.Get(body, "input"); ok {
+			trimmedInput := bytes.TrimSpace(raw)
+			if len(trimmedInput) > 0 && trimmedInput[0] == '[' {
+				if elem, ok := jsonx.ArrayElem(trimmedInput, 0); ok {
+					bInput = bytes.TrimSpace(elem)
+					hasAny = true
+				}
+			} else {
+				bInput = trimmedInput
+				hasAny = true
+			}
+		}
+		if hasAny {
+			env.Affinity = protocol.AffinityHint{
+				Source: protocol.AffinityPrefix,
+				Value:  bytes.Join([][]byte{bInstructions, bTools, bInput}, []byte{0x00}),
+			}
+		}
+	}
+
+	return env, nil
 }
 
 var errorType = map[apperr.Code]string{
@@ -71,8 +193,22 @@ func (Ingress) WriteError(w http.ResponseWriter, requestID string, err *apperr.E
 
 // StreamError 实现 IN-R07：event: error，data: {"type":"error","code":<错误码>,"message":<消息>,"param":null}。
 func (Ingress) StreamError(err *apperr.Error) sse.Event {
-	// TODO(T09C)
-	return sse.Event{}
+	code := ""
+	msg := ""
+	if err != nil {
+		code = string(err.Code)
+		msg = err.Message
+	}
+	data, _ := json.Marshal(map[string]any{
+		"type":    "error",
+		"code":    code,
+		"message": msg,
+		"param":   nil,
+	})
+	return sse.Event{
+		Name: "error",
+		Data: data,
+	}
 }
 
 // WriteCatalog 不会被调用（没有目录路由）。

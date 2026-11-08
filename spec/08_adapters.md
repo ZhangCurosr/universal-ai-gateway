@@ -318,7 +318,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 
 以下两个范例已用临时实现跑通一致性套件，证明契约足以表达它们。真正接入时以厂商当时的官方文档为准核对字段。
 
-### 8.1 搜索 API（以 Tavily 为例）：多端点、无模型字段、按 credits 计费
+### 8.1 搜索 API（以 Tavily 为例，正式规则，已实现）：多端点、无模型字段、按 credits 计费
 
 | 项 | 设计 |
 |:--|:--|
@@ -334,7 +334,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 
 配置：`price: { credits: "0.008" }`，`reserve: { credits: 2 }`。
 
-### 8.2 文档解析 API（以 MinerU 为例）：文件上传、异步任务、结果下载
+### 8.2 文档解析 API（以 MinerU 为例，正式规则，已实现）：文件上传、异步任务、结果下载
 
 上游是「提交任务 → 轮询状态 → 下载结果」的异步 API。适配器可以同时提供两种用法：
 

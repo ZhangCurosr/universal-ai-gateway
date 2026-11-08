@@ -2,8 +2,10 @@ package main
 
 import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/anthropic"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/mineru"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openai"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openairesp"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/tavily"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
@@ -13,8 +15,10 @@ import (
 // 新增协议 = 新建 internal/adapter/<name> 包 + 在这里加一行。
 var adapterRegistrars = []func(*protocol.Registry) error{
 	anthropic.Register,
+	mineru.Register,
 	openai.Register,
 	openairesp.Register,
+	tavily.Register,
 }
 
 // newRegistry 注册全部适配器并封存注册表。

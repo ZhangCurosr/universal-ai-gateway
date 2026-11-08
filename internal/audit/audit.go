@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
 
@@ -37,7 +38,12 @@ func NewPipeline(capacity int) *Pipeline {
 
 // Submit 非阻塞提交；队列满时丢弃并计数（AUD-01）。
 func (p *Pipeline) Submit(rec store.AuditRecord) {
-	// TODO(T13): select { case p.ch <- rec: default: p.dropped.Add(1) }
+	// AUD-01: 非阻塞提交，队列满时丢弃并计数
+	select {
+	case p.ch <- rec:
+	default:
+		p.dropped.Add(1)
+	}
 }
 
 // Dropped 返回累计丢弃数（AUD-05）。
@@ -59,13 +65,108 @@ type Writer struct {
 
 // NewWriter 创建写入 worker。
 func NewWriter(p *Pipeline, st RecordWriter, cfg WriterConfig, log *slog.Logger) *Writer {
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = 256
+	}
+	if cfg.FlushInterval <= 0 {
+		cfg.FlushInterval = 250 * time.Millisecond
+	}
+	if log == nil {
+		log = obs.Discard()
+	}
 	return &Writer{p: p, st: st, cfg: cfg, log: log}
 }
 
 // Run 阻塞运行直到 ctx 取消，退出前做最后一次写入。
 func (w *Writer) Run(ctx context.Context) error {
-	// TODO(T13)
-	<-ctx.Done()
+	if w.p == nil {
+		return nil
+	}
+	batchSize := w.cfg.BatchSize
+	if batchSize <= 0 {
+		batchSize = 256
+	}
+	flushInterval := w.cfg.FlushInterval
+	if flushInterval <= 0 {
+		flushInterval = 250 * time.Millisecond
+	}
+	logger := w.log
+	if logger == nil {
+		logger = obs.Discard()
+	}
+
+	buf := make([]store.AuditRecord, 0, batchSize)
+	var lastDropped int64
+
+	// AUD-05: 累计丢弃数监控，每次 flush 时若自上次以来有新增丢弃，输出一条 Warn
+	checkDropped := func() {
+		curr := w.p.Dropped()
+		if diff := curr - lastDropped; diff > 0 {
+			logger.Warn("audit records dropped", "dropped", diff, "total_dropped", curr)
+			lastDropped = curr
+		}
+	}
+
+	// AUD-02: 写入失败丢弃该批并 Warn（审计可以丢，不重试）
+	flush := func(flushCtx context.Context) {
+		checkDropped()
+		if len(buf) == 0 {
+			return
+		}
+		if w.st != nil {
+			if err := w.st.InsertAuditRecords(flushCtx, buf); err != nil {
+				logger.Warn("failed to insert audit records", "err", err, "count", len(buf))
+			}
+		}
+		buf = buf[:0]
+	}
+
+	ticker := time.NewTicker(flushInterval)
+	defer ticker.Stop()
+
+mainLoop:
+	for {
+		if ctx.Err() != nil {
+			break mainLoop
+		}
+		select {
+		case <-ctx.Done():
+			break mainLoop
+		case rec, ok := <-w.p.ch:
+			if !ok {
+				break mainLoop
+			}
+			buf = append(buf, rec)
+			if ctx.Err() != nil {
+				break mainLoop
+			}
+			if len(buf) >= batchSize {
+				flush(ctx)
+				ticker.Reset(flushInterval)
+			}
+		case <-ticker.C:
+			flush(ctx)
+		}
+	}
+
+	// AUD-03: ctx 取消后读空队列做最后一次写入（5 秒超时），然后返回。
+drainLoop:
+	for {
+		select {
+		case rec, ok := <-w.p.ch:
+			if !ok {
+				break drainLoop
+			}
+			buf = append(buf, rec)
+		default:
+			break drainLoop
+		}
+	}
+
+	drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	flush(drainCtx)
+
 	return nil
 }
 
@@ -80,7 +181,51 @@ type Retention struct {
 
 // Run 启动时立即清理一次，之后每 Interval 清理一次，直到 ctx 取消。
 func (r *Retention) Run(ctx context.Context) error {
-	// TODO(T13)
-	<-ctx.Done()
-	return nil
+	if ctx.Err() != nil {
+		return nil
+	}
+	interval := r.Interval
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	nowFunc := r.Now
+	if nowFunc == nil {
+		nowFunc = time.Now
+	}
+	logger := r.Log
+	if logger == nil {
+		logger = obs.Discard()
+	}
+	retentionDays := r.RetentionDays
+	if retentionDays <= 0 {
+		// SPEC-GAP(T13): 当 RetentionDays <= 0 时默认按 30 天处理，避免误删全部审计日志
+		retentionDays = 30
+	}
+
+	clean := func() {
+		if r.St == nil {
+			return
+		}
+		before := nowFunc().AddDate(0, 0, -retentionDays)
+		if _, err := r.St.DeleteAuditBefore(ctx, before); err != nil {
+			if ctx.Err() == nil {
+				logger.Warn("failed to delete expired audit records", "err", err, "before", before)
+			}
+		}
+	}
+
+	// AUD-04: 启动时立即执行一次
+	clean()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			clean()
+		}
+	}
 }
