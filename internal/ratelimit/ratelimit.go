@@ -39,7 +39,7 @@ func (l *Limiter) timeNow() time.Time {
 	return time.Now()
 }
 
-// Allow 尝试为 key 消耗 1 个令牌。拒绝时返回需要等待的时长。
+// Allow 尝试为 key 消耗 1 个令牌（RL-01 ~ RL-05）。拒绝时返回需要等待的时长。
 func (l *Limiter) Allow(key string, rpm int) (ok bool, retryAfter time.Duration) {
 	// RL-01: rpm <= 0 永远允许，retryAfter = 0
 	if rpm <= 0 {
