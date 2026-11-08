@@ -3,8 +3,10 @@ package openairesp
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
@@ -36,14 +38,104 @@ func (Ingress) Tools() []protocol.Tool {
 
 // ToolRequest 实现 TL-R01：转换为非流式、store=false 的 responses.create 请求。
 func (Ingress) ToolRequest(name string, args json.RawMessage) (*protocol.ToolRequest, error) {
-	// TODO(T09C): 校验 model、input 为非空字符串，max_output_tokens 若存在为正整数，不允许其他字段；
-	// Body = {"model","input","instructions"?, "max_output_tokens"?, "store": false}（stream 不设置）。
-	return nil, apperr.NotImplemented("T09C")
+	if name != ToolAskModel {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "unknown tool: "+name)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(args, &raw); err != nil {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "arguments must be a JSON object")
+	}
+	for k := range raw {
+		switch k {
+		case "model", "input", "instructions", "max_output_tokens":
+		default:
+			return nil, apperr.New(apperr.CodeInvalidRequest, "unsupported parameter: "+k)
+		}
+	}
+	modelRaw, ok := raw["model"]
+	if !ok {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "model is required")
+	}
+	var model string
+	if err := json.Unmarshal(modelRaw, &model); err != nil || model == "" {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "model must be a non-empty string")
+	}
+	inputRaw, ok := raw["input"]
+	if !ok {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "input is required")
+	}
+	var input string
+	if err := json.Unmarshal(inputRaw, &input); err != nil || input == "" {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "input must be a non-empty string")
+	}
+
+	bodyMap := map[string]any{
+		"model": model,
+		"input": input,
+		"store": false,
+	}
+
+	if instRaw, ok := raw["instructions"]; ok {
+		var inst string
+		if err := json.Unmarshal(instRaw, &inst); err != nil {
+			return nil, apperr.New(apperr.CodeInvalidRequest, "instructions must be a string")
+		}
+		bodyMap["instructions"] = inst
+	}
+
+	if maxRaw, ok := raw["max_output_tokens"]; ok {
+		var maxTokens int64
+		if err := json.Unmarshal(maxRaw, &maxTokens); err != nil || maxTokens <= 0 {
+			return nil, apperr.New(apperr.CodeInvalidRequest, "max_output_tokens must be a positive integer")
+		}
+		bodyMap["max_output_tokens"] = maxTokens
+	}
+
+	bodyBytes, err := json.Marshal(bodyMap)
+	if err != nil {
+		return nil, apperr.New(apperr.CodeInternal, "failed to marshal request body")
+	}
+
+	return &protocol.ToolRequest{
+		Op:   OpCreate,
+		Body: bodyBytes,
+	}, nil
 }
 
 // ToolResult 实现 TL-R02：2xx → 拼接 output[*].content[*] 中 type == "output_text" 的 text；
 // 非 2xx → error.message，IsError = true。
 func (Ingress) ToolResult(name string, status int, header http.Header, body []byte) (*protocol.ToolResult, error) {
-	// TODO(T09C)
-	return nil, apperr.NotImplemented("T09C")
+	if name != ToolAskModel {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "unknown tool: "+name)
+	}
+	if status < 200 || status >= 300 {
+		errMsg, ok := jsonx.GetString(body, "error", "message")
+		if !ok || errMsg == "" {
+			errMsg = string(body)
+		}
+		return protocol.TextResult(errMsg, true), nil
+	}
+	var resp struct {
+		Output []struct {
+			Type    string `json:"type"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, err
+	}
+	var sb strings.Builder
+	for _, item := range resp.Output {
+		if item.Type == "message" {
+			for _, c := range item.Content {
+				if c.Type == "output_text" {
+					sb.WriteString(c.Text)
+				}
+			}
+		}
+	}
+	return protocol.TextResult(sb.String(), false), nil
 }

@@ -160,7 +160,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
   2. 出站：`prepareBody`（PT-01 ~ PT-03）、`newRequest`（HDR-01、HDR-02、HDR-04、HDR-05）、`meter.observeEvent` / `observeBody`（USE-03 ~ USE-07）、`shouldForward`（FWD-02、FWD-03）。`Prepare`、`Do`、`meter.Usage` 已提供，不要改。
 - **测试**：两个一致性测试；`egress_test.go` 中已写好的 `TestPrepareBodyInjectsUsage`、`TestPrepareBodyNonStreamNoInject`、`TestNewRequestHeaders`、`TestUsageCachedTokens`、`TestUsageStream`、`TestMeterEstimatesOutputWithoutUsage`、`TestShouldForwardFiltersInjectedUsageChunk`；`ingress_test.go` 新增亲和线索三种来源的用例。
 
-## T09C OpenAI Responses 适配器（入站 + 出站 + 工具） — 状态：`TODO`
+## T09C OpenAI Responses 适配器（入站 + 出站 + 工具） — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 §1 ~ §3、§5、**§9**；07 §7.1；14 §1
@@ -268,7 +268,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 
 这两张卡验证「新增协议不修改内核」：除下列文件外不得修改任何文件。发现契约不够用时停下报告（spec/08 §6）。
 
-## T30 Tavily 搜索适配器 — 状态：`TODO`
+## T30 Tavily 搜索适配器 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 §1、§2.1、§3.1、§3.7、§5、§6、**§8.1**；06 §1–§2；厂商当时的官方 API 文档（核对端点、字段与计费）

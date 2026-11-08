@@ -36,7 +36,6 @@ func TestUpstreamEndpoint(t *testing.T) {
 
 // PT-R03
 func TestPrepareBodyStoreFlag(t *testing.T) {
-	t.Skip("TODO(T09C)")
 	for body, want := range map[string]bool{`{"model":"a","input":"x"}`: true, `{"model":"a","store":true}`: true, `{"model":"a","store":false}`: false} {
 		if _, store, err := prepareBody([]byte(body), "b"); err != nil || store != want {
 			t.Errorf("prepareBody(%s) store=%v err=%v, want %v", body, store, err, want)
@@ -46,7 +45,6 @@ func TestPrepareBodyStoreFlag(t *testing.T) {
 
 // HDR-R01 ~ HDR-R03
 func TestNewRequestHeaders(t *testing.T) {
-	t.Skip("TODO(T09C)")
 	in := http.Header{"Authorization": {"Bearer uai_live_client"}, "Openai-Beta": {"responses=v1"}, "Cookie": {"a=b"}}
 	req, err := Egress{}.newRequest(context.Background(), "GET", "https://api.example.com/v1/responses/r1", []byte("sk-up"), nil, in)
 	if err != nil {
@@ -62,7 +60,6 @@ func TestNewRequestHeaders(t *testing.T) {
 
 // USE-R01 ~ USE-R04、STR-R01
 func TestMeterFailedAndCutStreams(t *testing.T) {
-	t.Skip("TODO(T09C)")
 	m := &meter{billable: true}
 	m.observeEvent(sse.Event{Name: "response.created", Data: []byte(`{"type":"response.created","response":{"id":"resp_1"}}`)})
 	m.observeEvent(sse.Event{Name: "response.output_text.delta", Data: []byte(`{"type":"response.output_text.delta","delta":"12345678"}`)})
@@ -83,7 +80,6 @@ func TestMeterFailedAndCutStreams(t *testing.T) {
 
 // TL-R01、TL-R02
 func TestAskModelTool(t *testing.T) {
-	t.Skip("TODO(T09C)")
 	tr, err := Ingress{}.ToolRequest(ToolAskModel, json.RawMessage(`{"model":"gpt","input":"hi","max_output_tokens":50}`))
 	if err != nil || tr.Op != OpCreate {
 		t.Fatalf("ToolRequest() = %+v, %v", tr, err)
