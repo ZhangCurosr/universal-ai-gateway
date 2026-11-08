@@ -27,6 +27,18 @@ func decodeObject(body []byte) (map[string]json.RawMessage, error) {
 	return m, nil
 }
 
+// Object 把顶层 JSON 对象解为 键 → 原始值（只解一层，值的字节不变）。不是对象返回 ErrNotObject。
+// 入站适配器解析请求时应只调用一次，再对各字段使用 String / Bool / Int64，避免对大请求体反复解析。
+func Object(body []byte) (map[string]json.RawMessage, error) {
+	return decodeObject(body)
+}
+
+// IsNull 报告原始值是否缺失或为 JSON null。
+func IsNull(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) == 0 || bytes.Equal(t, []byte("null"))
+}
+
 // SetTopLevel 返回把顶层键 key 设为 value（必须是合法 JSON）后的新文档。
 // 顶层键会按字母序重排，每个值内部字节保持不变。
 func SetTopLevel(body []byte, key string, value json.RawMessage) ([]byte, error) {

@@ -1,11 +1,14 @@
 package anthropic
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
@@ -77,22 +80,51 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	return &protocol.Response{Kind: protocol.ResponseBuffered, Status: resp.StatusCode, Header: h, Body: body, Meter: m}, nil
 }
 
-// prepareBody 实现 PT-01、PT-02、PT-04。
+// prepareBody 实现 PT-01、PT-02、PT-04：只改写顶层 model，其余值的字节不变。
 func prepareBody(body []byte, upstreamModel string) ([]byte, error) {
-	// TODO(T09A): 用 jsonx.SetTopLevelString 改写 model；非 JSON 对象返回 apperr.CodeInvalidRequest。
-	return nil, apperr.NotImplemented("T09A")
+	out, err := jsonx.SetTopLevelString(body, "model", upstreamModel)
+	if err != nil {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "request body must be a JSON object")
+	}
+	return out, nil
 }
 
 // newRequest 实现 HDR-01 ~ HDR-03、HDR-05。
 func (e Egress) newRequest(ctx context.Context, baseURL string, secret []byte, body []byte, inbound http.Header) (*http.Request, error) {
-	// TODO(T09A): URL = protocol.JoinURL(baseURL, "/v1/messages")；只复制白名单头部。
-	return nil, apperr.NotImplemented("T09A")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, protocol.JoinURL(baseURL, "/v1/messages"), bytes.NewReader(body))
+	if err != nil {
+		return nil, apperr.Wrap(apperr.CodeInternal, "build upstream request", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("x-api-key", string(secret))
+	version := inbound.Get("anthropic-version")
+	if version == "" {
+		version = DefaultVersion
+	}
+	req.Header.Set("anthropic-version", version)
+	protocol.CopyHeaders(req.Header, inbound, "anthropic-beta")
+	ua := e.UserAgent
+	if ua == "" {
+		ua = "universal-ai-gateway"
+	}
+	req.Header.Set("User-Agent", ua)
+	return req, nil
 }
 
-// classifyStreamError 实现 STR-05：ev.Name == "error" 时解析 data 中的 error.type。
+// classifyStreamError 实现 STR-05：error 事件按 error.type 分类。
 func classifyStreamError(ev sse.Event) (protocol.Outcome, bool) {
-	// TODO(T09A)
-	return protocol.Outcome{}, false
+	if ev.Name != "error" {
+		return protocol.Outcome{}, false
+	}
+	switch t, _ := jsonx.GetString(ev.Data, "error", "type"); t {
+	case "overloaded_error":
+		return protocol.Outcome{Kind: protocol.OutcomeOverloaded}, true
+	case "rate_limit_error":
+		return protocol.Outcome{Kind: protocol.OutcomeRateLimited}, true
+	default:
+		return protocol.Outcome{Kind: protocol.OutcomeServerError}, true
+	}
 }
 
 // meter 累积 Anthropic 响应中的 usage（USE-01、USE-02）。实现 protocol.Meter。
@@ -106,13 +138,54 @@ type meter struct {
 	hasFault bool
 }
 
+// usageFields 是 Anthropic usage 字段到计量单位的映射。
+var usageFields = [...]struct{ field, unit string }{
+	{"input_tokens", pricing.UnitInputTokens},
+	{"output_tokens", pricing.UnitOutputTokens},
+	{"cache_read_input_tokens", pricing.UnitCacheReadTokens},
+	{"cache_creation_input_tokens", pricing.UnitCacheWriteTokens},
+}
+
+// apply 实现 USE-01：存在的字段覆盖之前的值，不存在的保留。返回是否出现了 input_tokens。
+func (m *meter) apply(usage json.RawMessage) bool {
+	if m.usage == nil {
+		m.usage = pricing.Usage{}
+	}
+	sawInput := false
+	for _, f := range usageFields {
+		if v, ok := jsonx.GetInt64(usage, f.field); ok {
+			m.usage[f.unit] = v
+			sawInput = sawInput || f.field == "input_tokens"
+		}
+	}
+	return sawInput
+}
+
 func (m *meter) observeEvent(ev sse.Event) {
-	// TODO(T09A): 处理 message_start（data.message.usage）、message_delta（data.usage）、
-	// content_block_delta 的 text 字节数（USE-01、USE-07）。
+	switch ev.Name {
+	case "message_start":
+		if u, ok := jsonx.Get(ev.Data, "message", "usage"); ok && m.apply(u) {
+			m.haveInput = true
+		}
+	case "message_delta":
+		if u, ok := jsonx.Get(ev.Data, "usage"); ok {
+			if m.apply(u) {
+				m.haveInput = true
+			}
+			m.haveFinal = true
+		}
+	case "content_block_delta":
+		if text, ok := jsonx.GetString(ev.Data, "delta", "text"); ok {
+			m.textBytes += int64(len(text))
+		}
+	}
 }
 
 func (m *meter) observeBody(body []byte) {
-	// TODO(T09A): 解析顶层 usage（USE-02）。
+	if u, ok := jsonx.Get(body, "usage"); ok {
+		m.haveInput = m.apply(u)
+		m.haveFinal = true
+	}
 }
 
 // Usage 实现 USE-07：完整 → UsageUpstream；只有输入 → 输出按 textBytes 估算，UsageEstimated；都没有 → UsageNone。

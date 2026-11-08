@@ -18,7 +18,6 @@ import (
 
 // PT-01、PT-04：只改 model，其余值的原始字节不变
 func TestPrepareBodyRewritesModelOnly(t *testing.T) {
-	t.Skip("TODO(T09A)")
 	messages := `[ {"role":"user","content":[{"type":"text","text":"hi","cache_control":{"type":"ephemeral"}}]} ]`
 	system := `[{"type":"text","text":"sys","cache_control":{"type":"ephemeral","ttl":"1h"}}]`
 	tools := `[{"name":"t","input_schema":{"type":"object"}}]`
@@ -39,7 +38,6 @@ func TestPrepareBodyRewritesModelOnly(t *testing.T) {
 
 // PT-02
 func TestPrepareBodyRejectsNonObject(t *testing.T) {
-	t.Skip("TODO(T09A)")
 	_, err := prepareBody([]byte(`[1,2]`), "m")
 	if apperr.CodeOf(err) != apperr.CodeInvalidRequest {
 		t.Fatalf("PrepareBody(array) error = %v, want invalid_request", err)
@@ -48,7 +46,6 @@ func TestPrepareBodyRejectsNonObject(t *testing.T) {
 
 // HDR-01 ~ HDR-03、HDR-05
 func TestNewRequestHeaders(t *testing.T) {
-	t.Skip("TODO(T09A)")
 	in := http.Header{}
 	in.Set("Authorization", "Bearer uai_live_client")
 	in.Set("x-api-key", "uai_live_client")
@@ -85,7 +82,6 @@ func TestNewRequestHeaders(t *testing.T) {
 
 // USE-01、USE-02
 func TestUsageTapStream(t *testing.T) {
-	t.Skip("TODO(T09A)")
 	f, err := os.Open("testdata/stream_basic.sse")
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +107,6 @@ func TestUsageTapStream(t *testing.T) {
 }
 
 func TestUsageTapBody(t *testing.T) {
-	t.Skip("TODO(T09A)")
 	tap := &meter{}
 	tap.observeBody([]byte(`{"id":"msg","usage":{"input_tokens":3,"output_tokens":4,"cache_read_input_tokens":5}}`))
 	got, src := tap.Usage()
@@ -122,7 +117,6 @@ func TestUsageTapBody(t *testing.T) {
 
 // USE-07：流在 message_delta 之前中断，输出按已观察到的文本字节估算
 func TestMeterEstimatesOutputWhenStreamCut(t *testing.T) {
-	t.Skip("TODO(T09A)")
 	tap := &meter{}
 	tap.observeEvent(sse.Event{Name: "message_start", Data: []byte(`{"type":"message_start","message":{"usage":{"input_tokens":7,"output_tokens":1}}}`)})
 	tap.observeEvent(sse.Event{Name: "content_block_delta", Data: []byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"12345678"}}`)})
@@ -134,7 +128,6 @@ func TestMeterEstimatesOutputWhenStreamCut(t *testing.T) {
 
 // STR-05
 func TestClassifyStreamError(t *testing.T) {
-	t.Skip("TODO(T09A)")
 	tests := []struct {
 		data string
 		want protocol.OutcomeKind

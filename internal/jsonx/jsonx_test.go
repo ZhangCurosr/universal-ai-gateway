@@ -64,3 +64,13 @@ func TestGetters(t *testing.T) {
 		t.Error("raw array invalid")
 	}
 }
+
+func TestObjectAndIsNull(t *testing.T) {
+	m, err := Object([]byte(` {"a": [1, 2], "b": null} `))
+	if err != nil || string(m["a"]) != "[1, 2]" || !IsNull(m["b"]) || !IsNull(m["missing"]) || IsNull(m["a"]) {
+		t.Fatalf("Object() = %v, %v", m, err)
+	}
+	if _, err := Object([]byte(`[1]`)); err != ErrNotObject {
+		t.Fatalf("Object(array) error = %v", err)
+	}
+}
