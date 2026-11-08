@@ -61,7 +61,6 @@ func mustAcquire(t *testing.T, s *Scheduler, req AcquireRequest) *Lease {
 
 // SCH-03 / ST-05
 func TestRateLimitedCooldown(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10))
 	l := mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
 	l.Finish(protocol.Outcome{Kind: protocol.OutcomeRateLimited, RetryAfter: 20 * time.Second})
@@ -76,7 +75,6 @@ func TestRateLimitedCooldown(t *testing.T) {
 
 // SCH-03：冷却中的 Key 被跳过
 func TestAcquireSkipsCooldown(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10), key(2, 1, 10))
 	l := mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
 	cooled := l.Key.ID
@@ -92,7 +90,6 @@ func TestAcquireSkipsCooldown(t *testing.T) {
 
 // SCH-05
 func TestAcquireRespectsMaxInFlight(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 2))
 	a := mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
 	mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
@@ -105,7 +102,6 @@ func TestAcquireRespectsMaxInFlight(t *testing.T) {
 
 // SCH-10
 func TestAffinityPreferred(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10), key(2, 1, 10))
 	first := mustAcquire(t, h.s, AcquireRequest{Pool: "p", AffinityKey: "sess"})
 	first.Finish(protocol.Outcome{Kind: protocol.OutcomeSuccess})
@@ -122,7 +118,6 @@ func TestAffinityPreferred(t *testing.T) {
 
 // SCH-10：绑定的 Key 满载时回落到其他 Key
 func TestAffinityFallbackWhenBusy(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 1), key(2, 1, 1))
 	a := mustAcquire(t, h.s, AcquireRequest{Pool: "p", AffinityKey: "sess"})
 	b := mustAcquire(t, h.s, AcquireRequest{Pool: "p", AffinityKey: "sess"})
@@ -133,7 +128,6 @@ func TestAffinityFallbackWhenBusy(t *testing.T) {
 
 // SCH-01：Exclude
 func TestExcludeTried(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10), key(2, 1, 10))
 	l := mustAcquire(t, h.s, AcquireRequest{Pool: "p", Exclude: []int64{1}})
 	if l.Key.ID != 2 {
@@ -146,7 +140,6 @@ func TestExcludeTried(t *testing.T) {
 
 // SCH-11
 func TestLeastInflightOrder(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10), key(2, 1, 10))
 	a := mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
 	b := mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
@@ -157,7 +150,6 @@ func TestLeastInflightOrder(t *testing.T) {
 
 // SCH-12
 func TestWeightedRoundRobinDistribution(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyWeightedRoundRobin, key(1, 5, 100), key(2, 1, 100))
 	counts := map[int64]int{}
 	for i := 0; i < 6000; i++ {
@@ -172,7 +164,6 @@ func TestWeightedRoundRobinDistribution(t *testing.T) {
 
 // LED 同理：Finish 只生效一次
 func TestFinishOnce(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10))
 	l := mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
 	l.Finish(protocol.Outcome{Kind: protocol.OutcomeSuccess})
@@ -184,7 +175,6 @@ func TestFinishOnce(t *testing.T) {
 
 // ST-06
 func TestAuthFailedTwiceQuarantines(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10))
 	mustAcquire(t, h.s, AcquireRequest{Pool: "p"}).Finish(protocol.Outcome{Kind: protocol.OutcomeAuthFailed})
 	h.c.Advance(61 * time.Second) // 第一次只冷却 60s
@@ -205,7 +195,6 @@ func TestAuthFailedTwiceQuarantines(t *testing.T) {
 
 // ST-08
 func TestOverloadedNoPenalty(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10))
 	for i := 0; i < 20; i++ {
 		mustAcquire(t, h.s, AcquireRequest{Pool: "p"}).Finish(protocol.Outcome{Kind: protocol.OutcomeOverloaded})
@@ -215,7 +204,6 @@ func TestOverloadedNoPenalty(t *testing.T) {
 
 // §3.1：没有任何冷却中的 Key 时 RetryAfter = 0
 func TestNoKeyRetryAfter(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight)
 	_, err := h.s.Acquire(AcquireRequest{Pool: "p"})
 	e, ok := apperr.As(err)
@@ -226,7 +214,6 @@ func TestNoKeyRetryAfter(t *testing.T) {
 
 // §5.1：熔断打开 → 半开放行一个探测 → 成功后关闭
 func TestBreakerOpensAndHalfOpen(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10))
 	for i := 0; i < 4; i++ { // MinRequests=4，全部失败
 		mustAcquire(t, h.s, AcquireRequest{Pool: "p"}).Finish(protocol.Outcome{Kind: protocol.OutcomeServerError})
@@ -248,7 +235,6 @@ func TestBreakerOpensAndHalfOpen(t *testing.T) {
 
 // SCH-16：导出字段不变 → 复用旧对象（保留 inFlight）
 func TestSetKeysPreservesRuntime(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10))
 	l := mustAcquire(t, h.s, AcquireRequest{Pool: "p"})
 	h.s.SetKeys([]*Key{key(1, 1, 10)}) // 例如另一个 Key 被新增后整体重载
@@ -264,7 +250,6 @@ func TestSetKeysPreservesRuntime(t *testing.T) {
 
 // SCH-16：导出字段改变 → 新对象，冷却保留，inFlight 从 0 开始
 func TestSetKeysChangedFieldsKeepCooldown(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10))
 	mustAcquire(t, h.s, AcquireRequest{Pool: "p"}).Finish(protocol.Outcome{Kind: protocol.OutcomeRateLimited, RetryAfter: time.Minute})
 	h.s.SetKeys([]*Key{key(1, 3, 10)}) // 管理员改了权重
@@ -276,7 +261,6 @@ func TestSetKeysChangedFieldsKeepCooldown(t *testing.T) {
 
 // SCH-17 / SCH-18：任务固定后只能用创建它的 Key
 func TestStrictPin(t *testing.T) {
-	t.Skip("TODO(T08)")
 	h := newHarness(t, config.StrategyLeastInflight, key(1, 1, 10), key(2, 1, 10))
 	if _, err := h.s.Acquire(AcquireRequest{Pool: "p", AffinityKey: "job", Strict: true}); apperr.CodeOf(err) != apperr.CodeNotFound {
 		t.Fatalf("strict miss error = %v, want not_found", err)

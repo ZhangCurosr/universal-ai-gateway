@@ -1,12 +1,16 @@
 package scheduler
 
 import (
+	"bytes"
 	"log/slog"
+	"slices"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
@@ -66,6 +70,9 @@ type Scheduler struct {
 	opts     Options
 	pools    map[string]*pool // 构造后只读
 	affinity *affinityCache
+
+	mu   sync.RWMutex
+	byID map[int64]*Key // guarded by mu；SetKeys 整体替换
 }
 
 // New 创建调度器。pools 中的名称必须唯一（由 config.Validate 保证）。
@@ -76,7 +83,7 @@ func New(pools []PoolConfig, opts Options) *Scheduler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	s := &Scheduler{opts: opts, pools: map[string]*pool{}, affinity: newAffinityCache(opts.AffinityCapacity)}
+	s := &Scheduler{opts: opts, pools: map[string]*pool{}, affinity: newAffinityCache(opts.AffinityCapacity), byID: map[int64]*Key{}}
 	for _, pc := range pools {
 		s.pools[pc.Name] = &pool{cfg: pc}
 	}
@@ -85,35 +92,293 @@ func New(pools []PoolConfig, opts Options) *Scheduler {
 
 // SetKeys 用 keys 替换全部 Key，同 ID 的处理规则见 SCH-16。Pool 不存在的 Key 被忽略并记录 Warn。
 func (s *Scheduler) SetKeys(keys []*Key) {
-	// TODO(T08)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	byID := make(map[int64]*Key, len(keys))
+	perPool := map[string][]*Key{}
+	for _, k := range keys {
+		p, ok := s.pools[k.Pool]
+		if !ok {
+			s.opts.Logger.Warn("scheduler: key references unknown pool; ignored", "key_id", k.ID, "pool", k.Pool)
+			continue
+		}
+		if old, ok := s.byID[k.ID]; ok {
+			if sameIdentity(old, k) {
+				old.persisted.Store(k.persisted.Load())
+				k = old
+			} else {
+				k.cooldownUntil.Store(old.cooldownUntil.Load())
+				k.authFailures.Store(old.authFailures.Load())
+			}
+		}
+		k.breaker.configure(p.cfg.Breaker)
+		byID[k.ID] = k
+		perPool[k.Pool] = append(perPool[k.Pool], k)
+	}
+	for name, p := range s.pools {
+		ks := perPool[name]
+		sort.Slice(ks, func(i, j int) bool { return ks[i].ID < ks[j].ID })
+		p.mu.Lock()
+		p.keys = ks
+		p.mu.Unlock()
+	}
+	s.byID = byID
+}
+
+// sameIdentity 报告两个 Key 的导出字段是否完全相同（SCH-16）。
+func sameIdentity(a, b *Key) bool {
+	return a.Pool == b.Pool && a.Name == b.Name && bytes.Equal(a.Secret, b.Secret) &&
+		a.Weight == b.Weight && a.MaxInFlight == b.MaxInFlight
+}
+
+// usable 实现 SCH-01 ~ SCH-05（SCH-01 的池判定由调用方保证）。
+func usable(k *Key, now time.Time, exclude []int64) bool {
+	if slices.Contains(exclude, k.ID) || k.Persisted() != PersistedReady {
+		return false
+	}
+	if until := k.cooldownUntil.Load(); until > now.UnixNano() {
+		return false
+	}
+	return k.inFlight.Load() < k.MaxInFlight && k.breaker.allow(now)
 }
 
 // Acquire 按 spec/07 §3 选择一个 Key。无可用 Key 返回 CodeUpstreamUnavailable（§3.1）。
 func (s *Scheduler) Acquire(req AcquireRequest) (*Lease, error) {
-	// TODO(T08): SCH-01 ~ SCH-15。
-	return nil, apperr.NotImplemented("T08")
+	p, ok := s.pools[req.Pool]
+	if !ok {
+		return nil, apperr.New(apperr.CodeUpstreamUnavailable, "unknown pool "+req.Pool)
+	}
+	now := s.opts.Now()
+	p.mu.Lock()
+	all := p.keys
+	p.mu.Unlock()
+
+	candidates := make([]*Key, 0, len(all))
+	for _, k := range all {
+		if usable(k, now, req.Exclude) {
+			candidates = append(candidates, k)
+		}
+	}
+
+	if req.Strict { // SCH-17：不刷新 TTL，绝不回落到其他 Key
+		id, ok := s.affinity.peek(req.AffinityKey, now)
+		if req.AffinityKey == "" || !ok {
+			return nil, apperr.New(apperr.CodeNotFound, "unknown or expired task; resubmit")
+		}
+		for _, k := range candidates {
+			if k.ID == id {
+				if l := s.claim(p, k, now); l != nil {
+					return l, nil
+				}
+				break
+			}
+		}
+		return nil, s.noKey(all, now)
+	}
+
+	if len(candidates) == 0 {
+		return nil, s.noKey(all, now)
+	}
+	if req.AffinityKey != "" { // SCH-10
+		if id, ok := s.affinity.Get(req.AffinityKey, now); ok {
+			for _, k := range candidates {
+				if k.ID == id {
+					if l := s.claim(p, k, now); l != nil {
+						return l, nil // Get 已刷新 TTL（SCH-13）
+					}
+					break
+				}
+			}
+		}
+	}
+	var lease *Lease
+	if p.cfg.Strategy == config.StrategyWeightedRoundRobin {
+		lease = s.pickSWRR(p, candidates, now)
+	} else {
+		lease = s.pickLeastInflight(p, candidates, now)
+	}
+	if lease == nil {
+		return nil, s.noKey(all, now)
+	}
+	if req.AffinityKey != "" {
+		s.affinity.Put(req.AffinityKey, lease.Key.ID, p.cfg.AffinityTTL, now)
+	}
+	return lease, nil
+}
+
+// claim 占用 k 的并发槽位并经熔断器确认放行；失败时归还槽位并返回 nil。
+func (s *Scheduler) claim(p *pool, k *Key, now time.Time) *Lease {
+	if !k.tryAcquire() {
+		return nil
+	}
+	probe, ok := k.breaker.onAcquire(now)
+	if !ok {
+		k.release()
+		return nil
+	}
+	return &Lease{Key: k, s: s, pool: p, probe: probe}
+}
+
+// pickLeastInflight 实现 SCH-11：先按轮转游标旋转候选集（打破平局），再按负载升序、权重降序稳定排序。
+func (s *Scheduler) pickLeastInflight(p *pool, c []*Key, now time.Time) *Lease {
+	n := len(c)
+	off := int(p.cursor.Add(1) % uint64(n))
+	order := append(append(make([]*Key, 0, n), c[off:]...), c[:off]...)
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		la := int64(a.inFlight.Load()) * int64(b.MaxInFlight)
+		lb := int64(b.inFlight.Load()) * int64(a.MaxInFlight)
+		if la != lb {
+			return la < lb
+		}
+		return a.Weight > b.Weight
+	})
+	for _, k := range order {
+		if l := s.claim(p, k, now); l != nil {
+			return l
+		}
+	}
+	return nil
+}
+
+// pickSWRR 实现 SCH-12（Nginx 平滑加权轮询），在池级 mutex 内只对候选集运算。
+func (s *Scheduler) pickSWRR(p *pool, c []*Key, now time.Time) *Lease {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	total := int64(0)
+	for _, k := range c {
+		k.swrrCurrent += int64(k.Weight)
+		total += int64(k.Weight)
+	}
+	order := append([]*Key(nil), c...)
+	sort.SliceStable(order, func(i, j int) bool { return order[i].swrrCurrent > order[j].swrrCurrent })
+	for _, k := range order {
+		if l := s.claim(p, k, now); l != nil {
+			k.swrrCurrent -= total
+			return l
+		}
+	}
+	return nil
+}
+
+// noKey 实现 §3.1。
+func (s *Scheduler) noKey(all []*Key, now time.Time) error {
+	var earliest int64
+	for _, k := range all {
+		if k.Persisted() != PersistedReady {
+			continue
+		}
+		if until := k.cooldownUntil.Load(); until > now.UnixNano() && (earliest == 0 || until < earliest) {
+			earliest = until
+		}
+	}
+	e := apperr.New(apperr.CodeUpstreamUnavailable, "no upstream key available")
+	if earliest > 0 {
+		wait := time.Duration(earliest - now.UnixNano())
+		secs := (wait + time.Second - 1) / time.Second
+		e = e.WithRetryAfter(max(secs, 1) * time.Second)
+	}
+	return e
 }
 
 // Finish 释放占用并按 Outcome 更新 Key 状态（spec/07 §5，ST-01 ~ ST-09）。重复调用无效。
 func (l *Lease) Finish(o protocol.Outcome) {
-	// TODO(T08)
+	if !l.finished.CompareAndSwap(false, true) {
+		return
+	}
+	k, cfg := l.Key, l.pool.cfg
+	k.release()
+	now := l.s.opts.Now()
+	counted := false
+	switch o.Kind {
+	case protocol.OutcomeSuccess: // ST-01
+		k.authFailures.Store(0)
+		k.breaker.record(true, l.probe, now)
+		counted = true
+	case protocol.OutcomeRateLimited: // ST-05
+		d := o.RetryAfter
+		if d <= 0 {
+			d = cfg.CooldownDefault
+		}
+		k.coolDown(now, min(max(d, time.Second), max(cfg.CooldownMax, time.Second)))
+	case protocol.OutcomeAuthFailed: // ST-06
+		if k.authFailures.Add(1) >= 2 {
+			k.persisted.Store(int32(PersistedQuarantined))
+			if cb := l.s.opts.OnQuarantine; cb != nil {
+				go cb(k.ID, "upstream 401 twice") // 不持锁、异步：回调可能做 I/O
+			}
+		} else {
+			k.coolDown(now, 60*time.Second)
+		}
+	case protocol.OutcomePermissionDenied: // ST-07
+		k.coolDown(now, cfg.CooldownDefault)
+	case protocol.OutcomeServerError, protocol.OutcomeTimeout, protocol.OutcomeNetworkError: // ST-09
+		k.breaker.record(false, l.probe, now)
+		counted = true
+	}
+	// ST-02 ~ ST-04、ST-08 不影响 Key；探测请求以不计入统计的结果结束时释放探测名额
+	if l.probe && !counted {
+		k.breaker.cancelProbe()
+	}
+}
+
+// coolDown 把冷却截止时间延长到 now + d（只延长，不缩短）。
+func (k *Key) coolDown(now time.Time, d time.Duration) {
+	until := now.Add(d).UnixNano()
+	for {
+		cur := k.cooldownUntil.Load()
+		if cur >= until || k.cooldownUntil.CompareAndSwap(cur, until) {
+			return
+		}
+	}
 }
 
 // Pin 把 affinityKey 固定到本 Lease 的 Key，有效期 ttl（SCH-18，用于 Response.Pins）。
 // 与普通亲和共用同一个缓存；可以在 Finish 之前或之后调用。
 func (l *Lease) Pin(affinityKey string, ttl time.Duration) {
-	// TODO(T08)
+	if affinityKey == "" || ttl <= 0 {
+		return
+	}
+	l.s.affinity.Put(affinityKey, l.Key.ID, ttl, l.s.opts.Now())
 }
 
 // PinnedPool 返回 affinityKey 当前固定到的 Key 所在的池（SCH-19）；未命中、已过期或该 Key 已不存在返回 ok=false。
 // 不刷新 TTL。内核用它为不带服务名的严格亲和请求（如 GET /v1/responses/{id}）确定路由（CORE-11）。
 func (s *Scheduler) PinnedPool(affinityKey string) (pool string, ok bool) {
-	// TODO(T08)
-	return "", false
+	id, ok := s.affinity.peek(affinityKey, s.opts.Now())
+	if !ok {
+		return "", false
+	}
+	s.mu.RLock()
+	k, ok := s.byID[id]
+	s.mu.RUnlock()
+	if !ok {
+		return "", false
+	}
+	return k.Pool, true
 }
 
 // KeyStatus 返回全部 Key 的状态快照，按 ID 升序。
 func (s *Scheduler) KeyStatus() []KeyStatus {
-	// TODO(T08)
-	return nil
+	now := s.opts.Now()
+	s.mu.RLock()
+	keys := make([]*Key, 0, len(s.byID))
+	for _, k := range s.byID {
+		keys = append(keys, k)
+	}
+	s.mu.RUnlock()
+	sort.Slice(keys, func(i, j int) bool { return keys[i].ID < keys[j].ID })
+	out := make([]KeyStatus, 0, len(keys))
+	for _, k := range keys {
+		remaining := time.Duration(0)
+		if until := k.cooldownUntil.Load(); until > now.UnixNano() {
+			remaining = time.Duration(until - now.UnixNano())
+		}
+		out = append(out, KeyStatus{
+			ID: k.ID, Pool: k.Pool, Name: k.Name, Persisted: k.Persisted(),
+			InFlight: int(k.inFlight.Load()), MaxInFlight: int(k.MaxInFlight),
+			CooldownRemaining: remaining, Breaker: k.breaker.current(now), AuthFailures: int(k.authFailures.Load()),
+		})
+	}
+	return out
 }
