@@ -1,0 +1,5 @@
+{"model":"claude-x","input":"Go","stream":true,"store":false,"max_output_tokens":512,"temperature":0.3,"top_p":0.8,
+ "tool_choice":"required","tools":[{"type":"function","name":"noop"}],
+ "reasoning":{"effort":"high","summary":"auto"},"parallel_tool_calls":true,"truncation":"auto","metadata":{"k":"v"},
+ "prompt_cache_key":"pk","include":["reasoning.encrypted_content"],"service_tier":"auto",
+ "text":{"format":{"type":"text"},"verbosity":"low"},"user":"u-1","safety_identifier":"safe-42"}

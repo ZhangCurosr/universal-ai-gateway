@@ -301,6 +301,6 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T22 | Anthropic 响应/流 → OpenAI 响应/流（10 §5，实现 `Translator.Response`：缓冲体转换 + 包装 `EventStream`）；实现 `translate.Register` 并在 `cmd/gateway/adapters.go` 中注册（内核无需修改） | T21 | 10 §0、§5 |
 | T23 | Anthropic 请求 → IR → OpenAI 请求 | T22 | 10 §6（届时补充） |
 | T24 | OpenAI 响应/流 → Anthropic 响应/流 | T23 | 10 §6（届时补充） |
-| T25 | OpenAI Responses 请求 → IR（10 §8.1、§8.2），含 RX-01 ~ RX-05 的拒绝规则 | T21 | 10 §1、§8 |
+| T25 | OpenAI Responses 请求 → IR（10 §8.1、§8.2），含 RX-01 ~ RX-05 的拒绝规则 — `DONE` | T21 | 10 §1、§8 |
 | T26 | Anthropic 响应/流 → Responses 响应/流（10 §8.3）；注册 `openai_responses → anthropic` 转换器 | T25 | 10 §8.3、§8.4 |
 | T27 | Chat 响应/流 → Responses 响应/流（10 §8.3）；注册 `openai_responses → openai_chat` 转换器 | T25、T23 | 10 §8.3、§8.4 |

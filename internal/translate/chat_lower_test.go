@@ -40,7 +40,8 @@ func dumpPart(p ir.Part) map[string]any {
 		}
 		return map[string]any{"type": "tool_result", "tool_call_id": v.ToolCallID, "is_error": v.IsError, "content": content}
 	case ir.ThinkingPart:
-		return map[string]any{"type": "thinking", "vendor": v.Vendor, "text": v.Text, "signature": v.Signature}
+		return map[string]any{"type": "thinking", "vendor": v.Vendor, "text": v.Text, "signature": v.Signature,
+			"redacted": v.Redacted, "redacted_data": v.RedactedData, "encrypted": v.Encrypted}
 	default:
 		return map[string]any{"type": "unknown"}
 	}
@@ -74,9 +75,15 @@ func dumpRequest(r *ir.Request) []byte {
 
 // spec/10 §7：openai → IR 方向的黄金文件用例（testdata/chat_to_ir/<用例>/{input,expected}.json）。
 func TestLowerOpenAIChatGolden(t *testing.T) {
-	dirs, err := filepath.Glob(filepath.Join("testdata", "chat_to_ir", "*"))
+	runLowerGolden(t, "chat_to_ir", lowerOpenAIChat)
+}
+
+// runLowerGolden 对 testdata/<group>/* 中每个用例运行 lower，并与 expected.json 比较。
+func runLowerGolden(t *testing.T, group string, lower func([]byte) (*ir.Request, error)) {
+	t.Helper()
+	dirs, err := filepath.Glob(filepath.Join("testdata", group, "*"))
 	if err != nil || len(dirs) == 0 {
-		t.Fatalf("no golden cases found: %v", err)
+		t.Fatalf("no golden cases found in %s: %v", group, err)
 	}
 	for _, dir := range dirs {
 		t.Run(filepath.Base(dir), func(t *testing.T) {
@@ -84,9 +91,9 @@ func TestLowerOpenAIChatGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			req, err := lowerOpenAIChat(input)
+			req, err := lower(input)
 			if err != nil {
-				t.Fatalf("lowerOpenAIChat() error = %v", err)
+				t.Fatalf("lower() error = %v", err)
 			}
 			got := dumpRequest(req)
 			expPath := filepath.Join(dir, "expected.json")

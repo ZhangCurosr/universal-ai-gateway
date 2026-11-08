@@ -1,0 +1,6 @@
+{"model":"claude-x","input":[
+  {"role":"user","content":"2+2?"},
+  {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAA-opaque"},
+  {"type":"message","role":"assistant","content":[{"type":"output_text","text":"4"}]},
+  {"role":"user","content":"And 3+3?"}
+]}

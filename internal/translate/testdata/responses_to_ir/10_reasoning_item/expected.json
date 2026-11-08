@@ -1,0 +1,55 @@
+{
+  "max_tokens": 0,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "2+2?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "encrypted": "gAAAA-opaque",
+          "redacted": false,
+          "redacted_data": "",
+          "signature": "",
+          "text": "",
+          "type": "thinking",
+          "vendor": "openai"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "text": "4",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "text": "And 3+3?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": null,
+  "top_p": null,
+  "user": ""
+}

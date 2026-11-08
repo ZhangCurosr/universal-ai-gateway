@@ -342,7 +342,7 @@ func lowerChatUserContent(raw json.RawMessage, path string) ([]ir.Part, error) {
 		case "text":
 			out = append(out, ir.TextPart{Text: p.Text})
 		case "image_url":
-			img, err := lowerImageURL(p.ImageURL.URL, pp)
+			img, err := lowerImageURL(p.ImageURL.URL, pp+".image_url.url")
 			if err != nil {
 				return nil, err
 			}
@@ -373,24 +373,24 @@ func decodeContentArray(raw json.RawMessage, path string) ([]chatContentPart, er
 	return parts, nil
 }
 
-// lowerImageURL：data: URL 解码为 Data + MediaType；http(s) URL 放 URL（§3）。
-func lowerImageURL(u, path string) (ir.ImagePart, error) {
+// lowerImageURL：data: URL 解码为 Data + MediaType；http(s) URL 放 URL（§3、§8.2）。field 是错误消息中的字段路径。
+func lowerImageURL(u, field string) (ir.ImagePart, error) {
 	switch {
 	case strings.HasPrefix(u, "data:"):
 		meta, data, ok := strings.Cut(strings.TrimPrefix(u, "data:"), ",")
 		mediaType, isBase64 := strings.CutSuffix(meta, ";base64")
 		if !ok || !isBase64 || mediaType == "" || !strings.HasPrefix(mediaType, "image/") {
-			return ir.ImagePart{}, invalid(path + ".image_url.url must be a base64 data URL of an image")
+			return ir.ImagePart{}, invalid(field + " must be a base64 data URL of an image")
 		}
 		b, err := base64.StdEncoding.DecodeString(data)
 		if err != nil {
-			return ir.ImagePart{}, invalid(path + ".image_url.url contains invalid base64 data")
+			return ir.ImagePart{}, invalid(field + " contains invalid base64 data")
 		}
 		return ir.ImagePart{MediaType: mediaType, Data: b}, nil
 	case strings.HasPrefix(u, "https://"), strings.HasPrefix(u, "http://"):
 		return ir.ImagePart{URL: u}, nil
 	default:
-		return ir.ImagePart{}, invalid(path + ".image_url.url must be a data: or http(s) URL")
+		return ir.ImagePart{}, invalid(field + " must be a data: or http(s) URL")
 	}
 }
 

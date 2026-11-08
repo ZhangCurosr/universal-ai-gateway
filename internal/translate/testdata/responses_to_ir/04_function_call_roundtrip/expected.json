@@ -1,0 +1,90 @@
+{
+  "max_tokens": 0,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "List files",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "arguments": {
+            "cmd": "ls"
+          },
+          "id": "call_1",
+          "name": "shell",
+          "type": "tool_call"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "content": [
+            {
+              "text": "a.txt\nb.txt",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "tool_call_id": "call_1",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "Two files.",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "text": "Thanks",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": {
+    "Mode": "auto",
+    "Name": ""
+  },
+  "tools": [
+    {
+      "Name": "shell",
+      "Description": "Run a command",
+      "InputSchema": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cmd"
+        ]
+      },
+      "CacheControl": null
+    }
+  ],
+  "top_p": null,
+  "user": ""
+}

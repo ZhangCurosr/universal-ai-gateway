@@ -1,0 +1,33 @@
+{
+  "max_tokens": 512,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Go",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": true,
+  "system": [],
+  "temperature": 0.3,
+  "tool_choice": {
+    "Mode": "any",
+    "Name": ""
+  },
+  "tools": [
+    {
+      "Name": "noop",
+      "Description": "",
+      "InputSchema": null,
+      "CacheControl": null
+    }
+  ],
+  "top_p": 0.8,
+  "user": "safe-42"
+}

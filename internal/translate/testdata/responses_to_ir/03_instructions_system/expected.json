@@ -1,0 +1,32 @@
+{
+  "max_tokens": 0,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Hi",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [
+    {
+      "text": "You are terse.",
+      "type": "text"
+    },
+    {
+      "text": "Answer in Chinese.",
+      "type": "text"
+    }
+  ],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": null,
+  "top_p": null,
+  "user": ""
+}

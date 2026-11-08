@@ -1,0 +1,4 @@
+{"model":"claude-x","instructions":"You are terse.","input":[
+  {"type":"message","role":"developer","content":[{"type":"input_text","text":"Answer in Chinese."}]},
+  {"type":"message","role":"user","content":"Hi"}
+]}
