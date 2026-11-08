@@ -2,6 +2,7 @@ package main
 
 import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/anthropic"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/mineru"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openai"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openairesp"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/tavily"
@@ -14,6 +15,7 @@ import (
 // 新增协议 = 新建 internal/adapter/<name> 包 + 在这里加一行。
 var adapterRegistrars = []func(*protocol.Registry) error{
 	anthropic.Register,
+	mineru.Register,
 	openai.Register,
 	openairesp.Register,
 	tavily.Register,

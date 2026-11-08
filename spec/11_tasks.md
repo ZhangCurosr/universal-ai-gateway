@@ -276,7 +276,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **要做的事**：按 08 §8.1 实现；`Units() = ["credits"]`；请求体中的 `api_key` 不得转发给上游；实现 `ToolSource`，提供工具 `tavily_search`、`tavily_extract`（spec/14 §1，结果为「标题 + URL + 摘要」的文本列表），并在 14 §1 的工具表中补上。
 - **测试**：一致性套件全部通过（`Valid` 覆盖全部操作；`EgressCase` 覆盖有用量字段与无用量字段两种响应）；`egress_test.go`：请求体中客户端的 `api_key` 不出现在上游请求中、`search_depth=advanced` 的估计为 2 credits。
 
-## T31 MinerU 文档解析适配器 — 状态：`TODO`
+## T31 MinerU 文档解析适配器 — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 §1、§2.1、§3.1、§3.7、§5、§6、**§8.2**；07 §7.1；13 §2（CORE-07、CORE-08）、§5；厂商当时的官方 API 文档

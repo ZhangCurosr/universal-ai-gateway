@@ -49,7 +49,7 @@ type ToolSource interface {
 | `ask_model` | `openai_responses`（T09C） | 参数 `model`、`input`、`instructions?`、`max_output_tokens?`；对任一可经 Responses 协议调用的服务提问，返回文本回答 |
 | `tavily_search` | `tavily`（T30） | 参数 `query`、`search_depth?`、`max_results?`；调用 Tavily 搜索网页，返回标题 + URL + 摘要文本列表 |
 | `tavily_extract` | `tavily`（T30） | 参数 `urls`；调用 Tavily 提取网页正文内容，返回正文文本列表 |
-| `mineru_parse` 等 | `mineru`（T31） | 见 spec/08 §8.2；T31 实现时追加（同步封装，返回 Markdown） |
+| `mineru_parse` | `mineru`（T31） | 参数 `url`；调用 MinerU 解析文档（PDF/DOCX 等），返回 Markdown 文本（同步封装） |
 
 ## 2. MCP 服务端（`internal/mcp.Server`，T32）
 

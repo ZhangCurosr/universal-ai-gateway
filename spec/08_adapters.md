@@ -334,7 +334,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 
 配置：`price: { credits: "0.008" }`，`reserve: { credits: 2 }`。
 
-### 8.2 文档解析 API（以 MinerU 为例）：文件上传、异步任务、结果下载
+### 8.2 文档解析 API（以 MinerU 为例，正式规则，已实现）：文件上传、异步任务、结果下载
 
 上游是「提交任务 → 轮询状态 → 下载结果」的异步 API。适配器可以同时提供两种用法：
 
