@@ -1,0 +1,1 @@
+{"id":"msg_up4","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"Let me think","signature":"sig"},{"type":"redacted_thinking","data":"x"},{"type":"text","text":"4"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":3}}

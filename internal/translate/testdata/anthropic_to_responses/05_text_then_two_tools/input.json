@@ -1,0 +1,1 @@
+{"id":"msg_up3","type":"message","role":"assistant","content":[{"type":"text","text":"Checking both."},{"type":"tool_use","id":"toolu_a","name":"get_weather","input":{"city":"Paris"}},{"type":"tool_use","id":"toolu_b","name":"get_weather","input":{"city":"Rome"}}],"stop_reason":"tool_use","usage":{"input_tokens":30,"output_tokens":12}}

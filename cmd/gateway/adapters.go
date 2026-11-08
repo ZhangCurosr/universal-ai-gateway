@@ -7,6 +7,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openairesp"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/tavily"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/translate"
 )
 
 // adapterRegistrars 是全部协议适配器的注册函数。
@@ -19,6 +20,7 @@ var adapterRegistrars = []func(*protocol.Registry) error{
 	openai.Register,
 	openairesp.Register,
 	tavily.Register,
+	translate.Register, // 跨协议转换器（spec/10 §0）
 }
 
 // newRegistry 注册全部适配器并封存注册表。

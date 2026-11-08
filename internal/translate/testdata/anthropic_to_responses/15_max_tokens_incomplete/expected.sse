@@ -1,0 +1,153 @@
+event: response.created
+data: {
+data:   "response": {
+data:     "id": "resp_1",
+data:     "object": "response",
+data:     "created_at": 1700000000,
+data:     "status": "in_progress",
+data:     "model": "claude-for-codex",
+data:     "output": [],
+data:     "incomplete_details": null,
+data:     "store": false
+data:   },
+data:   "sequence_number": 0,
+data:   "type": "response.created"
+data: }
+
+event: response.in_progress
+data: {
+data:   "response": {
+data:     "id": "resp_1",
+data:     "object": "response",
+data:     "created_at": 1700000000,
+data:     "status": "in_progress",
+data:     "model": "claude-for-codex",
+data:     "output": [],
+data:     "incomplete_details": null,
+data:     "store": false
+data:   },
+data:   "sequence_number": 1,
+data:   "type": "response.in_progress"
+data: }
+
+event: response.output_item.added
+data: {
+data:   "item": {
+data:     "type": "message",
+data:     "id": "msg_1",
+data:     "status": "in_progress",
+data:     "role": "assistant"
+data:   },
+data:   "output_index": 0,
+data:   "sequence_number": 2,
+data:   "type": "response.output_item.added"
+data: }
+
+event: response.content_part.added
+data: {
+data:   "content_index": 0,
+data:   "item_id": "msg_1",
+data:   "output_index": 0,
+data:   "part": {
+data:     "type": "output_text",
+data:     "text": "",
+data:     "annotations": []
+data:   },
+data:   "sequence_number": 3,
+data:   "type": "response.content_part.added"
+data: }
+
+event: response.output_text.delta
+data: {
+data:   "content_index": 0,
+data:   "delta": "Once upon a",
+data:   "item_id": "msg_1",
+data:   "output_index": 0,
+data:   "sequence_number": 4,
+data:   "type": "response.output_text.delta"
+data: }
+
+event: response.output_text.done
+data: {
+data:   "content_index": 0,
+data:   "item_id": "msg_1",
+data:   "output_index": 0,
+data:   "sequence_number": 5,
+data:   "text": "Once upon a",
+data:   "type": "response.output_text.done"
+data: }
+
+event: response.content_part.done
+data: {
+data:   "content_index": 0,
+data:   "item_id": "msg_1",
+data:   "output_index": 0,
+data:   "part": {
+data:     "type": "output_text",
+data:     "text": "Once upon a",
+data:     "annotations": []
+data:   },
+data:   "sequence_number": 6,
+data:   "type": "response.content_part.done"
+data: }
+
+event: response.output_item.done
+data: {
+data:   "item": {
+data:     "type": "message",
+data:     "id": "msg_1",
+data:     "status": "completed",
+data:     "role": "assistant",
+data:     "content": [
+data:       {
+data:         "type": "output_text",
+data:         "text": "Once upon a",
+data:         "annotations": []
+data:       }
+data:     ]
+data:   },
+data:   "output_index": 0,
+data:   "sequence_number": 7,
+data:   "type": "response.output_item.done"
+data: }
+
+event: response.incomplete
+data: {
+data:   "response": {
+data:     "id": "resp_1",
+data:     "object": "response",
+data:     "created_at": 1700000000,
+data:     "status": "incomplete",
+data:     "model": "claude-for-codex",
+data:     "output": [
+data:       {
+data:         "type": "message",
+data:         "id": "msg_1",
+data:         "status": "completed",
+data:         "role": "assistant",
+data:         "content": [
+data:           {
+data:             "type": "output_text",
+data:             "text": "Once upon a",
+data:             "annotations": []
+data:           }
+data:         ]
+data:       }
+data:     ],
+data:     "usage": {
+data:       "input_tokens": 5,
+data:       "input_tokens_details": {
+data:         "cached_tokens": 0
+data:       },
+data:       "output_tokens": 3,
+data:       "total_tokens": 8
+data:     },
+data:     "incomplete_details": {
+data:       "reason": "max_output_tokens"
+data:     },
+data:     "store": false
+data:   },
+data:   "sequence_number": 8,
+data:   "type": "response.incomplete"
+data: }
+

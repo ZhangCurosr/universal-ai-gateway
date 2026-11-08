@@ -9,3 +9,9 @@ const (
 	protoAnthropic       protocol.Protocol = "anthropic"
 	protoOpenAIResponses protocol.Protocol = "openai_responses"
 )
+
+// 本包用到的操作名，取值必须与对应适配器的 Op 常量一致。
+const (
+	opResponsesCreate = "responses.create" // openai_responses
+	opAnthropicCreate = "messages"         // anthropic
+)
