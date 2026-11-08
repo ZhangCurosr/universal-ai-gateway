@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
@@ -13,26 +14,154 @@ import (
 
 // listTools 实现 TL-01 ~ TL-04：返回客户端 p 可用的工具（按名称升序），转换为 MCP Tool 对象。
 func (s *Server) listTools(p *auth.Principal) []map[string]any {
-	// TODO(T32): 遍历 Registry.Tools()；Tool.Model 非空时要求 core.Route(Model) 存在且 p.ModelAllowed(Model)（TL-03）；
-	// Tool.Model 为空时，可用服务 = core.Models(p) 中 上游协议 == 工具所属协议 或 注册了 (工具协议 → 上游协议) 转换器 的项，
-	// 为空则不列出该工具，否则在 description 末尾追加 "\n\nAvailable models: a, b, c"（TL-04）。
-	return nil
+	var out []map[string]any
+	for _, t := range s.d.Registry.Tools() {
+		var desc string
+		if t.Tool.Model != "" {
+			// TL-03: Tool.Model 非空：只有该服务已配置（core.Route 存在）且客户端白名单允许时才列出
+			if _, ok := s.d.Core.Route(t.Tool.Model); !ok {
+				continue
+			}
+			if p != nil && !p.ModelAllowed(t.Tool.Model) {
+				continue
+			}
+			desc = t.Tool.Description
+		} else {
+			// TL-04: Tool.Model 为空（服务由参数指定）：可用服务 = core.Models(principal) 中上游协议等于工具所属协议、
+			// 或注册了「工具协议 → 上游协议」转换器的项。为空则不列出；否则在 description 末尾追加 "\n\nAvailable models: a, b, c"（按名称升序）
+			avail := s.availableModels(t, p)
+			if len(avail) == 0 {
+				continue
+			}
+			desc = t.Tool.Description + "\n\nAvailable models: " + strings.Join(avail, ", ")
+		}
+
+		item := map[string]any{
+			"name":        t.Tool.Name,
+			"description": desc,
+			"inputSchema": t.Tool.InputSchema,
+			"annotations": map[string]any{
+				"readOnlyHint":  t.Tool.ReadOnly,
+				"openWorldHint": true,
+			},
+		}
+		if t.Tool.Title != "" {
+			item["title"] = t.Tool.Title
+		}
+		out = append(out, item)
+	}
+	if out == nil {
+		out = []map[string]any{}
+	}
+	return out
+}
+
+func (s *Server) availableModels(entry protocol.ToolEntry, p *auth.Principal) []string {
+	if entry.Tool.Model != "" {
+		if _, ok := s.d.Core.Route(entry.Tool.Model); !ok {
+			return nil
+		}
+		if p != nil && !p.ModelAllowed(entry.Tool.Model) {
+			return nil
+		}
+		return []string{entry.Tool.Model}
+	}
+	toolProto := entry.Ingress.Protocol()
+	models := s.d.Core.Models(p)
+	var avail []string
+	for _, m := range models {
+		if m.Protocol == toolProto {
+			avail = append(avail, m.ID)
+			continue
+		}
+		if _, ok := s.d.Registry.Translator(toolProto, m.Protocol); ok {
+			avail = append(avail, m.ID)
+		}
+	}
+	sort.Strings(avail)
+	return avail
 }
 
 // callTool 实现 TL-05 ~ TL-10：把一次工具调用转换为内部请求，交给内核，再转换为工具结果。
 // 返回的 *protocol.ToolResult 总是非 nil；只有工具不存在时返回 JSON-RPC 错误。
 func (s *Server) callTool(r *http.Request, name string, args json.RawMessage) (*protocol.ToolResult, *Error) {
-	// TODO(T32):
-	//   1. entry, ok := Registry.Tool(name)；不存在 → &Error{CodeInvalidParams, "unknown tool"}（TL-05）。
-	//   2. Tool.Model 非空且客户端不允许 → TextResult("model ... is not allowed", true)（TL-06）。
-	//   3. tr, err := entry.Source.ToolRequest(name, args)；err → TextResult(err.Error(), true)（TL-07）。
-	//   4. rt := 该入站适配器中 Op == tr.Op 的 RouteCall；找不到 → TextResult("internal error", true) 并记 Error 日志。
-	//   5. req := newInternalRequest(r, rt, tr)；h := s.handlers[(协议, rt.Op)]；
-	//      bw := newBufferedWriter(MaxResultBytes)；h.ServeHTTP(bw, req)（TL-08）。
-	//   6. bw.overflow → TextResult("result exceeds mcp.max_result_bytes", true)（TL-09）。
-	//   7. res, err := entry.Source.ToolResult(name, bw.status, bw.header, bw.body.Bytes())；
-	//      err → TextResult("could not parse the service response", true)（TL-10）。
-	return protocol.TextResult("not implemented (T32)", true), nil
+	// 1. entry, ok := Registry.Tool(name)；不存在 → &Error{CodeInvalidParams, "unknown tool"}（TL-05）。
+	entry, ok := s.d.Registry.Tool(name)
+	if !ok {
+		return nil, &Error{Code: CodeInvalidParams, Message: "unknown tool"}
+	}
+	p, _ := auth.PrincipalFrom(r.Context())
+	// 2. Tool.Model 非空且客户端不允许 → TextResult("model ... is not allowed", true)（TL-06）。
+	if entry.Tool.Model != "" {
+		if p != nil && !p.ModelAllowed(entry.Tool.Model) {
+			return protocol.TextResult("model "+entry.Tool.Model+" is not allowed", true), nil
+		}
+		if _, ok := s.d.Core.Route(entry.Tool.Model); !ok {
+			return protocol.TextResult("model "+entry.Tool.Model+" is not configured", true), nil
+		}
+	} else {
+		if len(s.availableModels(entry, p)) == 0 {
+			return nil, &Error{Code: CodeInvalidParams, Message: "unknown tool"}
+		}
+	}
+
+	// 3. tr, err := entry.Source.ToolRequest(name, args)；err → TextResult(err.Error(), true)（TL-07）。
+	tr, err := entry.Source.ToolRequest(name, args)
+	if err != nil {
+		return protocol.TextResult(err.Error(), true), nil
+	}
+
+	// 4. rt := 该入站适配器中 Op == tr.Op 的 RouteCall；找不到 → TextResult("internal error", true) 并记 Error 日志。
+	var rt protocol.Route
+	var found bool
+	for _, route := range entry.Ingress.Routes() {
+		if route.Op == tr.Op && route.Kind == protocol.RouteCall {
+			rt = route
+			found = true
+			break
+		}
+	}
+	if !found {
+		s.d.Logger.Error("mcp: route not found for tool", "tool", name, "op", tr.Op)
+		return protocol.TextResult("internal error", true), nil
+	}
+
+	// 5. req := newInternalRequest(r, rt, tr)；h := s.handlers[(协议, rt.Op)]；
+	//    bw := newBufferedWriter(MaxResultBytes)；h.ServeHTTP(bw, req)（TL-08）。
+	req, err := newInternalRequest(r, rt, tr)
+	if err != nil {
+		return protocol.TextResult(err.Error(), true), nil
+	}
+
+	k := handlerKey{proto: entry.Ingress.Protocol(), op: rt.Op}
+	h := s.handlers[k]
+	if h == nil {
+		h = s.d.Core.Handler(entry.Ingress, rt)
+	}
+
+	bw := newBufferedWriter(s.d.MaxResultBytes)
+	h.ServeHTTP(bw, req)
+
+	// 6. bw.overflow → TextResult("result exceeds mcp.max_result_bytes", true)（TL-09）。
+	if bw.overflow {
+		return protocol.TextResult("result exceeds mcp.max_result_bytes", true), nil
+	}
+
+	// 7. res, err := entry.Source.ToolResult(name, bw.status, bw.header, bw.body.Bytes())；
+	//    err → TextResult("could not parse the service response", true)（TL-10）。
+	status := bw.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	res, err := entry.Source.ToolResult(name, status, bw.header, bw.body.Bytes())
+	if err != nil {
+		s.d.Logger.Warn("mcp: could not parse service response", "tool", name, "err", err)
+		return protocol.TextResult("could not parse the service response", true), nil
+	}
+	if res == nil {
+		res = protocol.TextResult("", false)
+	}
+	return res, nil
 }
 
 // newInternalRequest 构造交给内核的内部请求（TL-08，已实现）：
