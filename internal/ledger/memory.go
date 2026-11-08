@@ -140,8 +140,10 @@ func (m *Memory) Settle(r *Reservation, ev store.UsageEvent) error {
 		return ErrAlreadyFinished
 	}
 	if acc, ok := m.account(r.ClientID); ok {
-		acc.reserved.Add(-r.Amount)
+		// 先加 spent 再减 reserved：两步之间并发的 Reserve 看到的是「多算」而不是「少算」，
+		// 只会保守地拒绝，不会超额放行（LED-05 的不超额保证）。
 		acc.spent.Add(ev.CostNanoUSD)
+		acc.reserved.Add(-r.Amount)
 	}
 	// 账户在请求期间被删除时仍然发送事件：上游已经计费，事件不可丢（AGENTS §3 #4）。
 	m.events <- ev

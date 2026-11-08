@@ -10,7 +10,10 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
 
-// InsertUsageEvents 实现 STO-10：单事务批量 INSERT OR IGNORE（request_id 幂等）。
+// InsertUsageEvents 实现 STO-10：单事务批量插入，重复 request_id 静默跳过（幂等）。
+//
+// 用 ON CONFLICT(request_id) DO NOTHING 而不是 INSERT OR IGNORE：后者还会静默吞掉
+// NOT NULL / CHECK 违例，导致计费事件被丢弃却不报错（AGENTS §3 #4）。
 func (d *DB) InsertUsageEvents(ctx context.Context, events []store.UsageEvent) error {
 	if len(events) == 0 {
 		return nil
@@ -23,10 +26,11 @@ func (d *DB) InsertUsageEvents(ctx context.Context, events []store.UsageEvent) e
 	defer tx.Rollback() //nolint:errcheck
 
 	const query = `
-		INSERT OR IGNORE INTO usage_events (
+		INSERT INTO usage_events (
 			request_id, client_id, key_id, model, op,
 			usage, cost_nano_usd, usage_source, created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(request_id) DO NOTHING`
 
 	stmt, err := tx.PrepareContext(ctx, query)
 	if err != nil {
@@ -145,25 +149,18 @@ func (d *DB) QueryUsage(ctx context.Context, q store.UsageQuery) ([]store.UsageS
 		}
 		s.Usage = make(map[string]int64)
 		if usageArrayStr.Valid && usageArrayStr.String != "" {
-			var rawList []json.RawMessage
-			if err := json.Unmarshal([]byte(usageArrayStr.String), &rawList); err == nil {
-				for _, raw := range rawList {
-					var m map[string]int64
-					if err := json.Unmarshal(raw, &m); err == nil {
-						for unit, count := range m {
-							s.Usage[unit] += count
-						}
-					} else {
-						var str string
-						if err := json.Unmarshal(raw, &str); err == nil {
-							var m2 map[string]int64
-							if err := json.Unmarshal([]byte(str), &m2); err == nil {
-								for unit, count := range m2 {
-									s.Usage[unit] += count
-								}
-							}
-						}
-					}
+			// json_group_array 把 TEXT 列编码成 JSON 字符串数组，每个元素是一行的 usage 对象文本。
+			var rows []string
+			if err := json.Unmarshal([]byte(usageArrayStr.String), &rows); err != nil {
+				return nil, fmt.Errorf("decode usage array for client %d model %s: %w", s.ClientID, s.Model, err)
+			}
+			for _, raw := range rows {
+				var m map[string]int64
+				if err := json.Unmarshal([]byte(raw), &m); err != nil {
+					return nil, fmt.Errorf("decode usage for client %d model %s: %w", s.ClientID, s.Model, err)
+				}
+				for unit, count := range m {
+					s.Usage[unit] += count
 				}
 			}
 		}

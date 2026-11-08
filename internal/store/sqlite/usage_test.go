@@ -34,6 +34,17 @@ func TestUsageEventsIdempotent(t *testing.T) {
 	}
 }
 
+// STO-10：只有重复 request_id 可以被跳过，其他约束违例必须报错，计费事件不能被静默丢弃。
+func TestUsageEventsConstraintViolationIsError(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	bad := ev("r-bad", 1, "m", 10, fixedNow)
+	bad.UsageSource = "bogus" // 违反 CHECK 约束
+	if err := db.InsertUsageEvents(ctx, []store.UsageEvent{bad}); err == nil {
+		t.Fatal("InsertUsageEvents() with invalid usage_source error = nil, want error")
+	}
+}
+
 // STO-11
 func TestSumCostByClient(t *testing.T) {
 	ctx := context.Background()
