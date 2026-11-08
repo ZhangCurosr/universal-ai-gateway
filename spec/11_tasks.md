@@ -75,7 +75,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **测试**：`TestClientsCRUD`、`TestClientConflict`、`TestCountAdmins`、`TestSettings`（文件中已写好，去掉 Skip）；另补充：`UpdateClient` 不存在的 id 返回 `ErrNotFound`。
 - **陷阱**：`database/sql` 扫描 `INTEGER` 布尔值要扫到 `int64` 再转 `bool`；不要用 `SELECT *`，显式列出列名（列顺序以后可能变化）。
 
-## T02 SQLite 仓储：上游 Key、计费事件、审计 — 状态：`TODO`
+## T02 SQLite 仓储：上游 Key、计费事件、审计 — 状态：`DONE`
 
 - **前置**：T01
 - **必读规格**：04 §3–§4（STO-06 ~ STO-15）、05 §2.3

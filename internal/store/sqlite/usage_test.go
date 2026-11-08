@@ -16,7 +16,6 @@ func ev(reqID string, client int64, model string, cost int64, at time.Time) stor
 
 // STO-10：request_id 幂等
 func TestUsageEventsIdempotent(t *testing.T) {
-	t.Skip("TODO(T02)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	batch := []store.UsageEvent{ev("r1", 1, "m", 100, fixedNow), ev("r2", 1, "m", 50, fixedNow)}
@@ -37,7 +36,6 @@ func TestUsageEventsIdempotent(t *testing.T) {
 
 // STO-11
 func TestSumCostByClient(t *testing.T) {
-	t.Skip("TODO(T02)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	_ = db.InsertUsageEvents(ctx, []store.UsageEvent{
@@ -51,7 +49,6 @@ func TestSumCostByClient(t *testing.T) {
 
 // STO-12：[From, To) 区间与分组
 func TestQueryUsage(t *testing.T) {
-	t.Skip("TODO(T02)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	t0 := fixedNow
@@ -78,9 +75,25 @@ func TestQueryUsage(t *testing.T) {
 	}
 }
 
+func TestQueryUsageFilteredByClient(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	t0 := fixedNow
+	_ = db.InsertUsageEvents(ctx, []store.UsageEvent{
+		ev("a", 1, "m1", 10, t0),
+		ev("b", 2, "m1", 20, t0),
+	})
+	got, err := db.QueryUsage(ctx, store.UsageQuery{ClientID: 2, From: t0, To: t0.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ClientID != 2 || got[0].CostNanoUSD != 20 {
+		t.Fatalf("QueryUsage() with ClientID=2 got %+v", got)
+	}
+}
+
 // STO-13 / STO-14
 func TestAuditInsertAndDelete(t *testing.T) {
-	t.Skip("TODO(T02)")
 	ctx := context.Background()
 	db := newTestDB(t)
 	rec := func(id string, at time.Time) store.AuditRecord {
@@ -93,5 +106,17 @@ func TestAuditInsertAndDelete(t *testing.T) {
 	n, err := db.DeleteAuditBefore(ctx, fixedNow.Add(-24*time.Hour))
 	if err != nil || n != 1 {
 		t.Fatalf("DeleteAuditBefore() = %d, %v; want 1", n, err)
+	}
+}
+
+func TestAuditRecordsEmptyAndNoneDeleted(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if err := db.InsertAuditRecords(ctx, nil); err != nil {
+		t.Fatalf("InsertAuditRecords(nil) error = %v", err)
+	}
+	n, err := db.DeleteAuditBefore(ctx, fixedNow)
+	if err != nil || n != 0 {
+		t.Fatalf("DeleteAuditBefore(empty) = %d, %v; want 0", n, err)
 	}
 }
