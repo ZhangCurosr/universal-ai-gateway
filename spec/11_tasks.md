@@ -112,7 +112,7 @@ M2：T20 → T21 → T22，T23 → T24（全部需要 T14）
 - **测试**：`TestReserveWithinQuota`、`TestReserveExceedsQuota`、`TestReserveUnknownClient`、`TestUnlimited`、`TestSettleOverdraft`、`TestSettleTwice`、`TestSettleNegativeCost`、`TestReleaseRestores`、`TestAdmissionBackpressure`、`TestConcurrentReserveNeverExceeds`（1000 个 goroutine 每个预留 1，额度 500，成功次数必须恰好 500）、`TestUpsertKeepsSpent`。
 - **陷阱**：LED-03 失败时不能留下任何修改；`Settle` 的事件发送是阻塞的——测试中记得从 `Events()` 读取，否则测试会卡死。
 
-## T06 计费事件刷盘 — 状态：`TODO`
+## T06 计费事件刷盘 — 状态：`DONE`
 
 - **前置**：T02、T05
 - **必读规格**：06 §4（FLU-01 ~ FLU-05）、02 §5 §6

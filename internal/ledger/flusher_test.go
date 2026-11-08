@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -68,7 +69,6 @@ func runFlusher(t *testing.T, w EventWriter, ch chan store.UsageEvent, cfg Flush
 }
 
 func TestFlushByBatchSize(t *testing.T) {
-	t.Skip("TODO(T06)")
 	w := newFakeWriter(0)
 	ch := make(chan store.UsageEvent, 100)
 	cancel, done := runFlusher(t, w, ch, FlusherConfig{BatchSize: 10, Interval: time.Hour})
@@ -80,7 +80,6 @@ func TestFlushByBatchSize(t *testing.T) {
 }
 
 func TestFlushByInterval(t *testing.T) {
-	t.Skip("TODO(T06)")
 	w := newFakeWriter(0)
 	ch := make(chan store.UsageEvent, 100)
 	cancel, done := runFlusher(t, w, ch, FlusherConfig{BatchSize: 1000, Interval: 20 * time.Millisecond})
@@ -90,7 +89,6 @@ func TestFlushByInterval(t *testing.T) {
 }
 
 func TestRetryKeepsBatch(t *testing.T) {
-	t.Skip("TODO(T06)")
 	w := newFakeWriter(2) // FLU-02：前两次失败
 	ch := make(chan store.UsageEvent, 100)
 	cancel, done := runFlusher(t, w, ch, FlusherConfig{BatchSize: 5, Interval: 10 * time.Millisecond, InitialBackoff: time.Millisecond, MaxBackoff: 5 * time.Millisecond})
@@ -102,7 +100,6 @@ func TestRetryKeepsBatch(t *testing.T) {
 }
 
 func TestShutdownDrains(t *testing.T) {
-	t.Skip("TODO(T06)")
 	w := newFakeWriter(0)
 	ch := make(chan store.UsageEvent, 100)
 	for i := 0; i < 7; i++ {
@@ -119,7 +116,6 @@ func TestShutdownDrains(t *testing.T) {
 }
 
 func TestShutdownWritesUnflushedFile(t *testing.T) {
-	t.Skip("TODO(T06)")
 	w := newFakeWriter(1 << 30) // 永远失败
 	path := filepath.Join(t.TempDir(), "unflushed_usage.jsonl")
 	ch := make(chan store.UsageEvent, 10)
@@ -141,7 +137,6 @@ func TestShutdownWritesUnflushedFile(t *testing.T) {
 }
 
 func TestRecoverUnflushed(t *testing.T) {
-	t.Skip("TODO(T06)")
 	path := filepath.Join(t.TempDir(), "unflushed_usage.jsonl")
 	if err := RecoverUnflushed(context.Background(), newFakeWriter(0), path); err != nil { // 文件不存在
 		t.Fatalf("RecoverUnflushed(no file) = %v, want nil", err)
@@ -160,6 +155,141 @@ func TestRecoverUnflushed(t *testing.T) {
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("unflushed file not deleted after recovery")
 	}
+}
+
+type logRecorder struct {
+	mu     sync.Mutex
+	errors int
+	warns  int
+}
+
+func (r *logRecorder) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (r *logRecorder) Handle(_ context.Context, rec slog.Record) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch rec.Level {
+	case slog.LevelError:
+		r.errors++
+	case slog.LevelWarn:
+		r.warns++
+	}
+	return nil
+}
+func (r *logRecorder) WithAttrs(_ []slog.Attr) slog.Handler { return r }
+func (r *logRecorder) WithGroup(_ string) slog.Handler      { return r }
+
+func TestContinuousFailureLogsError(t *testing.T) {
+	rec := &logRecorder{}
+	logger := slog.New(rec)
+	w := newFakeWriter(100) // always fail
+	ch := make(chan store.UsageEvent, 100)
+
+	cfg := FlusherConfig{
+		BatchSize:       1,
+		Interval:        10 * time.Millisecond,
+		InitialBackoff:  2 * time.Millisecond,
+		MaxBackoff:      5 * time.Millisecond,
+		ErrorLogPeriod:  20 * time.Millisecond,
+		ShutdownTimeout: 20 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	f := NewFlusher(w, ch, cfg, logger)
+	done := make(chan error, 1)
+	go func() { done <- f.Run(ctx) }()
+	defer func() { cancel(); <-done }()
+
+	ch <- store.UsageEvent{RequestID: "err-ev"}
+
+	// FLU-03: 连续失败超过 ErrorLogPeriod 时记 Error 日志
+	waitFor(t, func() bool {
+		rec.mu.Lock()
+		defer rec.mu.Unlock()
+		return rec.errors >= 1
+	})
+}
+
+func TestBufferBackpressure(t *testing.T) {
+	w := newFakeWriter(100) // always fail
+	ch := make(chan store.UsageEvent, 20)
+	// QueueCapacity = 2, so maxBuf = 8
+	cfg := FlusherConfig{
+		BatchSize:       2,
+		QueueCapacity:   2,
+		Interval:        time.Hour,
+		InitialBackoff:  10 * time.Millisecond,
+		MaxBackoff:      10 * time.Millisecond,
+		ShutdownTimeout: 20 * time.Millisecond,
+	}
+	cancel, done := runFlusher(t, w, ch, cfg)
+	defer func() { cancel(); <-done }()
+
+	// Fill buffer up to maxBuf (8 events)
+	for i := 0; i < 8; i++ {
+		ch <- store.UsageEvent{RequestID: fmt.Sprint(i)}
+	}
+
+	// Wait for first flush to fail and retrying to be set
+	waitFor(t, func() bool {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		return w.calls >= 1
+	})
+
+	// Now buf is at 8 (maxBuf). Flusher should stop reading from ch.
+	for i := 8; i < 15; i++ {
+		ch <- store.UsageEvent{RequestID: fmt.Sprint(i)}
+	}
+
+	time.Sleep(30 * time.Millisecond)
+	if len(ch) == 0 {
+		t.Fatal("expected events to remain in channel due to backpressure")
+	}
+}
+
+func TestRecoverUnflushedErrors(t *testing.T) {
+	t.Run("invalid json preserves file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "corrupt.jsonl")
+		if err := os.WriteFile(path, []byte("invalid json\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		w := newFakeWriter(0)
+		if err := RecoverUnflushed(context.Background(), w, path); err == nil {
+			t.Fatal("expected error on invalid json, got nil")
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("corrupted file should be preserved: %v", err)
+		}
+	})
+
+	t.Run("store failure preserves file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "store_err.jsonl")
+		content := `{"RequestID":"x","ClientID":1,"CostNanoUSD":5}` + "\n"
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		w := newFakeWriter(10) // fails store insert
+		if err := RecoverUnflushed(context.Background(), w, path); err == nil {
+			t.Fatal("expected error on store failure, got nil")
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("file should be preserved when store fails: %v", err)
+		}
+	})
+
+	t.Run("empty file deleted", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "empty.jsonl")
+		if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		w := newFakeWriter(0)
+		if err := RecoverUnflushed(context.Background(), w, path); err != nil {
+			t.Fatalf("RecoverUnflushed() = %v, want nil", err)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("empty file should be deleted")
+		}
+	})
 }
 
 func splitLines(b []byte) [][]byte {
