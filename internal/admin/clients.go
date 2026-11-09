@@ -62,24 +62,10 @@ func (s *server) handleCreateClient(w http.ResponseWriter, r *http.Request) {
 		rpm = *req.RPMLimit
 	}
 
-	if len(req.AllowedModels) > 0 {
-		if s.d.Config == nil || len(s.d.Config.Models) == 0 {
-			writeError(w, apperr.New(apperr.CodeInvalidRequest, "no models are configured"))
-			return
-		}
-		for _, m := range req.AllowedModels {
-			found := false
-			for _, cm := range s.d.Config.Models {
-				if cm.Name == m {
-					found = true
-					break
-				}
-			}
-			if !found {
-				writeError(w, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("model %q is not configured", m)))
-				return
-			}
-		}
+	allowed, err := s.normalizeAllowedModels(req.AllowedModels)
+	if err != nil {
+		writeError(w, err)
+		return
 	}
 
 	plainToken, display, err := auth.GenerateToken()
@@ -102,7 +88,7 @@ func (s *server) handleCreateClient(w http.ResponseWriter, r *http.Request) {
 		QuotaUnlimited: req.QuotaUnlimited,
 		QuotaNanoUSD:   req.QuotaNanoUSD,
 		RPMLimit:       rpm,
-		AllowedModels:  req.AllowedModels,
+		AllowedModels:  allowed,
 		Disabled:       false,
 	}
 
@@ -227,23 +213,12 @@ func (s *server) handleUpdateClient(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.AllowedModels != nil && len(*req.AllowedModels) > 0 {
-		if s.d.Config == nil || len(s.d.Config.Models) == 0 {
-			writeError(w, apperr.New(apperr.CodeInvalidRequest, "no models are configured"))
+	var allowed []string
+	if req.AllowedModels != nil {
+		var err error
+		if allowed, err = s.normalizeAllowedModels(*req.AllowedModels); err != nil {
+			writeError(w, err)
 			return
-		}
-		for _, m := range *req.AllowedModels {
-			found := false
-			for _, cm := range s.d.Config.Models {
-				if cm.Name == m {
-					found = true
-					break
-				}
-			}
-			if !found {
-				writeError(w, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("model %q is not configured", m)))
-				return
-			}
 		}
 	}
 
@@ -280,7 +255,7 @@ func (s *server) handleUpdateClient(w http.ResponseWriter, r *http.Request) {
 		existing.RPMLimit = *req.RPMLimit
 	}
 	if req.AllowedModels != nil {
-		existing.AllowedModels = *req.AllowedModels
+		existing.AllowedModels = allowed
 	}
 	if req.Disabled != nil {
 		existing.Disabled = *req.Disabled
@@ -400,4 +375,31 @@ func buildClientView(c *store.Client, l *ledger.Memory) ClientView {
 		}
 	}
 	return cv
+}
+
+// normalizeAllowedModels 校验允许列表中的每个模型都已配置，并去掉重复项（保持首次出现的顺序）。
+// 空列表表示不限制，原样返回。
+func (s *server) normalizeAllowedModels(models []string) ([]string, error) {
+	if len(models) == 0 {
+		return models, nil
+	}
+	if s.d.Config == nil || len(s.d.Config.Models) == 0 {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "no models are configured")
+	}
+	configured := make(map[string]bool, len(s.d.Config.Models))
+	for _, cm := range s.d.Config.Models {
+		configured[cm.Name] = true
+	}
+	seen := make(map[string]bool, len(models))
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		if !configured[m] {
+			return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("model %q is not configured", m))
+		}
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
