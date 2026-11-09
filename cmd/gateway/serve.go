@@ -223,6 +223,11 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 
 	// 11. 指标收集器与动态仪表（spec/15）
 	metricsCollector := metrics.NewCollector()
+	modelNames := make([]string, 0, len(cfg.Models))
+	for _, m := range cfg.Models {
+		modelNames = append(modelNames, m.Name)
+	}
+	metricsCollector.RestrictModels(modelNames) // MTR-05：model 标签只取已配置的模型名
 	auditPipe.SetObserver(metricsCollector.ObserveRequest)
 
 	startedAt := time.Now()

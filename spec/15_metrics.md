@@ -16,7 +16,7 @@
 | MTR-02 | **免鉴权**：由于管理面仅限本地回环（`127.0.0.1` / `::1`）访问，且指标不包含凭据与客户端身份信息，该端点**无需** Bearer Token 认证。 |
 | MTR-03 | **响应头**：HTTP 状态码为 `200`，`Content-Type: text/plain; version=0.0.4; charset=utf-8`。 |
 | MTR-04 | **输出稳定性**：输出时按指标家族名称字典序升序输出；同一指标的多条样本行按标签名和标签值字典序升序排序，保证输出确定可预测。 |
-| MTR-05 | **标签基数有界与脱敏**：严禁在指标标签中包含客户端 ID、Token、请求 ID、Key 凭据或任何用户输入。标签值集合必须严格有界。 |
+| MTR-05 | **标签基数有界与脱敏**：严禁在指标标签中包含客户端 ID、Token、请求 ID、Key 凭据或任何用户输入。标签值集合必须严格有界：`model` 只取配置中的模型名，其余写 `other`。 |
 
 ---
 
@@ -30,7 +30,7 @@
 
 | 指标名称 | 类型 | 标签 | 含义与取值规则 |
 |:--|:--|:--|:--|
-| `uaig_requests_total` | counter | `model`, `ingress`, `upstream`, `outcome`, `code` | 结束的请求总数。<br>- `model`: `AuditRecord.Model`<br>- `ingress`: `AuditRecord.IngressProtocol`<br>- `upstream`: `AuditRecord.UpstreamProtocol`<br>- `outcome`: `AuditRecord.Outcome`（若为空写 `none`）<br>- `code`: HTTP 状态码类别（`2xx`, `4xx`, `5xx`；状态码为 0 时写 `none`） |
+| `uaig_requests_total` | counter | `model`, `ingress`, `upstream`, `outcome`, `code` | 结束的请求总数。<br>- `model`: `AuditRecord.Model`；不在配置 `models[].name` 中的值（含空值，例如客户端请求了不存在的模型）一律写 `other`（MTR-05）<br>- `ingress`: `AuditRecord.IngressProtocol`<br>- `upstream`: `AuditRecord.UpstreamProtocol`<br>- `outcome`: `AuditRecord.Outcome`（若为空写 `none`）<br>- `code`: HTTP 状态码类别（`2xx`, `4xx`, `5xx`；状态码为 0 时写 `none`） |
 | `uaig_request_errors_total` | counter | `model`, `error_code` | 产生业务错误的请求数。<br>- `error_code`: `AuditRecord.ErrorCode`（来自 `apperr`）。仅在 `ErrorCode != ""` 时递增。 |
 | `uaig_upstream_attempts_total` | counter | `model`, `upstream` | 上游尝试总次数。<br>每次按 `AuditRecord.Attempts` 累加（若 > 0）。 |
 | `uaig_request_duration_seconds` | histogram | `model`, `stream` | 请求端到端耗时（秒）。<br>取 `float64(rec.LatencyMillis)/1000.0`。<br>- `stream`: `"true"` 或 `"false"`<br>桶边界：`0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600` |

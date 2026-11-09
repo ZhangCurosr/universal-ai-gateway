@@ -93,6 +93,34 @@ type Collector struct {
 
 	duration map[histKey]*histSeries
 	ttfb     map[histKey]*histSeries
+
+	// models 为 RestrictModels 设置的已配置模型名集合；为 nil 时不限制（仅供测试与嵌入方使用）。
+	models atomic.Pointer[map[string]struct{}]
+}
+
+// OtherModel 是不在已配置模型清单中的请求所使用的 model 标签值（spec/15 MTR-05）。
+const OtherModel = "other"
+
+// RestrictModels 限定 model 标签只能取 names 中的值，其余（包括客户端请求了不存在的模型、
+// 解析失败时的空值）一律记为 OtherModel，保证标签基数有界且不含用户输入（MTR-05）。
+// 必须在开始接收请求之前调用；网关装配时传入配置中的全部模型名。
+func (c *Collector) RestrictModels(names []string) {
+	set := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		set[n] = struct{}{}
+	}
+	c.models.Store(&set)
+}
+
+func (c *Collector) modelLabel(model string) string {
+	set := c.models.Load()
+	if set == nil {
+		return model
+	}
+	if _, ok := (*set)[model]; ok {
+		return model
+	}
+	return OtherModel
 }
 
 // NewCollector 创建一个新的指标收集器。
@@ -108,6 +136,7 @@ func NewCollector() *Collector {
 
 // ObserveRequest 由 audit.Pipeline 观察者同步调用，记录请求维度的计数器与直方图。
 func (c *Collector) ObserveRequest(rec store.AuditRecord) {
+	model := c.modelLabel(rec.Model)
 	outcome := rec.Outcome
 	if outcome == "" {
 		outcome = "none"
@@ -116,7 +145,7 @@ func (c *Collector) ObserveRequest(rec store.AuditRecord) {
 
 	// 1. uaig_requests_total
 	rk := requestKey{
-		model:    rec.Model,
+		model:    model,
 		ingress:  rec.IngressProtocol,
 		upstream: rec.UpstreamProtocol,
 		outcome:  outcome,
@@ -127,7 +156,7 @@ func (c *Collector) ObserveRequest(rec store.AuditRecord) {
 	// 2. uaig_request_errors_total (仅在 ErrorCode 非空时计入)
 	if rec.ErrorCode != "" {
 		ek := errorKey{
-			model:     rec.Model,
+			model:     model,
 			errorCode: rec.ErrorCode,
 		}
 		c.incError(ek)
@@ -136,7 +165,7 @@ func (c *Collector) ObserveRequest(rec store.AuditRecord) {
 	// 3. uaig_upstream_attempts_total (按 Attempts 累加)
 	if rec.Attempts > 0 {
 		ak := attemptKey{
-			model:    rec.Model,
+			model:    model,
 			upstream: rec.UpstreamProtocol,
 		}
 		c.addAttempts(ak, uint64(rec.Attempts))
@@ -148,7 +177,7 @@ func (c *Collector) ObserveRequest(rec store.AuditRecord) {
 		streamStr = "true"
 	}
 	hk := histKey{
-		model:  rec.Model,
+		model:  model,
 		stream: streamStr,
 	}
 	durSec := float64(rec.LatencyMillis) / 1000.0

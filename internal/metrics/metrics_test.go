@@ -374,3 +374,35 @@ func TestHandler(t *testing.T) {
 		t.Fatalf("Allow header = %s, want GET", allow)
 	}
 }
+
+// MTR-05：RestrictModels 之后，不在已配置清单里的模型名（客户端可任意填写）一律记为 "other"，
+// 大量不同的未知模型名只产生一组时间序列。
+func TestRestrictModelsBoundsCardinality(t *testing.T) {
+	c := metrics.NewCollector()
+	c.RestrictModels([]string{"claude-known"})
+	c.ObserveRequest(store.AuditRecord{Model: "claude-known", Status: 200, LatencyMillis: 10, TTFBMillis: -1})
+	for i := 0; i < 50; i++ {
+		c.ObserveRequest(store.AuditRecord{Model: fmt.Sprintf("attacker-chosen-%d", i), Status: 404,
+			ErrorCode: "model_not_found", LatencyMillis: 1, TTFBMillis: -1})
+	}
+	c.ObserveRequest(store.AuditRecord{Model: "", Status: 400, ErrorCode: "invalid_request", LatencyMillis: 1, TTFBMillis: -1})
+
+	var buf bytes.Buffer
+	if err := c.WriteMetrics(&buf, metrics.Gauges{}); err != nil {
+		t.Fatalf("WriteMetrics failed: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "attacker-chosen") {
+		t.Fatalf("unconfigured model name leaked into labels:\n%s", out)
+	}
+	if strings.Contains(out, `model=""`) {
+		t.Errorf("empty model label should be reported as other:\n%s", out)
+	}
+	if !strings.Contains(out, `model="claude-known"`) {
+		t.Errorf("configured model missing:\n%s", out)
+	}
+	want := `uaig_request_errors_total{error_code="model_not_found",model="other"} 50`
+	if !strings.Contains(out, want) {
+		t.Errorf("want line %q in output:\n%s", want, out)
+	}
+}
