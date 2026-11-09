@@ -79,6 +79,8 @@ func TestValidate(t *testing.T) {
 		{"CFG-10 header timeout > read timeout", func(c *Config) { c.Server.ReadHeaderTimeout = 2 * time.Minute }, "read_header_timeout"},
 		{"CFG-11 bad trusted proxy", func(c *Config) { c.Server.TrustedProxies = []string{"10.0.0.1"} }, "trusted_proxies[0]"},
 		{"CFG-12 body budget too small", func(c *Config) { c.Limits.MaxBufferedBodyBytes = 1 }, "max_buffered_body_bytes"},
+		{"CFG-14 retention_days zero", func(c *Config) { c.Audit.RetentionDays = 0 }, "audit.retention_days"},
+		{"CFG-14 retention_days negative", func(c *Config) { c.Audit.RetentionDays = -1 }, "audit.retention_days"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -292,3 +292,83 @@ func TestResponsesToAnthropicRawPassthrough(t *testing.T) {
 		t.Fatalf("Response(raw) = %v, %v", out, err)
 	}
 }
+
+// spec/10 §8.3：max_tokens → max_output_tokens，refusal/pause_turn → content_filter。
+func TestStatusFor(t *testing.T) {
+	tests := []struct {
+		stopReason string
+		wantStatus string
+		wantReason string
+	}{
+		{"max_tokens", "incomplete", "max_output_tokens"},
+		{"refusal", "incomplete", "content_filter"},
+		{"pause_turn", "incomplete", "content_filter"},
+		{"end_turn", "completed", ""},
+		{"stop_sequence", "completed", ""},
+		{"tool_use", "completed", ""},
+		{"", "completed", ""},
+		{"unknown", "completed", ""},
+	}
+	for _, tt := range tests {
+		status, inc := statusFor(tt.stopReason)
+		if status != tt.wantStatus {
+			t.Errorf("statusFor(%q) status = %q, want %q", tt.stopReason, status, tt.wantStatus)
+		}
+		if tt.wantReason == "" {
+			if inc != nil {
+				t.Errorf("statusFor(%q) inc = %+v, want nil", tt.stopReason, inc)
+			}
+		} else {
+			if inc == nil || inc.Reason != tt.wantReason {
+				t.Errorf("statusFor(%q) inc = %+v, want reason %q", tt.stopReason, inc, tt.wantReason)
+			}
+		}
+	}
+}
+
+func TestAnthropicToResponsesRefusalAndPauseTurn(t *testing.T) {
+	for _, stop := range []string{"refusal", "pause_turn"} {
+		body := []byte(fmt.Sprintf(`{"id":"msg_1","content":[{"type":"text","text":"Blocked"}],"stop_reason":%q,"usage":{"input_tokens":5,"output_tokens":2}}`, stop))
+		out, err := anthropicToResponsesBody(body, "m", fixedTime, seqIDs())
+		if err != nil {
+			t.Fatalf("stop_reason=%s error = %v", stop, err)
+		}
+		var resp respObject
+		if err := json.Unmarshal(out, &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Status != "incomplete" {
+			t.Errorf("status = %q, want incomplete", resp.Status)
+		}
+		if resp.IncompleteDetails == nil || resp.IncompleteDetails.Reason != "content_filter" {
+			t.Errorf("incomplete_details = %+v, want content_filter", resp.IncompleteDetails)
+		}
+	}
+}
+
+func TestAnthropicToResponsesStreamRefusal(t *testing.T) {
+	upstream := &sliceStream{evs: []sse.Event{
+		{Name: "message_start", Data: []byte(`{"type":"message_start","message":{"usage":{"input_tokens":5}}}`)},
+		{Name: "content_block_start", Data: []byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Blocked"}}`)},
+		{Name: "message_delta", Data: []byte(`{"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"output_tokens":2}}`)},
+		{Name: "message_stop", Data: []byte(`{"type":"message_stop"}`)},
+	}}
+	out, err := testTranslator().Response(responsesEnv, &protocol.Response{Kind: protocol.ResponseEvents, Events: upstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := drainChat(t, out.Events)
+	last := got[len(got)-1]
+	if last.Name != "response.incomplete" {
+		t.Fatalf("last event = %q, want response.incomplete", last.Name)
+	}
+	var data struct {
+		Response respObject `json:"response"`
+	}
+	if err := json.Unmarshal(last.Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Response.Status != "incomplete" || data.Response.IncompleteDetails == nil || data.Response.IncompleteDetails.Reason != "content_filter" {
+		t.Errorf("unexpected response: %+v", data.Response)
+	}
+}

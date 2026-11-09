@@ -56,6 +56,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `messages[role=assistant].content` | `TextPart` | |
 | `messages[role=assistant].tool_calls[]` | `ToolCallPart{ID, function.name, function.arguments}` | `arguments` 必须是合法 JSON 字符串，否则 400 |
 | `messages[role=tool]` | `ToolResultPart{tool_call_id, [TextPart(content)]}`，放入一条 `user` 消息 | 连续的多条 tool 消息合并到同一条 user 消息 |
+| `messages[].name` | — | 丢弃（IR 与 Anthropic 无对应字段） |
 | `tools[type=function]` | `Tool{name, description, parameters}` | 非 function 类型 → 400 |
 | `tool_choice` `"auto"`/`"none"`/`"required"`/`{function:{name}}` | `auto` / `none` / `any` / `tool+Name` | |
 | `max_completion_tokens`，否则 `max_tokens` | `MaxTokens` | |
@@ -91,7 +92,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `content[type=text]` 拼接 | `choices[0].message.content` |
 | `content[type=tool_use]` | `choices[0].message.tool_calls[]`（`arguments` = `input` 的 JSON 字符串） |
 | `content[type=thinking]` | `choices[0].message.reasoning_content`（仅展示，客户端回传时会被 §3 丢弃） |
-| `stop_reason`: `end_turn`/`stop_sequence` → `stop`；`max_tokens` → `length`；`tool_use` → `tool_calls`；`refusal` → `content_filter` | `choices[0].finish_reason` |
+| `stop_reason`: `end_turn`/`stop_sequence` → `stop`；`max_tokens` → `length`；`tool_use` → `tool_calls`；`refusal` → `content_filter`；其他未列出值与缺失 → `stop` | `choices[0].finish_reason` |
 | `usage` | `usage.prompt_tokens = input + cache_read + cache_write`、`completion_tokens = output`、`prompt_tokens_details.cached_tokens = cache_read` |
 | — | `object = "chat.completion"`、`created = 当前 Unix 秒`、`model = 客户端请求的模型名` |
 
@@ -177,7 +178,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `choices[0].message.refusal` 非空 | 一个 `text` 块（拒绝文本），`stop_reason: "refusal"` |
 | `choices[0].message.tool_calls[]` | 每个一个 `tool_use` 块（`input` = `arguments` 解析后的对象；无法解析为 JSON 对象 → 502 `upstream_error`） |
 | `choices[0].message.reasoning_content` | 丢弃（没有签名，回传给 Anthropic 上游会被拒绝） |
-| `finish_reason`：`stop` → `end_turn`；`length` → `max_tokens`；`tool_calls` / `function_call` → `tool_use`；`content_filter` → `refusal` | `stop_reason` |
+| `finish_reason`：`stop` → `end_turn`；`length` → `max_tokens`；`tool_calls` / `function_call` → `tool_use`；`content_filter` → `refusal`；其他未列出的非标准中断原因（如 DeepSeek `insufficient_system_resource`）及缺失值视为上游故障（非流式 502 `upstream_error`，流式返回流错误） | `stop_reason` |
 | `usage` | `input_tokens = prompt_tokens − cached_tokens`、`cache_read_input_tokens = prompt_tokens_details.cached_tokens`、`cache_creation_input_tokens = 0`、`output_tokens = completion_tokens` |
 | `choices` 不是恰好 1 个 | 502 `upstream_error` |
 
@@ -193,7 +194,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `finish_reason` 非空 | 关闭打开的块（`content_block_stop`），记下 stop_reason（映射同非流式） |
 | `choices: []` 且 `usage` 非 null | 记下用量 |
 | `[DONE]` | `message_delta`（`delta: {stop_reason, stop_sequence: null}`，`usage` 按非流式映射）→ `message_stop` |
-| `{"error":...}` chunk、上游流在 `[DONE]` 前结束、`[DONE]` 前没有 `finish_reason` | 返回入站适配器 `StreamError`（`event: error`）并结束 |
+| `{"error":...}` chunk、上游流在 `[DONE]` 前结束、`[DONE]` 前没有 `finish_reason`、非标准 `finish_reason` | 返回入站适配器 `StreamError`（`event: error`）并结束 |
 
 ### 6.4 必测用例
 
@@ -262,7 +263,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 - 文本 → 一个 `{"type":"message","id","role":"assistant","status":"completed","content":[{"type":"output_text","text","annotations":[]}]}`；
 - 工具调用 → 每个一个 `{"type":"function_call","id","call_id":<上游工具调用 ID>,"name","arguments","status":"completed"}`；
 - 思考内容丢弃（不输出 `reasoning` 项）；
-- 停止原因：正常结束 / 工具调用 → `status: "completed"`；达到输出上限 → `status: "incomplete"`、`incomplete_details: {"reason":"max_output_tokens"}`；
+- 停止原因：正常结束 / 工具调用 → `status: "completed"`；达到输出上限 → `status: "incomplete"`、`incomplete_details: {"reason":"max_output_tokens"}`；`refusal` / `pause_turn` 等安全或审核中断 → `status: "incomplete"`、`incomplete_details: {"reason":"content_filter"}`；其他未列出值 → `status: "completed"`；
 - `usage`：`input_tokens = input + cache_read + cache_write`、`input_tokens_details.cached_tokens = cache_read`、`output_tokens = output`、`total_tokens` 为两者之和。
 
 流式事件序列（每个事件的 `sequence_number` 从 0 递增，`event:` 名与 `data.type` 相同）：
@@ -276,12 +277,12 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | 工具调用开始 | `response.output_item.added`（function_call 项，`arguments: ""`） |
 | 工具参数增量 | `response.function_call_arguments.delta` |
 | 工具调用结束 | `response.function_call_arguments.done`（完整 arguments）→ `response.output_item.done` |
-| 上游正常结束 | `response.completed`（完整 response，含 `usage`）；达到输出上限时改为 `response.incomplete` |
+| 上游正常结束 | `response.completed`（完整 response，含 `usage`）；达到输出上限或安全中断（`refusal` / `pause_turn`）时改为 `response.incomplete` |
 | 上游流中错误 | 入站适配器的 `StreamError`（IN-R07）后结束 |
 
 思考增量（Anthropic `thinking_delta`、Chat `reasoning_content`）不输出。`output_index` 按项出现顺序从 0 编号。
 
-自 Chat 上游（T27）时的来源映射：文本 = `delta.content` / `message.content`；工具调用 = `tool_calls[]`（按 `index` 区分，交错输出 → 流错误）；
+自 Chat 上游（T27）时的来源映射：文本 = `delta.content` / `message.content`，Chat 上游的 `refusal` 文本亦作为 `output_text` 输出（非流式与流式均拼接为文本，不生成 `refusal` 内容部件）；工具调用 = `tool_calls[]`（按 `index` 区分，交错输出 → 流错误）；
 `finish_reason: length` → `incomplete`，其余 → `completed`；`usage.input_tokens = prompt_tokens`（已含缓存）、
 `input_tokens_details.cached_tokens = prompt_tokens_details.cached_tokens`、`output_tokens = completion_tokens`；
 流式在收到 `[DONE]` 时输出 `response.completed`（用量取之前的 usage chunk；§6.2 保证合成请求带 `include_usage`）。

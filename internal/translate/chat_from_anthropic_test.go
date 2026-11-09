@@ -200,7 +200,7 @@ func TestAnthropicToChatStreamErrors(t *testing.T) {
 	}
 }
 
-// §5.1 stop_reason 映射，含 SPEC-GAP(T22) 的兜底。
+// §5.1 stop_reason 映射，含未列出/缺失值的兜底（"stop"）。
 func TestFinishReasonFor(t *testing.T) {
 	for in, want := range map[string]string{
 		"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length", "tool_use": "tool_calls",

@@ -43,7 +43,7 @@ func (dst anthropicUsage) toChat() *chatUsage {
 
 // finishReasonFor 实现 §5.1 的 stop_reason 映射。
 //
-// SPEC-GAP(T22): §5.1 未列出的 stop_reason（如 pause_turn）与缺失的 stop_reason 按 "stop" 处理。
+// spec/10 §5.1：未列出的 stop_reason（如 pause_turn）与缺失的 stop_reason 按 "stop" 处理。
 func finishReasonFor(stopReason string) string {
 	switch stopReason {
 	case "max_tokens":
