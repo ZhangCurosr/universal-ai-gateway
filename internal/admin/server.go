@@ -35,6 +35,7 @@ type Deps struct {
 	Version   string
 	StartedAt time.Time
 	Now       func() time.Time // 为 nil 时用 time.Now
+	Metrics   http.Handler     // Prometheus 指标端点（/admin/metrics）
 }
 
 type server struct {
@@ -152,6 +153,20 @@ func NewServer(d Deps) http.Handler {
 	// Usage
 	mux.HandleFunc("GET /admin/api/usage", s.handleQueryUsage)
 
+	// Metrics (MTR-01 ~ MTR-03)
+	mux.HandleFunc("/admin/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if s.d.Metrics != nil {
+			s.d.Metrics.ServeHTTP(w, r)
+			return
+		}
+		writeError(w, apperr.New(apperr.CodeNotFound, "metrics not configured"))
+	})
+
 	// Fallback
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.New(apperr.CodeNotFound, "route not found"))
@@ -169,6 +184,12 @@ func (s *server) wrap(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-Id", reqID)
 		ctx := obs.WithRequestID(r.Context(), reqID)
 		r = r.WithContext(ctx)
+
+		// /admin/metrics 端点无需鉴权与 IP 锁定（回环地址，MTR-01, MTR-02）
+		if r.URL.Path == "/admin/metrics" {
+			next.ServeHTTP(w, r)
+			return
+		}
 
 		// 2. IP Lockout (ADM-04)
 		remoteIP := s.trusted.From(r)
