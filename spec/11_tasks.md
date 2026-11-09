@@ -315,8 +315,27 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | 卡 | 内容 | 前置 | 需审批 | 状态 |
 |:--|:--|:--|:--|:--|
 | T40 | 竞态检测与持续集成（[说明](../docs/handoff/T40_race_and_ci.md)） | — | 否 | `DONE` |
-| T41 | 真实客户端兼容性实测与回归用例（[说明](../docs/handoff/T41_real_client_compat.md)） | — | 否 | `TODO` |
+| T41 | 真实客户端兼容性实测与回归用例（[说明](../docs/handoff/T41_real_client_compat.md)） | — | 否 | `DONE` |
 | T42 | 转译层未知字段策略（[说明](../docs/handoff/T42_field_tolerance.md)） | T41 | 是 | `DONE` |
 | T43 | 响应转换经过 IR（流式 IR）（[说明](../docs/handoff/T43_stream_ir.md)） | 建议 T42 之后 | 是 | `TODO` |
 | T44 | SPEC-GAP 决策与落地（[说明](../docs/handoff/T44_spec_gap_decisions.md)） | — | 是（用户填决策表） | `DONE` |
-| T45 | Prometheus 指标端点，M3 第一项（[说明](../docs/handoff/T45_metrics.md)） | T40 | 是 | `TODO` |
+| T45 | Prometheus 指标端点，M3 第一项（[说明](../docs/handoff/T45_metrics.md)） | T40 | 是 | `DONE` |
+
+---
+
+## T45 Prometheus 指标端点 — 状态：`DONE`
+
+- **前置**：T40
+- **必读规格**：15 全章；01 §2（M3）、§4；09 §4；03 CFG-02
+- **涉及文件**：`spec/15_metrics.md`、`spec/01_scope_and_architecture.md`、`spec/README.md`、`spec/11_tasks.md`、`internal/metrics/`（新建）、`internal/audit/audit.go`、`internal/audit/audit_test.go`、`internal/admin/server.go`、`internal/admin/server_test.go`、`cmd/gateway/serve.go`、`internal/archtest/archtest_test.go`
+- **要做的事**：
+  1. 规格：编写 `spec/15_metrics.md`，定义 `GET /admin/metrics` 免鉴权端点、Prometheus 0.0.4 纯文本格式规范与指标清单；
+  2. 审计流水线支持同步观察者：`audit.Pipeline.SetObserver(fn)`，在丢弃判断前同步触发；
+  3. `internal/metrics` 包实现请求与错误计数器、尝试计数器、请求耗时与首字节直方图、动态抓取的仪表（Key 状态与在途、队列、过载、审计丢弃等）；
+  4. 管理面挂载 `GET /admin/metrics` 端点，非 GET 返回 405；
+  5. 分层检查 `archtest` 中登记 `internal/metrics` 为第 2 层。
+- **测试**：
+  - 格式黄金测试：输出格式逐字节对齐 Prometheus 0.0.4 规范；
+  - 标签转义、桶累积边界、+Inf 与 _count 一致性；
+  - 并发收集准确性与抓取无锁/细粒度锁安全性；
+  - 严禁出现客户端 ID、Token、请求 ID 等高基数或敏感信息。

@@ -1,0 +1,125 @@
+# HELP uaig_audit_dropped_total Total number of audit records dropped due to full queue.
+# TYPE uaig_audit_dropped_total counter
+uaig_audit_dropped_total 4
+# HELP uaig_build_info Gateway build and version information.
+# TYPE uaig_build_info gauge
+uaig_build_info{version="1.0.0"} 1
+# HELP uaig_goroutines Number of goroutines that currently exist.
+# TYPE uaig_goroutines gauge
+uaig_goroutines 42
+# HELP uaig_key_inflight Current in-flight requests for an upstream key.
+# TYPE uaig_key_inflight gauge
+uaig_key_inflight{id="1",name="key-a",pool="anthropic"} 2
+uaig_key_inflight{id="2",name="key-b",pool="openai"} 0
+# HELP uaig_keys_status Status of upstream keys across candidate states.
+# TYPE uaig_keys_status gauge
+uaig_keys_status{id="1",name="key-a",pool="anthropic",state="breaker_open"} 0
+uaig_keys_status{id="1",name="key-a",pool="anthropic",state="cooldown"} 0
+uaig_keys_status{id="1",name="key-a",pool="anthropic",state="disabled"} 0
+uaig_keys_status{id="1",name="key-a",pool="anthropic",state="quarantined"} 0
+uaig_keys_status{id="1",name="key-a",pool="anthropic",state="ready"} 1
+uaig_keys_status{id="2",name="key-b",pool="openai",state="breaker_open"} 1
+uaig_keys_status{id="2",name="key-b",pool="openai",state="cooldown"} 1
+uaig_keys_status{id="2",name="key-b",pool="openai",state="disabled"} 0
+uaig_keys_status{id="2",name="key-b",pool="openai",state="quarantined"} 1
+uaig_keys_status{id="2",name="key-b",pool="openai",state="ready"} 0
+# HELP uaig_ledger_events_queue_capacity Capacity of the ledger billing events queue.
+# TYPE uaig_ledger_events_queue_capacity gauge
+uaig_ledger_events_queue_capacity 100
+# HELP uaig_ledger_events_queue_length Current length of the ledger billing events queue.
+# TYPE uaig_ledger_events_queue_length gauge
+uaig_ledger_events_queue_length 5
+# HELP uaig_overload_inflight_body_bytes Current in-flight buffered request body bytes in overload guard.
+# TYPE uaig_overload_inflight_body_bytes gauge
+uaig_overload_inflight_body_bytes 1024
+# HELP uaig_overload_inflight_requests Current in-flight requests in overload guard.
+# TYPE uaig_overload_inflight_requests gauge
+uaig_overload_inflight_requests 3
+# HELP uaig_request_duration_seconds End-to-end request latency in seconds.
+# TYPE uaig_request_duration_seconds histogram
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="0.1"} 0
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="0.25"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="0.5"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="1"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="2.5"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="5"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="10"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="30"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="60"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="120"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="300"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="600"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="+Inf"} 1
+uaig_request_duration_seconds_sum{model="claude-3-5-sonnet",stream="false"} 0.25
+uaig_request_duration_seconds_count{model="claude-3-5-sonnet",stream="false"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="0.1"} 0
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="0.25"} 0
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="0.5"} 0
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="1"} 0
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="2.5"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="5"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="10"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="30"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="60"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="120"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="300"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="600"} 1
+uaig_request_duration_seconds_bucket{model="claude-3-5-sonnet",stream="true",le="+Inf"} 1
+uaig_request_duration_seconds_sum{model="claude-3-5-sonnet",stream="true"} 1.5
+uaig_request_duration_seconds_count{model="claude-3-5-sonnet",stream="true"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="0.1"} 0
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="0.25"} 0
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="0.5"} 0
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="1"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="2.5"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="5"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="10"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="30"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="60"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="120"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="300"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="600"} 1
+uaig_request_duration_seconds_bucket{model="gpt-4o",stream="true",le="+Inf"} 1
+uaig_request_duration_seconds_sum{model="gpt-4o",stream="true"} 0.8
+uaig_request_duration_seconds_count{model="gpt-4o",stream="true"} 1
+# HELP uaig_request_errors_total Total number of request errors by model and error code.
+# TYPE uaig_request_errors_total counter
+uaig_request_errors_total{error_code="upstream_error",model="claude-3-5-sonnet"} 1
+# HELP uaig_requests_total Total number of completed requests.
+# TYPE uaig_requests_total counter
+uaig_requests_total{code="2xx",ingress="anthropic",model="claude-3-5-sonnet",outcome="success",upstream="anthropic"} 1
+uaig_requests_total{code="2xx",ingress="openai_chat",model="gpt-4o",outcome="success",upstream="openai_chat"} 1
+uaig_requests_total{code="5xx",ingress="anthropic",model="claude-3-5-sonnet",outcome="upstream_error",upstream="anthropic"} 1
+# HELP uaig_start_time_seconds Process start time in seconds since Unix epoch.
+# TYPE uaig_start_time_seconds gauge
+uaig_start_time_seconds 1700000000
+# HELP uaig_ttfb_seconds Time to first byte in seconds.
+# TYPE uaig_ttfb_seconds histogram
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="0.05"} 0
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="0.1"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="0.25"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="0.5"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="1"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="2"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="5"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="10"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="30"} 1
+uaig_ttfb_seconds_bucket{model="claude-3-5-sonnet",stream="false",le="+Inf"} 1
+uaig_ttfb_seconds_sum{model="claude-3-5-sonnet",stream="false"} 0.1
+uaig_ttfb_seconds_count{model="claude-3-5-sonnet",stream="false"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="0.05"} 0
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="0.1"} 0
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="0.25"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="0.5"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="1"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="2"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="5"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="10"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="30"} 1
+uaig_ttfb_seconds_bucket{model="gpt-4o",stream="true",le="+Inf"} 1
+uaig_ttfb_seconds_sum{model="gpt-4o",stream="true"} 0.2
+uaig_ttfb_seconds_count{model="gpt-4o",stream="true"} 1
+# HELP uaig_upstream_attempts_total Total number of upstream attempts.
+# TYPE uaig_upstream_attempts_total counter
+uaig_upstream_attempts_total{model="claude-3-5-sonnet",upstream="anthropic"} 3
+uaig_upstream_attempts_total{model="gpt-4o",upstream="openai_chat"} 1

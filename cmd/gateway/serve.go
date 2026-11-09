@@ -23,6 +23,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/httpapi"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ledger"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/mcp"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/metrics"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ratelimit"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
@@ -195,6 +196,8 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 	})
 
 	// 10. MCP（spec/14）
+	overload := httpapi.NewOverloadGuard(cfg.Limits.MaxInFlightRequests,
+		cfg.Limits.MaxBufferedBodyBytes, cfg.Limits.MaxRequestBodyBytes)
 	dataDeps := httpapi.DataDeps{
 		Config:    cfg,
 		Core:      kernel,
@@ -203,10 +206,9 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		Pepper:    keyring.TokenPepper(),
 		Limiter:   limiter,
 		IPLimiter: ipLimiter,
-		Overload: httpapi.NewOverloadGuard(cfg.Limits.MaxInFlightRequests,
-			cfg.Limits.MaxBufferedBodyBytes, cfg.Limits.MaxRequestBodyBytes),
-		Trusted: trusted,
-		Logger:  logger,
+		Overload:  overload,
+		Trusted:   trusted,
+		Logger:    logger,
 	}
 	if !cfg.MCP.Disabled {
 		dataDeps.MCP = mcp.New(mcp.Deps{
@@ -217,6 +219,42 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 			Logger:         logger,
 		})
 		dataDeps.MCPErrorWriter = mcp.WriteHTTPError
+	}
+
+	// 11. 指标收集器与动态仪表（spec/15）
+	metricsCollector := metrics.NewCollector()
+	auditPipe.SetObserver(metricsCollector.ObserveRequest)
+
+	startedAt := time.Now()
+	metricsGauges := metrics.Gauges{
+		Keys: func() []metrics.KeyGauge {
+			statuses := sched.KeyStatus()
+			out := make([]metrics.KeyGauge, 0, len(statuses))
+			for _, ks := range statuses {
+				out = append(out, metrics.KeyGauge{
+					Pool:              ks.Pool,
+					ID:                ks.ID,
+					Name:              ks.Name,
+					Persisted:         ks.Persisted.String(),
+					InFlight:          ks.InFlight,
+					CooldownRemaining: ks.CooldownRemaining,
+					BreakerOpen:       ks.Breaker == scheduler.BreakerOpen,
+				})
+			}
+			return out
+		},
+		LedgerQueue: func() (length, capacity int) {
+			evts := mem.Events()
+			return len(evts), cap(evts)
+		},
+		InFlight: func() (requests, bodyBytes int64) {
+			return overload.InFlight()
+		},
+		AuditDropped: func() int64 {
+			return auditPipe.Dropped()
+		},
+		Version:   version,
+		StartedAt: startedAt,
 	}
 
 	// 在途 handler 计数：Shutdown 超时后仍要等它们退出（Settle 在 handler 内完成），
@@ -233,10 +271,11 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		Scheduler: sched,
 		Logger:    logger,
 		Version:   version,
-		StartedAt: time.Now(),
+		StartedAt: startedAt,
+		Metrics:   metricsCollector.Handler(metricsGauges),
 	})
 
-	// 11. 两个 http.Server（SRV-01 ~ SRV-03：先 Listen 再 Serve）
+	// 12. 两个 http.Server（SRV-01 ~ SRV-03：先 Listen 再 Serve）
 	dataLn, err := net.Listen("tcp", cfg.Server.DataListen)
 	if err != nil {
 		return fmt.Errorf("listen data plane: %w", err)

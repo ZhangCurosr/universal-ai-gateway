@@ -36,7 +36,7 @@ OpenAI 入站 → Anthropic 上游、Anthropic 入站 → OpenAI 上游（请求
 
 ### M3：运维增强
 
-Prometheus 指标端点、Gemini 协议、WASM 插件、管理 Web UI。M3 的规格在 M2 完成后补充，**现在不要实现**。
+Prometheus 指标端点（`GET /admin/metrics`，详见 `15_metrics.md`）、Gemini 协议、WASM 插件、管理 Web UI。除 `15_metrics.md` 规定的指标端点外，其余 M3 的规格在 M2 完成后补充。
 
 ### 明确不做（任何里程碑都不做）
 
@@ -73,6 +73,7 @@ internal/
   httpapi/              数据面 HTTP 路由、中间件、协议错误格式
   admin/                管理面 HTTP API
   mcp/                  供 AI 调用：MCP 服务端（/mcp）、MCP 客户端与 stdio 桥（gateway mcp / tools / call）
+  metrics/              （M3）Prometheus 格式指标收集与导出（15_metrics.md）
   ir/                   （M2）规范化中间表示类型
   translate/            （M2）IR 与各协议互转
   archtest/             分层依赖规则测试
@@ -87,7 +88,7 @@ tools/check/            一键检查程序（go run ./tools/check）
 第 5 层  cmd/gateway                                   （可以依赖任何 internal 包）
 第 4 层  httpapi   admin   mcp
 第 3 层  core（内核）
-第 2 层  ledger  audit  scheduler  auth  ratelimit  adapter/*  translate  store/sqlite
+第 2 层  ledger  audit  scheduler  metrics  auth  ratelimit  adapter/*  translate  store/sqlite
 第 1 层  protocol  store  pricing  sse  jsonx  crypto  ir  config  obs  clientip
 第 0 层  apperr
 ```

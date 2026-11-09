@@ -841,3 +841,69 @@ func TestPatchKeyMeta(t *testing.T) {
 func ptr[T any](v T) *T {
 	return &v
 }
+
+func TestMetricsEndpoint(t *testing.T) {
+	env := newTestEnv(t)
+
+	// 1. Without metrics handler configured: GET -> 404, POST -> 405
+	rec := env.req("GET", "/admin/metrics", nil, "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET /admin/metrics without handler configured: expected 404, got %d", rec.Code)
+	}
+	rec = env.req("POST", "/admin/metrics", nil, "")
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /admin/metrics without handler configured: expected 405, got %d", rec.Code)
+	}
+
+	// 2. With metrics handler configured:
+	mockMetrics := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("uaig_test 1\n"))
+	})
+
+	deps := Deps{
+		Config:    env.cfg,
+		Store:     env.store,
+		Keyring:   env.keyring,
+		Index:     env.index,
+		Reloader:  env.reloader,
+		Ledger:    env.ledger,
+		Scheduler: env.scheduler,
+		Logger:    obs.Discard(),
+		Version:   "1.0.0-test",
+		StartedAt: *env.now,
+		Now: func() time.Time {
+			return *env.now
+		},
+		Metrics: mockMetrics,
+	}
+	srv := NewServer(deps)
+
+	// GET /admin/metrics without Authorization header (MTR-02)
+	req := httptest.NewRequest("GET", "/admin/metrics", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /admin/metrics without auth: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Fatalf("GET /admin/metrics Content-Type: expected %q, got %q", "text/plain; version=0.0.4; charset=utf-8", ct)
+	}
+	if !strings.Contains(w.Body.String(), "uaig_test 1") {
+		t.Fatalf("expected uaig_test 1 in body, got: %s", w.Body.String())
+	}
+
+	// POST /admin/metrics (MTR-01): non-GET must return 405 with Allow: GET
+	reqPost := httptest.NewRequest("POST", "/admin/metrics", nil)
+	wPost := httptest.NewRecorder()
+	srv.ServeHTTP(wPost, reqPost)
+
+	if wPost.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /admin/metrics: expected 405, got %d", wPost.Code)
+	}
+	if allow := wPost.Header().Get("Allow"); allow != http.MethodGet {
+		t.Fatalf("Allow header: expected GET, got %q", allow)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -327,5 +328,69 @@ func TestPipelineAndWriterDefaults(t *testing.T) {
 	}
 	if w.log == nil {
 		t.Fatal("log is nil")
+	}
+}
+
+func TestPipelineObserverReceivesAllEvenWhenDropped(t *testing.T) {
+	p := NewPipeline(2)
+	var observed []string
+	var mu sync.Mutex
+	p.SetObserver(func(rec store.AuditRecord) {
+		mu.Lock()
+		observed = append(observed, rec.RequestID)
+		mu.Unlock()
+	})
+
+	for i := 0; i < 5; i++ {
+		p.Submit(store.AuditRecord{RequestID: fmt.Sprintf("req-%d", i)})
+	}
+
+	if p.Dropped() != 3 {
+		t.Fatalf("dropped = %d, want 3", p.Dropped())
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != 5 {
+		t.Fatalf("observed count = %d, want 5 (all submissions observed prior to drop)", len(observed))
+	}
+	for i := 0; i < 5; i++ {
+		want := fmt.Sprintf("req-%d", i)
+		if observed[i] != want {
+			t.Errorf("observed[%d] = %s, want %s", i, observed[i], want)
+		}
+	}
+
+	// Clearing observer should work cleanly
+	p.SetObserver(nil)
+	p.Submit(store.AuditRecord{RequestID: "req-after-clear"})
+	if len(observed) != 5 {
+		t.Fatalf("observed count after clear = %d, want 5", len(observed))
+	}
+}
+
+func TestPipelineObserverConcurrent(t *testing.T) {
+	p := NewPipeline(10)
+	var count atomic.Int64
+	p.SetObserver(func(rec store.AuditRecord) {
+		count.Add(1)
+	})
+
+	const goroutines = 20
+	const perG = 50
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(gid int) {
+			defer wg.Done()
+			for j := 0; j < perG; j++ {
+				p.Submit(store.AuditRecord{RequestID: fmt.Sprintf("r-%d-%d", gid, j)})
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if total := count.Load(); total != goroutines*perG {
+		t.Fatalf("observed total = %d, want %d", total, goroutines*perG)
 	}
 }

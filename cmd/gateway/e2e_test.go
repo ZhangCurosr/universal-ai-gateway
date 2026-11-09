@@ -327,6 +327,30 @@ func TestE2E(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
+	// 5.5 指标端点（spec/15）
+	metricsResp, err := http.Get("http://" + g.admin + "/admin/metrics")
+	if err != nil {
+		t.Fatalf("GET /admin/metrics: %v", err)
+	}
+	defer metricsResp.Body.Close()
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /admin/metrics: code=%d, want 200", metricsResp.StatusCode)
+	}
+	if ct := metricsResp.Header.Get("Content-Type"); ct != "text/plain; version=0.0.4; charset=utf-8" {
+		t.Fatalf("GET /admin/metrics Content-Type=%s", ct)
+	}
+	metricsBody, err := io.ReadAll(metricsResp.Body)
+	if err != nil {
+		t.Fatalf("read /admin/metrics body: %v", err)
+	}
+	metricsStr := string(metricsBody)
+	if !strings.Contains(metricsStr, `uaig_requests_total{code="2xx",ingress="anthropic",model="claude-test",outcome="success",upstream="anthropic"} 2`) {
+		t.Fatalf("expected 2 claude-test requests in metrics, got:\n%s", metricsStr)
+	}
+	if !strings.Contains(metricsStr, `uaig_build_info{version="dev"} 1`) {
+		t.Fatalf("expected uaig_build_info in metrics, got:\n%s", metricsStr)
+	}
+
 	// 6. 关闭：进程干净退出，计费事件全部落库
 	g.cancel()
 	select {
