@@ -21,7 +21,7 @@ ExecStart=/opt/uaig/bin/gateway serve --config /opt/uaig/gateway.yaml
 Restart=on-failure
 RestartSec=3
 # 大于 shutdown_grace（默认 30s），留出排空在途请求与计费刷盘的时间
-TimeoutStopSec=40
+TimeoutStopSec=40s
 LimitNOFILE=65536
 NoNewPrivileges=true
 ProtectSystem=strict

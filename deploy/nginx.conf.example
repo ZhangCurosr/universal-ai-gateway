@@ -48,3 +48,10 @@ server {
     #     proxy_send_timeout 900s;
     # }
 }
+
+# 可选：HTTP 80 端口自动重定向到 HTTPS
+# server {
+#     listen 80;
+#     server_name gateway.example.com;
+#     return 301 https://$host$request_uri;
+# }

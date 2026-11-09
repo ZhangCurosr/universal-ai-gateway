@@ -122,7 +122,7 @@ server:
 
 网关是单进程，进程一退出服务就中断，所以要交给系统的服务管理器自动拉起。
 
-**Linux（systemd）**：使用 [deploy/systemd/universal-ai-gateway.service](../deploy/systemd/universal-ai-gateway.service)，文件开头的注释里有安装步骤。`TimeoutStopSec=40` 比 `shutdown_grace`（默认 30s）大，给关闭时排空在途请求和计费刷盘留出时间。如果调大了 `shutdown_grace`，这个值要一起调大。首次启动后，用 `journalctl -u universal-ai-gateway` 查看引导 Token。
+**Linux（systemd）**：使用 [deploy/systemd/universal-ai-gateway.service](../deploy/systemd/universal-ai-gateway.service)，文件开头的注释里有安装步骤。`TimeoutStopSec=40s` 比 `shutdown_grace`（默认 30s）大，给关闭时排空在途请求和计费刷盘留出时间。如果调大了 `shutdown_grace`，这个值要一起调大。首次启动后，用 `journalctl -u universal-ai-gateway` 查看引导 Token。
 
 **Windows（任务计划程序）**：
 
@@ -140,34 +140,107 @@ server:
 
 ### 6.1 作为模型后端
 
-| 客户端 | 配置 |
+| 客户端 | 配置方式 |
 |:--|:--|
-| Claude Code | `ANTHROPIC_BASE_URL=https://gw.example.com`（不带 `/v1`）、`ANTHROPIC_AUTH_TOKEN=uai_live_...` |
-| Codex CLI | 在 `~/.codex/config.toml` 中定义 provider：`base_url = "https://gw.example.com/v1"`、`env_key = "UAIG_TOKEN"`、`wire_api = "responses"` |
-| OpenAI SDK / Cursor 等 | `base_url = https://gw.example.com/v1`，API Key 填客户端 Token |
+| **Claude Code** | `export ANTHROPIC_BASE_URL=https://gw.example.com`（注意**不带** `/v1`）<br>`export ANTHROPIC_AUTH_TOKEN=uai_live_...` |
+| **Codex CLI** | `~/.codex/config.toml` 中配置 provider，`wire_api = "responses"`（使用 `/v1/responses`） |
+| **OpenAI SDK** | `base_url="https://gw.example.com/v1"`，`api_key="uai_live_..."` |
+| **Cursor** | 设置中覆盖 OpenAI Base URL 为 `https://gw.example.com/v1`，API Key 填客户端 Token |
+
+#### 详细配置示例
+
+**Claude Code**：
+```bash
+# 环境变量注入（注意基地址不带 /v1）
+export ANTHROPIC_BASE_URL=https://gw.example.com
+export ANTHROPIC_AUTH_TOKEN=uai_live_...
+```
+
+**Codex CLI**（编辑 `~/.codex/config.toml`）：
+```toml
+[providers.uaig]
+base_url = "https://gw.example.com/v1"
+env_key = "UAIG_TOKEN"
+wire_api = "responses"
+```
+```bash
+export UAIG_TOKEN=uai_live_...
+codex --provider uaig
+```
+
+**OpenAI SDK（Python）**：
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://gw.example.com/v1",
+    api_key="uai_live_...",
+)
+
+response = client.chat.completions.create(
+    model="deepseek-chat",
+    messages=[{"role": "user", "content": "你好"}],
+)
+print(response.choices[0].message.content)
+```
+
+**Cursor IDE**：
+1. 打开 Cursor 设置（`Ctrl+,` 或 `Cmd+,`）-> **Models**。
+2. 开启 **OpenAI API Key**。
+3. 展开 **Override OpenAI Base URL**，填写：`https://gw.example.com/v1`。
+4. 在 API Key 输入框中填入网关发放的客户端 Token：`uai_live_...`。
+5. 在模型列表中点击 **Add Model** 添加网关配置的服务名称（如 `deepseek-chat` 或 `gpt-5`）。
 
 ### 6.2 作为 MCP 工具
 
-远程方式（推荐，客户端机器上不需要网关二进制）：
+网关提供 `/mcp` 端点（spec/14），让 AI 客户端能够把网关本身当作 MCP 工具服务端调用。
 
+**远程方式（HTTP 传输，推荐）**：客户端机器无需安装网关二进制：
 ```bash
 claude mcp add --transport http uaig https://gw.example.com/mcp --header "Authorization: Bearer uai_live_..."
 ```
 
-本地 stdio 方式（用于只支持 stdio 的客户端）：
-
+**本地 stdio 桥方式（跨进程 stdio）**：用于只支持 stdio 传输的客户端：
+在 `claude_desktop_config.json` 或项目 `.mcp.json` 中配置：
 ```json
-{ "mcpServers": { "uaig": {
-    "command": "gateway", "args": ["mcp"],
-    "env": { "UAIG_URL": "https://gw.example.com", "UAIG_TOKEN": "uai_live_..." } } } }
+{
+  "mcpServers": {
+    "uaig": {
+      "command": "gateway",
+      "args": ["mcp"],
+      "env": {
+        "UAIG_URL": "https://gw.example.com",
+        "UAIG_TOKEN": "uai_live_..."
+      }
+    }
+  }
+}
 ```
 
-### 6.3 作为命令行
+### 6.3 作为命令行（CLI）
+
+网关内置命令行子命令（`gateway tools` 与 `gateway call`），方便脚本与运维调用。连接信息必须通过环境变量传递（CLI-05），不得使用命令行参数传递 Token：
 
 ```bash
-export UAIG_URL=https://gw.example.com UAIG_TOKEN=uai_live_...
+export UAIG_URL=https://gw.example.com
+export UAIG_TOKEN=uai_live_...
+
+# 列出网关支持的所有工具（名称 + 单行描述）：
 gateway tools
+
+# 列出完整 JSON 格式的工具清单（包含参数 JSON Schema）：
+gateway tools --json
+
+# 直接通过 JSON 字符串调用工具：
 gateway call ask_model --args '{"model":"deepseek-chat","input":"用一句话解释 CAP 定理"}'
+
+# 从标准输入（stdin）管道读入参数（--args -）：
+cat query.json | gateway call ask_model --args -
+
+# 退出码约定：
+#   0: 成功且 isError 为 false
+#   1: 执行失败或上游返回错误（isError 为 true）
+#   2: 参数格式错误（非合法的 JSON 对象）
 ```
 
-> 工具调用会产生费用。给 AI 用的 Token 要设置额度（`quota_nano_usd`）和 RPM，并用 `allowed_models` 只开放需要的服务。
+> **安全与计费提示**：工具调用与模型调用同样会计费并扣减额度。给 AI 客户端分配的 Token 必须设置总额度（`quota_nano_usd`）与 RPM 上限（`rpm_limit`），并通过 `allowed_models` 严格限制可调用的模型与工具范围。
