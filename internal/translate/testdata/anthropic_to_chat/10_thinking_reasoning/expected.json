@@ -1,0 +1,26 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": "4",
+        "reasoning_content": "Let me think"
+      }
+    }
+  ],
+  "created": 1700000000,
+  "id": "chatcmpl-up4",
+  "model": "claude-for-chat",
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 5,
+    "completion_tokens": 3,
+    "total_tokens": 8,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  }
+}

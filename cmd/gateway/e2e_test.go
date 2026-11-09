@@ -466,3 +466,118 @@ func TestE2EResponsesToAnthropic(t *testing.T) {
 		t.Fatalf("usage = %+v, want 2 requests on claude-test with input 8 / output 8", sums)
 	}
 }
+
+// T22：OpenAI Chat 客户端经转换器使用 Anthropic 上游（spec/10 §5）。
+func TestE2EChatToAnthropic(t *testing.T) {
+	up := fakeUpstream(t)
+	g := startGateway(t, up.URL, nil)
+	adminURL := "http://" + g.admin + "/admin/api"
+	dataURL := "http://" + g.data
+
+	var created struct {
+		Client struct {
+			ID int64 `json:"id"`
+		} `json:"client"`
+		Token string `json:"token"`
+	}
+	if code := doJSON(t, "POST", adminURL+"/clients", g.adminToken,
+		map[string]any{"name": "chat", "role": "user", "quota_nano_usd": int64(1e12)}, &created); code != http.StatusCreated {
+		t.Fatalf("create client: %d", code)
+	}
+	if code := doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+		map[string]any{"pool": "anth", "name": "anth-k1", "secret": "sk-test-anth"}, nil); code != http.StatusCreated {
+		t.Fatalf("create key: %d", code)
+	}
+	messages := []map[string]any{{"role": "user", "content": "hi"}}
+
+	// 非流式：Anthropic 响应被转换为 chat.completion
+	var resp struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if code := doJSON(t, "POST", dataURL+"/v1/chat/completions", created.Token,
+		map[string]any{"model": "claude-test", "messages": messages}, &resp); code != http.StatusOK {
+		t.Fatalf("chat non-stream: %d", code)
+	}
+	if resp.ID != "chatcmpl-2" || resp.Object != "chat.completion" || resp.Model != "claude-test" || len(resp.Choices) != 1 ||
+		resp.Choices[0].Message.Content != "ok" || resp.Choices[0].FinishReason != "stop" ||
+		resp.Usage.PromptTokens != 3 || resp.Usage.CompletionTokens != 4 {
+		t.Fatalf("translated response = %+v", resp)
+	}
+
+	// 流式：chunk 序列，带 usage chunk，以 [DONE] 结束
+	b, _ := json.Marshal(map[string]any{"model": "claude-test", "messages": messages, "stream": true, // 字面量 map 不会失败
+		"stream_options": map[string]any{"include_usage": true}})
+	req, _ := http.NewRequest("POST", dataURL+"/v1/chat/completions", bytes.NewReader(b)) // URL 固定合法
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	req.Header.Set("Content-Type", "application/json")
+	hr, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var datas []string
+	var text strings.Builder
+	var sawUsage bool
+	sc := bufio.NewScanner(hr.Body)
+	for sc.Scan() {
+		data, ok := strings.CutPrefix(sc.Text(), "data: ")
+		if !ok {
+			continue
+		}
+		datas = append(datas, data)
+		var c struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+			Usage *struct{} `json:"usage"`
+		}
+		if json.Unmarshal([]byte(data), &c) == nil {
+			for _, ch := range c.Choices {
+				text.WriteString(ch.Delta.Content)
+			}
+			sawUsage = sawUsage || c.Usage != nil
+		}
+	}
+	hr.Body.Close()
+	if hr.StatusCode != http.StatusOK || len(datas) < 3 || datas[len(datas)-1] != "[DONE]" || text.String() != "hello" || !sawUsage {
+		t.Fatalf("stream: code=%d chunks=%v text=%q usage=%v", hr.StatusCode, datas, text.String(), sawUsage)
+	}
+
+	// 计费：两次调用都按 Anthropic 上游的原始用量落库（CORE-04）
+	g.cancel()
+	select {
+	case err := <-g.done:
+		if err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		g.done <- nil
+	case <-time.After(10 * time.Second):
+		t.Fatal("gateway did not stop")
+	}
+	db, err := sqlite.Open(context.Background(), filepath.Join(g.cfg.Server.DataDir, "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sums, err := db.QueryUsage(context.Background(), store.UsageQuery{ClientID: created.Client.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sums) != 1 || sums[0].Requests != 2 || sums[0].Model != "claude-test" ||
+		sums[0].Usage["input_tokens"] != 3+5 || sums[0].Usage["output_tokens"] != 4+4 {
+		t.Fatalf("usage = %+v, want 2 requests on claude-test with input 8 / output 8", sums)
+	}
+}

@@ -1,0 +1,186 @@
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "content": "",
+data:         "role": "assistant"
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "content": "Checking both."
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "tool_calls": [
+data:           {
+data:             "index": 0,
+data:             "id": "toolu_a",
+data:             "type": "function",
+data:             "function": {
+data:               "name": "get_weather",
+data:               "arguments": ""
+data:             }
+data:           }
+data:         ]
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "tool_calls": [
+data:           {
+data:             "index": 0,
+data:             "function": {
+data:               "arguments": "{\"city\":"
+data:             }
+data:           }
+data:         ]
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "tool_calls": [
+data:           {
+data:             "index": 0,
+data:             "function": {
+data:               "arguments": "\"Paris\"}"
+data:             }
+data:           }
+data:         ]
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "tool_calls": [
+data:           {
+data:             "index": 1,
+data:             "id": "toolu_b",
+data:             "type": "function",
+data:             "function": {
+data:               "name": "get_weather",
+data:               "arguments": ""
+data:             }
+data:           }
+data:         ]
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "tool_calls": [
+data:           {
+data:             "index": 1,
+data:             "function": {
+data:               "arguments": "{\"city\":\"Rome\"}"
+data:             }
+data:           }
+data:         ]
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {},
+data:       "finish_reason": "tool_calls",
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-up3",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk",
+data:   "usage": {
+data:     "prompt_tokens": 30,
+data:     "completion_tokens": 12,
+data:     "total_tokens": 42,
+data:     "prompt_tokens_details": {
+data:       "cached_tokens": 0
+data:     }
+data:   }
+data: }
+
+data: [DONE]
+
