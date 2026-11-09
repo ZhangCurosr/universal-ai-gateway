@@ -97,15 +97,19 @@ func (dst anthropicUsage) toResponses() *respUsage {
 	return u
 }
 
-// statusFor 实现 §8.3 的停止原因映射：达到输出上限 → incomplete，其余 → completed。
+// statusFor 实现 §8.3 的停止原因映射：达到输出上限 → incomplete(max_output_tokens)，
+// refusal / pause_turn → incomplete(content_filter)，其余 → completed。
 //
-// SPEC-GAP(T26): §8.3 只规定了正常结束、工具调用与输出上限三种情况；refusal、pause_turn 等
-// 其他 stop_reason 按 completed 处理（不猜测 incomplete_details.reason）。
+// spec/10 §8.3：refusal / pause_turn 映射为 incomplete + content_filter。
 func statusFor(stopReason string) (string, *respIncomplete) {
-	if stopReason == "max_tokens" {
+	switch stopReason {
+	case "max_tokens":
 		return "incomplete", &respIncomplete{Reason: "max_output_tokens"}
+	case "refusal", "pause_turn":
+		return "incomplete", &respIncomplete{Reason: "content_filter"}
+	default:
+		return "completed", nil
 	}
-	return "completed", nil
 }
 
 // anthropicToResponsesBody 转换非流式 Anthropic 响应体（§8.3 非流式）。
