@@ -331,8 +331,10 @@ func TestRegister(t *testing.T) {
 			t.Errorf("translator %s -> anthropic not registered", from)
 		}
 	}
-	if _, ok := r.Translator(protoAnthropic, protoOpenAIChat); !ok {
-		t.Error("translator anthropic -> openai_chat not registered")
+	for _, pair := range [][2]protocol.Protocol{{protoAnthropic, protoOpenAIChat}, {protoOpenAIResponses, protoOpenAIChat}} {
+		if _, ok := r.Translator(pair[0], pair[1]); !ok {
+			t.Errorf("translator %s -> %s not registered", pair[0], pair[1])
+		}
 	}
 	if err := Register(r); err == nil {
 		t.Error("second Register() succeeded")

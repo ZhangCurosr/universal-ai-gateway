@@ -1,0 +1,32 @@
+{
+  "id": "resp_1",
+  "object": "response",
+  "created_at": 1700000000,
+  "status": "completed",
+  "model": "deepseek-for-codex",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_1",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Hello!",
+          "annotations": []
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "input_tokens": 10,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 2,
+    "total_tokens": 12
+  },
+  "incomplete_details": null,
+  "store": false
+}

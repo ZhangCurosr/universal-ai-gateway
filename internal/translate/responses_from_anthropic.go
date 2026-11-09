@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
@@ -165,41 +164,16 @@ func anthropicToResponsesBody(body []byte, model string, now time.Time, newID id
 
 // responsesStream 把 Anthropic 事件流转换为 Responses 事件流。非并发安全（EventStream 约定）。
 type responsesStream struct {
-	in    protocol.EventStream
-	model string
-	now   time.Time
-	newID idGen
+	in protocol.EventStream
+	respEmitter
 
-	resp    respObject
-	seq     int64
-	queue   []sse.Event
-	usage   anthropicUsage
-	stop    string
-	started bool
-	done    bool
-
+	usage  anthropicUsage
+	stop   string
 	blocks map[int]string // Anthropic content block index → 类型
-
-	text     *openText // 当前打开的 message 项
-	tool     *openTool // 当前打开的 function_call 项
-	finished []respOutputItem
-}
-
-type openText struct {
-	id    string
-	index int
-	sb    strings.Builder
-}
-
-type openTool struct {
-	id, callID, name string
-	block            int
-	index            int
-	args             strings.Builder
 }
 
 func newResponsesStream(in protocol.EventStream, model string, now time.Time, newID idGen) *responsesStream {
-	return &responsesStream{in: in, model: model, now: now, newID: newID, blocks: map[int]string{}}
+	return &responsesStream{in: in, respEmitter: newRespEmitter(model, now, newID), blocks: map[int]string{}}
 }
 
 func (s *responsesStream) Close() error { return s.in.Close() }
@@ -207,7 +181,10 @@ func (s *responsesStream) Close() error { return s.in.Close() }
 // Next 返回下一个 Responses 事件。上游 error 事件或上游流中断返回 *protocol.AttemptError，
 // 内核据此写出入站适配器的 StreamError（IN-R07）后结束。
 func (s *responsesStream) Next() (sse.Event, error) {
-	for len(s.queue) == 0 {
+	for {
+		if ev, ok := s.pop(); ok {
+			return ev, nil
+		}
 		if s.done {
 			return sse.Event{}, io.EOF
 		}
@@ -215,10 +192,7 @@ func (s *responsesStream) Next() (sse.Event, error) {
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				// 上游在 message_stop 之前结束：流被截断，不能伪造 response.completed
-				return sse.Event{}, &protocol.AttemptError{
-					Outcome: protocol.Outcome{Kind: protocol.OutcomeNetworkError},
-					Err:     errors.New("upstream stream ended before message_stop"),
-				}
+				return sse.Event{}, streamFail(protocol.OutcomeNetworkError, errors.New("upstream stream ended before message_stop"))
 			}
 			return sse.Event{}, err
 		}
@@ -226,9 +200,6 @@ func (s *responsesStream) Next() (sse.Event, error) {
 			return sse.Event{}, err
 		}
 	}
-	ev := s.queue[0]
-	s.queue = s.queue[1:]
-	return ev, nil
 }
 
 func (s *responsesStream) handle(ev sse.Event) error {
@@ -255,8 +226,7 @@ func (s *responsesStream) handle(ev sse.Event) error {
 	}
 	if len(ev.Data) > 0 {
 		if err := json.Unmarshal(ev.Data, &data); err != nil {
-			return &protocol.AttemptError{Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError},
-				Err: fmt.Errorf("decode anthropic event %q: %w", ev.Name, err)}
+			return streamFail(protocol.OutcomeServerError, fmt.Errorf("decode anthropic event %q: %w", ev.Name, err))
 		}
 	}
 
@@ -267,8 +237,7 @@ func (s *responsesStream) handle(ev sse.Event) error {
 		}
 		if len(data.Message) > 0 {
 			if err := json.Unmarshal(data.Message, &msg); err != nil {
-				return &protocol.AttemptError{Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError},
-					Err: fmt.Errorf("decode message_start: %w", err)}
+				return streamFail(protocol.OutcomeServerError, fmt.Errorf("decode message_start: %w", err))
 			}
 		}
 		s.usage.merge(msg.Usage)
@@ -279,11 +248,8 @@ func (s *responsesStream) handle(ev sse.Event) error {
 		s.blocks[data.Index] = data.ContentBlock.Type
 		switch data.ContentBlock.Type {
 		case "text":
-			if data.ContentBlock.Text != "" {
-				s.textDelta(data.ContentBlock.Text)
-			}
+			s.textDelta(data.ContentBlock.Text)
 		case "tool_use":
-			s.closeText()
 			s.openTool(data.Index, data.ContentBlock.ID, data.ContentBlock.Name)
 		}
 
@@ -292,18 +258,13 @@ func (s *responsesStream) handle(ev sse.Event) error {
 		case "text_delta":
 			s.textDelta(data.Delta.Text)
 		case "input_json_delta":
-			if s.tool != nil && s.tool.block == data.Index && data.Delta.PartialJSON != "" {
-				s.tool.args.WriteString(data.Delta.PartialJSON)
-				s.emit("response.function_call_arguments.delta", map[string]any{
-					"item_id": s.tool.id, "output_index": s.tool.index, "delta": data.Delta.PartialJSON,
-				})
-			}
+			s.toolArgs(data.Index, data.Delta.PartialJSON)
 		default:
 			// thinking_delta / signature_delta：§8.3 不输出
 		}
 
 	case "content_block_stop":
-		if s.blocks[data.Index] == "tool_use" && s.tool != nil && s.tool.block == data.Index {
+		if s.blocks[data.Index] == "tool_use" && s.tool != nil && s.tool.key == data.Index {
 			s.closeTool()
 		}
 		// 文本块结束不关闭 message 项：文本在遇到工具调用或流结束时才结束（§8.3）
@@ -315,18 +276,15 @@ func (s *responsesStream) handle(ev sse.Event) error {
 		}
 
 	case "message_stop":
-		s.start()
-		s.closeText()
-		s.closeTool()
-		s.finish()
+		status, incomplete := statusFor(s.stop)
+		s.finish(status, incomplete, s.usage.toResponses())
 
 	case "error":
 		msg := data.Error.Message
 		if msg == "" {
 			msg = "upstream stream error"
 		}
-		return &protocol.AttemptError{Outcome: protocol.Outcome{Kind: streamErrorKind(data.Error.Type)},
-			Err: fmt.Errorf("anthropic stream error (%s): %s", data.Error.Type, msg)}
+		return streamFail(streamErrorKind(data.Error.Type), fmt.Errorf("anthropic stream error (%s): %s", data.Error.Type, msg))
 
 	default:
 		// ping 与未知事件：不输出
@@ -344,106 +302,4 @@ func streamErrorKind(t string) protocol.OutcomeKind {
 	default:
 		return protocol.OutcomeServerError
 	}
-}
-
-// start 输出 response.created 与 response.in_progress（只输出一次）。
-func (s *responsesStream) start() {
-	if s.started {
-		return
-	}
-	s.started = true
-	s.resp = respObject{ID: s.newID("resp_"), Object: "response", CreatedAt: s.now.Unix(), Status: "in_progress",
-		Model: s.model, Output: []respOutputItem{}}
-	s.emit("response.created", map[string]any{"response": s.resp})
-	s.emit("response.in_progress", map[string]any{"response": s.resp})
-}
-
-// nextIndex 是下一个输出项的 output_index：新项总是在关闭其他打开的项之后才打开，
-// 因此等于已完成的项数（§8.3：按出现顺序从 0 编号）。
-func (s *responsesStream) nextIndex() int { return len(s.finished) }
-
-func (s *responsesStream) textDelta(delta string) {
-	if delta == "" {
-		return
-	}
-	if s.text == nil {
-		s.closeTool()
-		s.text = &openText{id: s.newID("msg_"), index: s.nextIndex()}
-		s.emit("response.output_item.added", map[string]any{"output_index": s.text.index, "item": respOutputItem{
-			Type: "message", ID: s.text.id, Status: "in_progress", Role: "assistant", Content: []respContentPart{},
-		}})
-		s.emit("response.content_part.added", map[string]any{"item_id": s.text.id, "output_index": s.text.index,
-			"content_index": 0, "part": respContentPart{Type: "output_text", Annotations: []any{}}})
-	}
-	s.text.sb.WriteString(delta)
-	s.emit("response.output_text.delta", map[string]any{"item_id": s.text.id, "output_index": s.text.index,
-		"content_index": 0, "delta": delta})
-}
-
-func (s *responsesStream) closeText() {
-	if s.text == nil {
-		return
-	}
-	t := s.text
-	s.text = nil
-	part := respContentPart{Type: "output_text", Text: t.sb.String(), Annotations: []any{}}
-	item := respOutputItem{Type: "message", ID: t.id, Status: "completed", Role: "assistant", Content: []respContentPart{part}}
-	s.emit("response.output_text.done", map[string]any{"item_id": t.id, "output_index": t.index, "content_index": 0, "text": part.Text})
-	s.emit("response.content_part.done", map[string]any{"item_id": t.id, "output_index": t.index, "content_index": 0, "part": part})
-	s.emit("response.output_item.done", map[string]any{"output_index": t.index, "item": item})
-	s.finished = append(s.finished, item)
-}
-
-func (s *responsesStream) openTool(block int, callID, name string) {
-	s.closeTool()
-	s.tool = &openTool{id: s.newID("fc_"), callID: callID, name: name, block: block, index: s.nextIndex()}
-	empty := ""
-	s.emit("response.output_item.added", map[string]any{"output_index": s.tool.index, "item": respOutputItem{
-		Type: "function_call", ID: s.tool.id, Status: "in_progress", CallID: callID, Name: name, Arguments: &empty,
-	}})
-}
-
-func (s *responsesStream) closeTool() {
-	if s.tool == nil {
-		return
-	}
-	t := s.tool
-	s.tool = nil
-	args := t.args.String()
-	if args == "" {
-		args = "{}" // 无参数工具：Anthropic 不发送 input_json_delta
-	}
-	item := respOutputItem{Type: "function_call", ID: t.id, Status: "completed", CallID: t.callID, Name: t.name, Arguments: &args}
-	s.emit("response.function_call_arguments.done", map[string]any{"item_id": t.id, "output_index": t.index, "arguments": args})
-	s.emit("response.output_item.done", map[string]any{"output_index": t.index, "item": item})
-	s.finished = append(s.finished, item)
-}
-
-// finish 输出 response.completed（或 response.incomplete），之后流结束。
-func (s *responsesStream) finish() {
-	final := s.resp
-	final.Status, final.IncompleteDetails = statusFor(s.stop)
-	final.Output = s.finished
-	if final.Output == nil {
-		final.Output = []respOutputItem{}
-	}
-	final.Usage = s.usage.toResponses()
-	name := "response.completed"
-	if final.Status == "incomplete" {
-		name = "response.incomplete"
-	}
-	s.emit(name, map[string]any{"response": final})
-	s.done = true
-}
-
-// emit 追加一个事件：event 名与 data.type 相同，sequence_number 从 0 递增（§8.3）。
-func (s *responsesStream) emit(typ string, fields map[string]any) {
-	fields["type"] = typ
-	fields["sequence_number"] = s.seq
-	s.seq++
-	b, err := json.Marshal(fields)
-	if err != nil { // 字段全部是本包定义的可序列化类型，不会失败
-		b = []byte(`{"type":"` + typ + `"}`)
-	}
-	s.queue = append(s.queue, sse.Event{Name: typ, Data: b})
 }

@@ -1,0 +1,1 @@
+{"id":"chatcmpl-up4","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"Let me think","content":"4"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}

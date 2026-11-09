@@ -11,7 +11,7 @@ import (
 
 // Register 注册本包实现的全部跨协议转换器（spec/10 §0），由 cmd/gateway/adapters.go 调用。
 func Register(r *protocol.Registry) error {
-	for _, t := range []protocol.Translator{ChatToAnthropic{}, ResponsesToAnthropic{}, AnthropicToChat{}} {
+	for _, t := range []protocol.Translator{ChatToAnthropic{}, ResponsesToAnthropic{}, AnthropicToChat{}, ResponsesToChat{}} {
 		if err := r.RegisterTranslator(t); err != nil {
 			return fmt.Errorf("register translators: %w", err)
 		}
@@ -174,6 +174,60 @@ func (t AnthropicToChat) Response(env *protocol.Envelope, resp *protocol.Respons
 			Kind:   protocol.ResponseEvents,
 			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
 			Events: newAnthropicStream(resp.Events, env.Model, newID),
+			Meter:  resp.Meter,
+		}, nil
+	default:
+		return resp, nil // 字节流没有协议结构，原样返回
+	}
+}
+
+// ResponsesToChat 让 Codex CLI 等只说 Responses 的客户端使用只提供 OpenAI Chat 的上游（spec/10 §8，T25 + T23 + T27）。
+// 无状态、并发安全；零值可用。
+type ResponsesToChat struct {
+	// Now 与 NewID 仅供测试注入；为 nil 时使用 time.Now 与 crypto/rand 生成的 ID（RX-05）。
+	Now   func() time.Time
+	NewID func(prefix string) string
+}
+
+func (ResponsesToChat) From() protocol.Protocol { return protoOpenAIResponses }
+func (ResponsesToChat) To() protocol.Protocol   { return protoOpenAIChat }
+
+// Request：Responses 请求 → IR（T25）→ Chat 请求（§6.2，T23）。
+func (t ResponsesToChat) Request(env *protocol.Envelope, upstreamModel string) (*protocol.Call, error) {
+	if env.Op != opResponsesCreate {
+		return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("operation %s is not supported for model %q", env.Op, env.Model))
+	}
+	req, err := lowerOpenAIResponses(env.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Model = upstreamModel
+	body, err := synthesizeOpenAIChat(req)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.Call{Op: opChatCompletions, Model: upstreamModel, Stream: req.Stream, Body: body, Header: env.Header}, nil
+}
+
+// Response：Chat 响应/流 → Responses 响应/流（T27，§8.3）。model 写客户端请求的服务名。
+func (t ResponsesToChat) Response(env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
+	now, newID := clockOr(t.Now), idsOr(t.NewID)
+	switch resp.Kind {
+	case protocol.ResponseBuffered:
+		body, err := chatToResponsesBody(resp.Body, env.Model, now, newID)
+		if err != nil {
+			return nil, err
+		}
+		return &protocol.Response{
+			Kind: protocol.ResponseBuffered, Status: resp.Status,
+			Header: http.Header{"Content-Type": {"application/json"}},
+			Body:   body, Meter: resp.Meter,
+		}, nil
+	case protocol.ResponseEvents:
+		return &protocol.Response{
+			Kind:   protocol.ResponseEvents,
+			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
+			Events: newChatResponsesStream(resp.Events, env.Model, now, newID),
 			Meter:  resp.Meter,
 		}, nil
 	default:

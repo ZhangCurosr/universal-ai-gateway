@@ -1,0 +1,48 @@
+{
+  "id": "resp_1",
+  "object": "response",
+  "created_at": 1700000000,
+  "status": "completed",
+  "model": "deepseek-for-codex",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_1",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Checking both.",
+          "annotations": []
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "id": "fc_1",
+      "status": "completed",
+      "call_id": "call_a",
+      "name": "get_weather",
+      "arguments": "{\"city\":\"Paris\"}"
+    },
+    {
+      "type": "function_call",
+      "id": "fc_2",
+      "status": "completed",
+      "call_id": "call_b",
+      "name": "get_weather",
+      "arguments": "{}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 30,
+    "input_tokens_details": {
+      "cached_tokens": 20
+    },
+    "output_tokens": 12,
+    "total_tokens": 42
+  },
+  "incomplete_details": null,
+  "store": false
+}

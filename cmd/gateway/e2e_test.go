@@ -709,3 +709,108 @@ func TestE2EAnthropicToChat(t *testing.T) {
 		t.Fatalf("usage = %+v, want 2 requests on deepseek-test with input 13 / output 5", sums)
 	}
 }
+
+// T27：Responses 客户端（Codex CLI 等）经转换器使用 OpenAI Chat 上游（spec/10 §8）。
+func TestE2EResponsesToChat(t *testing.T) {
+	up := fakeUpstream(t)
+	g := startGateway(t, up.URL, nil)
+	adminURL := "http://" + g.admin + "/admin/api"
+	dataURL := "http://" + g.data
+
+	var created struct {
+		Client struct {
+			ID int64 `json:"id"`
+		} `json:"client"`
+		Token string `json:"token"`
+	}
+	if code := doJSON(t, "POST", adminURL+"/clients", g.adminToken,
+		map[string]any{"name": "codex-deepseek", "role": "user", "quota_nano_usd": int64(1e12)}, &created); code != http.StatusCreated {
+		t.Fatalf("create client: %d", code)
+	}
+	if code := doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+		map[string]any{"pool": "chat", "name": "chat-k1", "secret": "sk-test-chat"}, nil); code != http.StatusCreated {
+		t.Fatalf("create key: %d", code)
+	}
+
+	// 非流式：Chat 响应被转换为 Responses 的 response 对象
+	var resp struct {
+		ID     string `json:"id"`
+		Object string `json:"object"`
+		Status string `json:"status"`
+		Model  string `json:"model"`
+		Output []struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"output"`
+		Usage struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
+	}
+	if code := doJSON(t, "POST", dataURL+"/v1/responses", created.Token,
+		map[string]any{"model": "deepseek-test", "input": "hi"}, &resp); code != http.StatusOK {
+		t.Fatalf("responses non-stream: %d", code)
+	}
+	if !strings.HasPrefix(resp.ID, "resp_") || resp.Object != "response" || resp.Status != "completed" || resp.Model != "deepseek-test" ||
+		len(resp.Output) != 1 || resp.Output[0].Content[0].Text != "ok" || resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 2 {
+		t.Fatalf("translated response = %+v", resp)
+	}
+
+	// 流式：Responses 事件序列，以 response.completed 结束
+	b, _ := json.Marshal(map[string]any{"model": "deepseek-test", "input": "hi", "stream": true}) // 字面量 map 不会失败
+	req, _ := http.NewRequest("POST", dataURL+"/v1/responses", bytes.NewReader(b))                // URL 固定合法
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+	req.Header.Set("Content-Type", "application/json")
+	hr, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	var text strings.Builder
+	sc := bufio.NewScanner(hr.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if name, ok := strings.CutPrefix(line, "event: "); ok {
+			events = append(events, name)
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok && strings.Contains(data, `"response.output_text.delta"`) {
+			var d struct {
+				Delta string `json:"delta"`
+			}
+			if json.Unmarshal([]byte(data), &d) == nil {
+				text.WriteString(d.Delta)
+			}
+		}
+	}
+	hr.Body.Close()
+	if hr.StatusCode != http.StatusOK || len(events) < 3 || events[0] != "response.created" ||
+		events[len(events)-1] != "response.completed" || text.String() != "hello" {
+		t.Fatalf("stream: code=%d events=%v text=%q", hr.StatusCode, events, text.String())
+	}
+
+	// 计费：两次调用都按 Chat 上游的原始用量落库（CORE-04）
+	g.cancel()
+	select {
+	case err := <-g.done:
+		if err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		g.done <- nil
+	case <-time.After(10 * time.Second):
+		t.Fatal("gateway did not stop")
+	}
+	db, err := sqlite.Open(context.Background(), filepath.Join(g.cfg.Server.DataDir, "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sums, err := db.QueryUsage(context.Background(), store.UsageQuery{ClientID: created.Client.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sums) != 1 || sums[0].Requests != 2 || sums[0].Model != "deepseek-test" ||
+		sums[0].Usage["input_tokens"] != 7+6 || sums[0].Usage["output_tokens"] != 2+3 {
+		t.Fatalf("usage = %+v, want 2 requests on deepseek-test with input 13 / output 5", sums)
+	}
+}
