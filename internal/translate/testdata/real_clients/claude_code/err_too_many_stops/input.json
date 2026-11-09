@@ -1,0 +1,22 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 8192,
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "<redacted>"
+        }
+      ]
+    }
+  ],
+  "stop_sequences": [
+    "stop1",
+    "stop2",
+    "stop3",
+    "stop4",
+    "stop5"
+  ]
+}

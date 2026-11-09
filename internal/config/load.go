@@ -102,8 +102,16 @@ func (c *Config) Validate() error {
 	if w := c.Ledger.AdmissionHighWatermark; w <= 0 || w > 1 {
 		return fieldErr("ledger.admission_high_watermark", "must be in (0, 1], got %v", w)
 	}
-	if c.Audit.QueueCapacity <= 0 || c.Audit.BatchSize <= 0 || c.Audit.FlushInterval <= 0 || c.Audit.RetentionDays <= 0 {
-		return fieldErr("audit", "all values must be > 0")
+	if c.Audit.QueueCapacity <= 0 || c.Audit.BatchSize <= 0 || c.Audit.FlushInterval <= 0 {
+		return fieldErr("audit", "queue_capacity, batch_size, and flush_interval must be > 0")
+	}
+	// CFG-14
+	if c.Audit.RetentionDays < 1 {
+		return fieldErr("audit.retention_days", "must be >= 1, got %d", c.Audit.RetentionDays)
+	}
+	// CFG-15
+	if c.Translation.UnknownFields != "reject" && c.Translation.UnknownFields != "drop" {
+		return fieldErr("translation.unknown_fields", "must be \"reject\" or \"drop\", got %q", c.Translation.UnknownFields)
 	}
 
 	// CFG-09

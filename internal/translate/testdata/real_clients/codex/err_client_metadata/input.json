@@ -1,0 +1,16 @@
+{
+  "model": "claude-sonnet-4-5",
+  "stream": true,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<redacted>"
+    }
+  ],
+  "client_metadata": {
+    "thread_id": "<redacted>",
+    "turn_id": "<redacted>",
+    "session_id": "<redacted>"
+  }
+}

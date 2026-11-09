@@ -5,11 +5,14 @@ import (
 	"testing"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/ir"
 )
 
 // spec/10 §7 + §8.4：responses → IR 方向的黄金文件用例（testdata/responses_to_ir/<用例>/{input,expected}.json）。
 func TestLowerOpenAIResponsesGolden(t *testing.T) {
-	runLowerGolden(t, "responses_to_ir", lowerOpenAIResponses)
+	runLowerGolden(t, "responses_to_ir", func(b []byte) (*ir.Request, error) {
+		return lowerOpenAIResponses(b, Options{})
+	})
 }
 
 // spec/10 §8.1、§8.2、§8.4：有状态特性、内置工具与无法表达的特性一律 400 invalid_request。
@@ -27,8 +30,8 @@ func TestLowerOpenAIResponsesRejects(t *testing.T) {
 		{"conversation", `{"model":"m","input":"hi","conversation":"conv_1"}`, "conversation"},
 		// RX-03
 		{"background", `{"model":"m","input":"hi","background":true}`, "background"},
-		// 内置工具（规定的消息格式）
-		{"web_search tool", `{"model":"claude-x","input":"hi","tools":[{"type":"web_search"}]}`,
+		// 内置工具（规定的消息格式）：强制指定时拒绝
+		{"web_search tool forced", `{"model":"claude-x","input":"hi","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}}`,
 			`built-in tool "web_search" is not supported for model "claude-x"`},
 		{"mcp tool", `{"model":"m","input":"hi","tools":[{"type":"mcp","server_label":"x"}]}`, `"mcp"`},
 		{"json_schema format", `{"model":"m","input":"hi","text":{"format":{"type":"json_schema","schema":{}}}}`, "json_schema"},
@@ -50,7 +53,7 @@ func TestLowerOpenAIResponsesRejects(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := lowerOpenAIResponses([]byte(tt.body))
+			_, err := lowerOpenAIResponses([]byte(tt.body), Options{})
 			ae, ok := apperr.As(err)
 			if !ok || ae.Code != apperr.CodeInvalidRequest {
 				t.Fatalf("error = %v, want invalid_request", err)
@@ -62,11 +65,14 @@ func TestLowerOpenAIResponsesRejects(t *testing.T) {
 	}
 }
 
-// null 视为未提供；background=false、store=true（RX-02 视为 false）放行；空 arguments 视为 {}。
+// null 视为未提供；background=false、store=true（RX-02 视为 false）放行；空 arguments 视为 {}；
+// T42 静态放宽：client_metadata 丢弃，非 function 内置工具（web_search、namespace）未显式指定时过滤忽略。
 func TestLowerOpenAIResponsesAcceptsNeutral(t *testing.T) {
 	body := `{"model":"m","background":false,"store":true,"previous_response_id":null,"prompt":null,
+		"client_metadata":{"session_id":"s_123"},
+		"tools":[{"type":"web_search"},{"type":"namespace","name":"multi_agent_v1"}],
 		"input":[{"role":"user","content":"hi"},{"type":"function_call","call_id":"c","name":"f","arguments":""}]}`
-	req, err := lowerOpenAIResponses([]byte(body))
+	req, err := lowerOpenAIResponses([]byte(body), Options{})
 	if err != nil {
 		t.Fatalf("lowerOpenAIResponses() error = %v", err)
 	}

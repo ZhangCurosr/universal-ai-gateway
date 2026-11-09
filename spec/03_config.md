@@ -51,7 +51,10 @@ audit:
   queue_capacity: 8192
   batch_size: 256
   flush_interval: 250ms
-  retention_days: 30
+  retention_days: 30               # 保留天数，必须 >= 1（CFG-14）
+
+translation:
+  unknown_fields: reject           # reject | drop，见 spec/10 §1 第 5 条（CFG-15）
 
 pools:
   - name: anthropic-main
@@ -125,6 +128,7 @@ models:                           # 客户端可见的「服务」：大模型�
 | `audit.batch_size` | `256` |
 | `audit.flush_interval` | `250ms` |
 | `audit.retention_days` | `30` |
+| `translation.unknown_fields` | `reject` |
 | 池内缺省字段 | `strategy: least_inflight`、`affinity_ttl: 5m`、`max_attempts: 3`、`pin_ttl: 24h`、`connect: 10s`、`response_header_base: 60s`、`response_header_per_mib: 90s`、`stream_idle: 120s`、`non_stream_total: 10m`、`cooldown.default: 30s`、`cooldown.max: 10m`、`breaker` 同上例 |
 
 池级默认值与 `models[].upstream_model`（缺省 = `name`）由 `Config.Normalize()` 填充（解析后调用）。
@@ -148,6 +152,8 @@ models:                           # 客户端可见的「服务」：大模型�
 | CFG-11 | `trusted_proxies` 每一项都必须是 CIDR（`netip.ParsePrefix` 可解析）；单个 IP 要写成 `/32` 或 `/128` |
 | CFG-13 | `mcp.max_result_bytes > 0` |
 | CFG-12 | `max_in_flight_requests > 0`、`preauth_ip_rpm >= 0`、`max_buffered_body_bytes >= max_request_body_bytes`、`max_stream_body_bytes > 0` |
+| CFG-14 | `audit.retention_days >= 1`，否则网关拒绝启动（配置校验 fail-fast） |
+| CFG-15 | `translation.unknown_fields` 只能是 `reject` 或 `drop` |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 

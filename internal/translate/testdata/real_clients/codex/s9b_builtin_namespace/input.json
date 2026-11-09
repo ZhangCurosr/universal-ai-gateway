@@ -1,0 +1,17 @@
+{
+  "model": "claude-sonnet-4-5",
+  "stream": true,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<redacted>"
+    }
+  ],
+  "tools": [
+    {
+      "type": "namespace",
+      "name": "multi_agent_v1"
+    }
+  ]
+}

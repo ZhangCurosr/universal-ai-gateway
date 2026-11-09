@@ -347,8 +347,7 @@ pollLoop:
 
 // afterSubmit 把任务提交成功之后的失败改写成不可重试。
 //
-// SPEC-GAP(T31): 任务一旦创建，上游就会按页计费；如果内核在轮询/下载失败时换 Key 重试，
-// 会重新上传并创建第二个付费任务。这里选择最保守的做法：提交之后的任何失败都不重试，
+// spec/08 §8.2：任务一旦创建，上游就会按页计费；提交之后的任何失败都不重试（防止重复付费），
 // 错误信息带上任务 ID，便于运维用 GET /v1/tasks/{id} 找回结果。客户端断开保持 Canceled。
 func afterSubmit(taskID string, err error) error {
 	var ae *protocol.AttemptError

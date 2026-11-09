@@ -2,26 +2,72 @@ package translate
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
-// Register 注册本包实现的全部跨协议转换器（spec/10 §0），由 cmd/gateway/adapters.go 调用。
-func Register(r *protocol.Registry) error {
-	for _, t := range []protocol.Translator{ChatToAnthropic{}, ResponsesToAnthropic{}, AnthropicToChat{}, ResponsesToChat{}} {
-		if err := r.RegisterTranslator(t); err != nil {
-			return fmt.Errorf("register translators: %w", err)
-		}
+// Options 是转译层的可配置行为（spec/10 §1 第 5、6 条）。零值等价于默认配置。
+type Options struct {
+	DropUnknownFields bool
+	Logger            *slog.Logger // nil 时不记日志
+}
+
+// droppedFieldsLogged 记录已打过 Warn 告警的 (from, to, field) 组合（进程级单次）。
+var droppedFieldsLogged sync.Map
+
+func logDroppedField(opts Options, from, to, field string) {
+	if !opts.DropUnknownFields || opts.Logger == nil {
+		return
 	}
-	return nil
+	key := from + "|" + to + "|" + field
+	if _, loaded := droppedFieldsLogged.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	opts.Logger.Warn("translation dropped unknown field",
+		slog.String("from", from),
+		slog.String("to", to),
+		slog.String("field", field),
+	)
+}
+
+func resetDropLog() {
+	droppedFieldsLogged.Range(func(key, _ any) bool {
+		droppedFieldsLogged.Delete(key)
+		return true
+	})
+}
+
+// Registrar 返回按 opts 注册全部转换器的函数；Register 等价于 Registrar(Options{})。
+func Registrar(opts Options) func(*protocol.Registry) error {
+	return func(r *protocol.Registry) error {
+		for _, t := range []protocol.Translator{
+			ChatToAnthropic{Opts: opts},
+			ResponsesToAnthropic{Opts: opts},
+			AnthropicToChat{Opts: opts},
+			ResponsesToChat{Opts: opts},
+		} {
+			if err := r.RegisterTranslator(t); err != nil {
+				return fmt.Errorf("register translators: %w", err)
+			}
+		}
+		return nil
+	}
+}
+
+// Register 注册本包实现的全部跨协议转换器（spec/10 §0），使用默认配置。由 cmd/gateway/adapters.go 调用。
+func Register(r *protocol.Registry) error {
+	return Registrar(Options{})(r)
 }
 
 // ResponsesToAnthropic 让只说 OpenAI Responses 的客户端（Codex CLI 等）使用 Anthropic 上游（spec/10 §8，T25 + T21 + T26）。
 // 无状态、并发安全；零值可用。
 type ResponsesToAnthropic struct {
+	Opts Options
 	// Now 与 NewID 仅供测试注入；为 nil 时使用 time.Now 与 crypto/rand 生成的 ID（RX-05）。
 	Now   func() time.Time
 	NewID func(prefix string) string
@@ -36,7 +82,7 @@ func (t ResponsesToAnthropic) Request(env *protocol.Envelope, upstreamModel stri
 	if env.Op != opResponsesCreate {
 		return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("operation %s is not supported for model %q", env.Op, env.Model))
 	}
-	req, err := lowerOpenAIResponses(env.Body)
+	req, err := lowerOpenAIResponses(env.Body, t.Opts, string(t.From()), string(t.To()))
 	if err != nil {
 		return nil, err
 	}
@@ -77,6 +123,7 @@ func (t ResponsesToAnthropic) Response(env *protocol.Envelope, resp *protocol.Re
 // ChatToAnthropic 让 OpenAI Chat 客户端使用 Anthropic 上游（spec/10 §3 ~ §5，T20 + T21 + T22）。
 // 无状态、并发安全；零值可用。
 type ChatToAnthropic struct {
+	Opts Options
 	// Now 与 NewID 仅供测试注入；为 nil 时使用 time.Now 与 crypto/rand 生成的 ID。
 	Now   func() time.Time
 	NewID func(prefix string) string
@@ -90,7 +137,7 @@ func (t ChatToAnthropic) Request(env *protocol.Envelope, upstreamModel string) (
 	if env.Op != opChatCompletions {
 		return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("operation %s is not supported for model %q", env.Op, env.Model))
 	}
-	req, err := lowerOpenAIChat(env.Body)
+	req, err := lowerOpenAIChat(env.Body, t.Opts, string(t.From()), string(t.To()))
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +178,7 @@ func (t ChatToAnthropic) Response(env *protocol.Envelope, resp *protocol.Respons
 // AnthropicToChat 让 Anthropic 客户端（Claude Code 等）使用只提供 OpenAI Chat 的上游（spec/10 §6，T23 + T24）。
 // 无状态、并发安全；零值可用。
 type AnthropicToChat struct {
+	Opts Options
 	// NewID 仅供测试注入；为 nil 时使用 crypto/rand 生成的 ID。
 	NewID func(prefix string) string
 }
@@ -143,7 +191,7 @@ func (t AnthropicToChat) Request(env *protocol.Envelope, upstreamModel string) (
 	if env.Op != opAnthropicCreate {
 		return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("operation %s is not supported for model %q", env.Op, env.Model))
 	}
-	req, err := lowerAnthropic(env.Body)
+	req, err := lowerAnthropic(env.Body, t.Opts, string(t.From()), string(t.To()))
 	if err != nil {
 		return nil, err
 	}
@@ -184,6 +232,7 @@ func (t AnthropicToChat) Response(env *protocol.Envelope, resp *protocol.Respons
 // ResponsesToChat 让 Codex CLI 等只说 Responses 的客户端使用只提供 OpenAI Chat 的上游（spec/10 §8，T25 + T23 + T27）。
 // 无状态、并发安全；零值可用。
 type ResponsesToChat struct {
+	Opts Options
 	// Now 与 NewID 仅供测试注入；为 nil 时使用 time.Now 与 crypto/rand 生成的 ID（RX-05）。
 	Now   func() time.Time
 	NewID func(prefix string) string
@@ -197,7 +246,7 @@ func (t ResponsesToChat) Request(env *protocol.Envelope, upstreamModel string) (
 	if env.Op != opResponsesCreate {
 		return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("operation %s is not supported for model %q", env.Op, env.Model))
 	}
-	req, err := lowerOpenAIResponses(env.Body)
+	req, err := lowerOpenAIResponses(env.Body, t.Opts, string(t.From()), string(t.To()))
 	if err != nil {
 		return nil, err
 	}

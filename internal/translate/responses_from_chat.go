@@ -32,7 +32,7 @@ func chatStatusFor(finish string) (string, *respIncomplete) {
 
 // chatToResponsesBody 转换非流式 Chat 响应体（§8.3 非流式）。
 //
-// SPEC-GAP(T27): §8.3 没有规定 message.refusal 的去向；这里作为 output_text 输出（与 §6.3 把拒绝文本
+// spec/10 §8.3：Chat 上游的 refusal 文本作为 output_text 输出（与 §6.3 把拒绝文本
 // 作为 text 块的做法一致），不生成 Responses 的 refusal 内容部件。
 func chatToResponsesBody(body []byte, model string, now time.Time, newID idGen) ([]byte, error) {
 	var in struct {
@@ -183,7 +183,7 @@ func (s *chatResponsesStream) handle(ev sse.Event) error {
 	}
 	for _, c := range chunk.Choices {
 		s.textDelta(c.Delta.Content)
-		s.textDelta(c.Delta.Refusal) // SPEC-GAP(T27)：拒绝文本作为 output_text，见 chatToResponsesBody
+		s.textDelta(c.Delta.Refusal) // spec/10 §8.3：拒绝文本作为 output_text，见 chatToResponsesBody
 		for _, tc := range c.Delta.ToolCalls {
 			if !s.seenTools[tc.Index] {
 				s.seenTools[tc.Index] = true

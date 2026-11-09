@@ -5,11 +5,14 @@ import (
 	"testing"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/ir"
 )
 
 // spec/10 §6.4 + §7：anthropic → IR 方向的黄金文件用例（testdata/anthropic_to_ir/<用例>/{input,expected}.json）。
 func TestLowerAnthropicGolden(t *testing.T) {
-	runLowerGolden(t, "anthropic_to_ir", lowerAnthropic)
+	runLowerGolden(t, "anthropic_to_ir", func(b []byte) (*ir.Request, error) {
+		return lowerAnthropic(b, Options{})
+	})
 }
 
 // spec/10 §6.1：无法表达的特性一律 400 invalid_request，消息指出字段。
@@ -25,7 +28,6 @@ func TestLowerAnthropicRejects(t *testing.T) {
 		{"zero max_tokens", `{"model":"m","max_tokens":0,` + msgs + `}`, "max_tokens"},
 		{"missing messages", `{` + base + `"stream":false}`, "messages"},
 		{"empty messages", `{` + base + `"messages":[]}`, "messages"},
-		{"top_k", `{` + base + `"top_k":5,` + msgs + `}`, "top_k"},
 		{"mcp_servers", `{` + base + `"mcp_servers":[{}],` + msgs + `}`, "mcp_servers"},
 		{"container", `{` + base + `"container":"c1",` + msgs + `}`, "container"},
 		{"unknown field", `{` + base + `"foo":1,` + msgs + `}`, "foo"},
@@ -58,7 +60,7 @@ func TestLowerAnthropicRejects(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := lowerAnthropic([]byte(tt.body))
+			_, err := lowerAnthropic([]byte(tt.body), Options{})
 			ae, ok := apperr.As(err)
 			if !ok || ae.Code != apperr.CodeInvalidRequest {
 				t.Fatalf("error = %v, want invalid_request", err)
@@ -70,12 +72,12 @@ func TestLowerAnthropicRejects(t *testing.T) {
 	}
 }
 
-// §6.1 丢弃的字段：thinking、service_tier、context_management，以及 null 值。
+// §6.1 丢弃的字段：thinking、service_tier、context_management、top_k，以及 null 值。
 func TestLowerAnthropicDropsFields(t *testing.T) {
 	body := `{"model":"m","max_tokens":10,"thinking":{"type":"adaptive"},"service_tier":"auto",
-		"context_management":{"edits":[]},"top_k":null,"metadata":{"user_id":"u","other":1},
+		"context_management":{"edits":[]},"top_k":40,"metadata":{"user_id":"u","other":1},
 		"messages":[{"role":"user","content":[{"type":"text","text":"hi","citations":[]}]}]}`
-	req, err := lowerAnthropic([]byte(body))
+	req, err := lowerAnthropic([]byte(body), Options{})
 	if err != nil {
 		t.Fatalf("lowerAnthropic() error = %v", err)
 	}

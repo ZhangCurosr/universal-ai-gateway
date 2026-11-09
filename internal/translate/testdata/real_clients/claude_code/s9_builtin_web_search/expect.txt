@@ -1,0 +1,1 @@
+error: built-in tool "web_search_20250101" is not supported for model

@@ -35,6 +35,12 @@ audit:
   flush_interval: 250ms
   retention_days: 30
 
+# 转译层未知字段策略（spec/10 §1 第 5 条，CFG-15）：
+#   reject（默认）：出现协议转换不支持的未定义字段时返回 400；
+#   drop：丢弃未定义字段继续处理并记单次告警日志（接入 Claude Code、Codex CLI 等智能体客户端时建议开启）。
+# translation:
+#   unknown_fields: reject
+
 pools:
   - name: anthropic-main
     protocol: anthropic

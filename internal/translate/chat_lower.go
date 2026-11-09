@@ -13,17 +13,18 @@ import (
 )
 
 // chatTopLevel 是 OpenAI Chat 请求体中本转换器认识的顶层字段（spec/10 §3）。
-//
-// SPEC-GAP(T20): §3 只列出了要拒绝的字段，没有说明其他未列出的字段怎么处理。按 §1 第 2 条
-// 「禁止默默编造等价物」与 AGENTS §2.7「最保守」，这里对未列出的字段一律返回 400，并在
-// 消息中写出字段名；只有下面两类例外：
+// 未知字段按 spec/10 §1 第 5、6 条处理：reject 模式返回 400，drop 模式丢弃并记单次告警日志。
+// 下列字段属于例外：
 //   - stream_options：只影响响应形态（include_usage），由响应转换器（T22）读取原始请求体；
-//   - parallel_tool_calls 为 true：与 IR / Anthropic 的默认行为相同，不需要表达。
+//   - parallel_tool_calls 为 true：与 IR / Anthropic 的默认行为相同，不需要表达；
+//   - presence_penalty, frequency_penalty, seed, reasoning_effort：按 spec/10 §3 丢弃。
 var chatTopLevel = map[string]bool{
 	"model": true, "messages": true, "tools": true, "tool_choice": true,
 	"max_tokens": true, "max_completion_tokens": true,
 	"temperature": true, "top_p": true, "stop": true, "stream": true, "stream_options": true,
 	"user": true, "n": true, "parallel_tool_calls": true,
+	// T42: 静态放宽字段（spec/10 §3）：主流客户端默认附带的参数，安全丢弃
+	"presence_penalty": true, "frequency_penalty": true, "seed": true, "reasoning_effort": true,
 }
 
 // chatRejected 是 §3 明确不支持的字段（出现且不为 null / false 时 400）。
@@ -31,7 +32,11 @@ var chatRejected = []string{"response_format", "logprobs", "top_logprobs", "audi
 
 // lowerOpenAIChat 把 OpenAI Chat Completions 请求体解析为 IR（spec/10 §3，T20）。
 // 任何无法表达的特性返回 apperr.CodeInvalidRequest。
-func lowerOpenAIChat(body []byte) (*ir.Request, error) {
+func lowerOpenAIChat(body []byte, opts Options, directions ...string) (*ir.Request, error) {
+	from, to := "openai_chat", "anthropic"
+	if len(directions) >= 2 {
+		from, to = directions[0], directions[1]
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, invalid("request body must be a JSON object")
@@ -44,7 +49,10 @@ func lowerOpenAIChat(body []byte) (*ir.Request, error) {
 	}
 	for k, v := range top {
 		if !chatTopLevel[k] && !slices.Contains(chatRejected, k) && present(v) {
-			return nil, invalid(k + " is not supported when translating to another protocol")
+			if !opts.DropUnknownFields {
+				return nil, invalid(k + " is not supported when translating to another protocol")
+			}
+			logDroppedField(opts, from, to, k)
 		}
 	}
 
@@ -81,7 +89,7 @@ func lowerOpenAIChat(body []byte) (*ir.Request, error) {
 		}
 	}
 
-	if err := lowerChatMessages(top["messages"], req); err != nil {
+	if err := lowerChatMessages(top["messages"], req, opts, from, to); err != nil {
 		return nil, err
 	}
 	if err := lowerChatTools(top["tools"], req); err != nil {
@@ -141,7 +149,7 @@ type chatMessage struct {
 	Content          json.RawMessage `json:"content"`
 	ToolCalls        json.RawMessage `json:"tool_calls"`
 	ToolCallID       string          `json:"tool_call_id"`
-	Name             json.RawMessage `json:"name"`              // 参与者名：IR / Anthropic 无对应字段，丢弃（SPEC-GAP(T20)）
+	Name             json.RawMessage `json:"name"`              // spec/10 §3：参与者名丢弃（IR / Anthropic 无对应字段）
 	ReasoningContent json.RawMessage `json:"reasoning_content"` // §3：丢弃
 	Refusal          json.RawMessage `json:"refusal"`
 }
@@ -151,7 +159,7 @@ var chatMessageKeys = map[string]bool{
 	"name": true, "reasoning_content": true, "refusal": true,
 }
 
-func lowerChatMessages(raw json.RawMessage, req *ir.Request) error {
+func lowerChatMessages(raw json.RawMessage, req *ir.Request, opts Options, from, to string) error {
 	if !present(raw) {
 		return invalid("messages: required")
 	}
@@ -172,7 +180,10 @@ func lowerChatMessages(raw json.RawMessage, req *ir.Request) error {
 		}
 		for k, v := range keys {
 			if !chatMessageKeys[k] && present(v) {
-				return invalid(path + "." + k + " is not supported when translating to another protocol")
+				if !opts.DropUnknownFields {
+					return invalid(path + "." + k + " is not supported when translating to another protocol")
+				}
+				logDroppedField(opts, from, to, "messages[]."+k)
 			}
 		}
 		var m chatMessage

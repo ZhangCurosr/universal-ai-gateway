@@ -1,11 +1,14 @@
 package main
 
 import (
+	"log/slog"
+
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/anthropic"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/mineru"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openai"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openairesp"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/tavily"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/translate"
 )
@@ -20,16 +23,23 @@ var adapterRegistrars = []func(*protocol.Registry) error{
 	openai.Register,
 	openairesp.Register,
 	tavily.Register,
-	translate.Register, // 跨协议转换器（spec/10 §0）
 }
 
 // newRegistry 注册全部适配器并封存注册表。
-func newRegistry() (*protocol.Registry, error) {
+func newRegistry(cfg *config.Config, log *slog.Logger) (*protocol.Registry, error) {
+	opts := translate.Options{}
+	if cfg != nil {
+		opts.DropUnknownFields = (cfg.Translation.UnknownFields == "drop")
+		opts.Logger = log
+	}
 	reg := protocol.NewRegistry()
 	for _, register := range adapterRegistrars {
 		if err := register(reg); err != nil {
 			return nil, err
 		}
+	}
+	if err := translate.Registrar(opts)(reg); err != nil {
+		return nil, err
 	}
 	if err := reg.Seal(); err != nil {
 		return nil, err

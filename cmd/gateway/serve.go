@@ -137,7 +137,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 	// 8. 上游 http.Client（spec/13 §6）
 	upstreamClient := newUpstreamClient(cfg)
 
-	registry, err := newRegistry()
+	registry, err := newRegistry(cfg, logger)
 	if err != nil {
 		return fmt.Errorf("register adapters: %w", err)
 	}

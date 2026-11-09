@@ -133,6 +133,7 @@ func TestChatToAnthropicStreamErrors(t *testing.T) {
 		{"upstream read error", &sliceStream{evs: []sse.Event{first},
 			end: &protocol.AttemptError{Outcome: protocol.Outcome{Kind: protocol.OutcomeTimeout}}}, protocol.OutcomeTimeout},
 		{"bad json", &sliceStream{evs: []sse.Event{chunkEv(`{`)}}, protocol.OutcomeServerError},
+		{"unrecognised finish_reason", &sliceStream{evs: []sse.Event{first, chunkEv(`{"choices":[{"delta":{},"finish_reason":"insufficient_system_resource"}]}`)}}, protocol.OutcomeServerError},
 		{"interleaved tool args", &sliceStream{evs: []sse.Event{
 			chunkEv(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"f","arguments":""}}]}}]}`),
 			chunkEv(`{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"g","arguments":""}}]}}]}`),
@@ -166,9 +167,10 @@ func TestChatToAnthropicStreamErrors(t *testing.T) {
 // 非流式：choices 不是恰好 1 个、参数不是 JSON 对象 → upstream_error；JSON 非法 → 错误。
 func TestChatToAnthropicBufferedErrors(t *testing.T) {
 	for name, body := range map[string]string{
-		"no choices":  `{"choices":[]}`,
-		"two choices": `{"choices":[{"message":{}},{"message":{}}]}`,
-		"bad args":    `{"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"f","arguments":"[1]"}}]},"finish_reason":"tool_calls"}]}`,
+		"no choices":                 `{"choices":[]}`,
+		"two choices":                `{"choices":[{"message":{}},{"message":{}}]}`,
+		"bad args":                   `{"choices":[{"message":{"tool_calls":[{"id":"c","function":{"name":"f","arguments":"[1]"}}]},"finish_reason":"tool_calls"}]}`,
+		"unrecognised finish_reason": `{"choices":[{"message":{},"finish_reason":"insufficient_system_resource"}]}`,
 	} {
 		_, err := chatToAnthropicBody([]byte(body), "m", seqIDs())
 		if ae, ok := apperr.As(err); !ok || ae.Code != apperr.CodeUpstreamError {
@@ -181,12 +183,24 @@ func TestChatToAnthropicBufferedErrors(t *testing.T) {
 }
 
 func TestStopReasonFor(t *testing.T) {
-	for in, want := range map[string]string{
+	valid := map[string]string{
 		"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use", "function_call": "tool_use",
-		"content_filter": "refusal", "insufficient_system_resource": "end_turn", "": "end_turn",
-	} {
-		if got := stopReasonFor(in); got != want {
+		"content_filter": "refusal",
+	}
+	for in, want := range valid {
+		got, err := stopReasonFor(in)
+		if err != nil {
+			t.Errorf("stopReasonFor(%q) returned unexpected error: %v", in, err)
+		}
+		if got != want {
 			t.Errorf("stopReasonFor(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, in := range []string{"insufficient_system_resource", "", "unknown_custom"} {
+		if got, err := stopReasonFor(in); err == nil {
+			t.Errorf("stopReasonFor(%q) = %q, want error", in, got)
+		} else if ae, ok := apperr.As(err); !ok || ae.Code != apperr.CodeUpstreamError {
+			t.Errorf("stopReasonFor(%q) error = %v, want CodeUpstreamError", in, err)
 		}
 	}
 }
@@ -234,7 +248,7 @@ func TestAnthropicToChatRequest(t *testing.T) {
 	}
 
 	for name, env := range map[string]*protocol.Envelope{
-		"top_k":        {Op: opAnthropicCreate, Model: "m", Body: []byte(`{"model":"m","max_tokens":1,"top_k":5,"messages":[{"role":"user","content":"hi"}]}`)},
+		"container":    {Op: opAnthropicCreate, Model: "m", Body: []byte(`{"model":"m","max_tokens":1,"container":"c1","messages":[{"role":"user","content":"hi"}]}`)},
 		"count_tokens": {Op: "messages.count_tokens", Model: "m"},
 		"too many stops": {Op: opAnthropicCreate, Model: "m",
 			Body: []byte(`{"model":"m","max_tokens":1,"stop_sequences":["a","b","c","d","e"],"messages":[{"role":"user","content":"hi"}]}`)},

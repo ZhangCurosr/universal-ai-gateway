@@ -1,0 +1,9 @@
+{
+  "model": "claude-sonnet-4-5",
+  "text": {
+    "format": {
+      "type": "json_schema"
+    }
+  },
+  "input": "<redacted>"
+}

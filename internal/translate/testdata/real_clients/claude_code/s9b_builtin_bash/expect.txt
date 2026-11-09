@@ -1,0 +1,1 @@
+error: built-in tool "bash_20250124" is not supported for model

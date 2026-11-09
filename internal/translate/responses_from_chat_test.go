@@ -174,7 +174,7 @@ func TestResponsesToChatRequest(t *testing.T) {
 
 	for name, env := range map[string]*protocol.Envelope{
 		"previous_response_id": {Op: opResponsesCreate, Model: "m", Body: []byte(`{"model":"m","input":"hi","previous_response_id":"resp_1"}`)},
-		"built-in tool":        {Op: opResponsesCreate, Model: "m", Body: []byte(`{"model":"m","input":"hi","tools":[{"type":"web_search"}]}`)},
+		"built-in tool":        {Op: opResponsesCreate, Model: "m", Body: []byte(`{"model":"m","input":"hi","tools":[{"type":"web_search"}],"tool_choice":{"type":"web_search"}}`)},
 		"get by id (RX-04)":    {Op: "responses.get", Model: "m"},
 	} {
 		if _, err := tr.Request(env, "up"); !isInvalid(err) {

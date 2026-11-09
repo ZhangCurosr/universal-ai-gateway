@@ -1,0 +1,1 @@
+error: type document is not supported when translating to another protocol

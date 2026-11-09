@@ -352,6 +352,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | 计费时点 | 同步封装：完成时按上游报告的实际页数结算（`UsageUpstream`）。异步透传：同一任务会被查询多次，而适配器无状态、无法判断「第一次看到完成」，所以**提交时按估计页数结算**（`UsageEstimated`）；查询与下载的 `Estimate` 写 `{pages: 0, requests: 0}`，Meter 返回 `(nil, UsageUpstream)`，不计费。需要精确按页计费的部署应使用同步封装 |
 | 任务固定 | 任务只存在于创建它的上游账号下；`pin_ttl` 应不短于结果在上游的保存时长。网关重启会丢失固定记录（内存），此时查询返回 404 `not_found`，客户端需重新提交 |
 | 上传 | 文件请求体直接流式转发给上游（EG-07），不进内存，不重试 |
+| 任务提交后重试 | 任务一旦创建，上游按页计费。提交之后的轮询或下载失败**不可重试**（防止创建重复的付费任务），错误消息中附带任务 ID，便于运维找回结果 |
 
 配置：`price: { pages: "0.01", requests: "0" }`，`reserve: { pages: 600 }`；池：`pin_ttl: 48h`、`timeouts: { response_header_base: 10m }`。
 

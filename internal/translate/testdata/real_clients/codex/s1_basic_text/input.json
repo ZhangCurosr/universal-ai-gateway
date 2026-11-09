@@ -1,0 +1,7 @@
+{
+  "model": "claude-sonnet-4-5",
+  "instructions": "<redacted>",
+  "input": "<redacted>",
+  "max_output_tokens": 4096,
+  "stream": false
+}
