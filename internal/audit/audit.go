@@ -24,8 +24,9 @@ type RecordDeleter interface {
 
 // Pipeline 是数据面提交审计记录的入口。
 type Pipeline struct {
-	ch      chan store.AuditRecord
-	dropped atomic.Int64
+	ch       chan store.AuditRecord
+	dropped  atomic.Int64
+	observer atomic.Pointer[func(store.AuditRecord)]
 }
 
 // NewPipeline 创建容量为 capacity 的流水线。
@@ -36,8 +37,21 @@ func NewPipeline(capacity int) *Pipeline {
 	return &Pipeline{ch: make(chan store.AuditRecord, capacity)}
 }
 
+// SetObserver 设置一个同步观察者：每条 Submit 的记录先交给 fn，再按 AUD-01 入队或丢弃。
+// 必须在开始接收请求之前调用；fn 必须是非阻塞、并发安全的。
+func (p *Pipeline) SetObserver(fn func(store.AuditRecord)) {
+	if fn == nil {
+		p.observer.Store(nil)
+		return
+	}
+	p.observer.Store(&fn)
+}
+
 // Submit 非阻塞提交；队列满时丢弃并计数（AUD-01）。
 func (p *Pipeline) Submit(rec store.AuditRecord) {
+	if fn := p.observer.Load(); fn != nil && *fn != nil {
+		(*fn)(rec)
+	}
 	// AUD-01: 非阻塞提交，队列满时丢弃并计数
 	select {
 	case p.ch <- rec:

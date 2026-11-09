@@ -38,6 +38,7 @@ var layers = map[string]int{
 	"internal/ratelimit":           2,
 	"internal/ledger":              2,
 	"internal/audit":               2,
+	"internal/metrics":             2,
 	"internal/scheduler":           2,
 	"internal/adapter/anthropic":   2,
 	"internal/adapter/mineru":      2,
