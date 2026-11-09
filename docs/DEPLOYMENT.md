@@ -171,3 +171,63 @@ gateway call ask_model --args '{"model":"deepseek-chat","input":"用一句话解
 ```
 
 > 工具调用会产生费用。给 AI 用的 Token 要设置额度（`quota_nano_usd`）和 RPM，并用 `allowed_models` 只开放需要的服务。
+
+## 7. 监控与告警（Prometheus）
+
+网关在管理面监听上暴露 Prometheus 纯文本格式指标端点 `GET /admin/metrics`（无需鉴权，依赖管理面仅监听本地回环地址）。
+
+### 7.1 Prometheus 抓取配置
+
+```yaml
+scrape_configs:
+  - job_name: 'universal-ai-gateway'
+    metrics_path: '/admin/metrics'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['127.0.0.1:8081']
+```
+
+### 7.2 核心告警规则示例
+
+```yaml
+groups:
+  - name: uaig_alerts
+    rules:
+      # 计费事件积压：队列已使用超过 80%
+      - alert: UAIGLedgerQueueNearFull
+        expr: uaig_ledger_events_queue_length / uaig_ledger_events_queue_capacity > 0.8
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Universal AI Gateway 计费事件队列接近占满"
+          description: "计费事件积压已超过 80%，可能发生磁盘写入瓶颈。"
+
+      # 5xx 错误率升高
+      - alert: UAIGHighErrorRate
+        expr: sum(rate(uaig_requests_total{code="5xx"}[5m])) / sum(rate(uaig_requests_total[5m])) > 0.05
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Universal AI Gateway 5xx 请求错误率 > 5%"
+
+      # 某个上游 Key 池全线熔断
+      - alert: UAIGUpstreamPoolAllBreakersOpen
+        expr: sum by (pool) (uaig_keys_status{state="breaker_open"}) == count by (pool) (uaig_key_inflight)
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "上游 Key 池 {{ $labels.pool }} 内所有 Key 均已熔断"
+
+      # 审计记录发生丢弃
+      - alert: UAIGAuditRecordsDropped
+        expr: rate(uaig_audit_dropped_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "审计流水线队列满，记录开始发生丢弃"
+```
+
