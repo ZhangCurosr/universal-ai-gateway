@@ -1,0 +1,59 @@
+{
+  "max_tokens": 2000,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "2+2?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "encrypted": "",
+          "redacted": false,
+          "redacted_data": "",
+          "signature": "sig-1",
+          "text": "simple sum",
+          "type": "thinking",
+          "vendor": "anthropic"
+        },
+        {
+          "encrypted": "",
+          "redacted": true,
+          "redacted_data": "enc",
+          "signature": "",
+          "text": "",
+          "type": "thinking",
+          "vendor": "anthropic"
+        },
+        {
+          "text": "4",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "text": "3+3?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": null,
+  "top_p": null,
+  "user": ""
+}

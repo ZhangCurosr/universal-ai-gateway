@@ -114,7 +114,98 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 
 ## 6. 反方向（T23、T24）
 
-Anthropic 入站 → OpenAI 上游：按 §3/§4 的逆映射实现；任务卡 T23/T24 中给出用例表。M2 开始前会补充本节的详细字段表。
+目标场景：Claude Code 等只说 Anthropic 的客户端使用 DeepSeek、Qwen 等只提供 OpenAI Chat 的上游。
+转换器 `anthropic → openai_chat` = Anthropic 请求 → IR（§6.1）+ IR → Chat（§6.2）；Chat 响应/流 → Anthropic（§6.3）。
+§6.2 同时被 `openai_responses → openai_chat`（T27）复用。
+
+### 6.1 Anthropic Messages → IR（T23）
+
+| Anthropic 字段 | IR | 说明 |
+|:--|:--|:--|
+| `model` | `Model` | 必填 |
+| `max_tokens` | `MaxTokens` | 必填，≤ 0 → 400 |
+| `system` 字符串 | `System`（一个 TextPart） | |
+| `system` 数组 `type=text` | `System`（按顺序，保留 `cache_control`） | 其他类型 → 400 |
+| `messages[role=user\|assistant].content` 字符串 | 一个 TextPart | 其他 role → 400 |
+| content 块 `text` | `TextPart`（保留 `cache_control`） | `citations` 丢弃 |
+| content 块 `image`，`source.type=base64` | `ImagePart{MediaType, Data}` | base64 非法 → 400 |
+| content 块 `image`，`source.type=url` | `ImagePart{URL}` | 只允许 http(s) |
+| content 块 `tool_use`（仅 assistant） | `ToolCallPart{id, name, input}` | `input` 必须是 JSON 对象 |
+| content 块 `tool_result`（仅 user） | `ToolResultPart{tool_use_id, content, is_error}` | `content` 为字符串或 `text`/`image` 块数组；其他块 → 400 |
+| content 块 `thinking` / `redacted_thinking`（仅 assistant） | `ThinkingPart{Vendor: anthropic, ...}` | 合成到其他厂商时按 §1 第 3 条丢弃 |
+| content 块 `document`、`search_result`、`server_tool_use`、`*_tool_result`、`container_upload` 等 | — | 400（消息指出块类型） |
+| `tools[]` 无 `type` 或 `type=custom` | `Tool{name, description, input_schema, cache_control}` | |
+| `tools[]` 其他 `type`（`web_search_*`、`bash_*`、`text_editor_*`、`computer_*`、`code_execution_*` 等服务端/内置工具） | — | 400（`built-in tool "<type>" is not supported for model "<name>"`） |
+| `tool_choice` `auto` / `any` / `tool+name` / `none` | 同名 Mode | |
+| `tool_choice.disable_parallel_tool_use: true` | — | 400（IR 无法表达；与 T20 拒绝 `parallel_tool_calls=false` 一致） |
+| `stop_sequences`、`temperature`、`top_p`、`stream` | 对应字段 | |
+| `metadata.user_id` | `User` | `metadata` 其他字段丢弃 |
+| `top_k` | — | 400（Chat 无等价参数） |
+| `thinking`（`enabled` / `adaptive` / `disabled`） | 丢弃 | 与 §8.2 `reasoning.effort` 同理，不做猜测性映射 |
+| `service_tier`、`context_management` | 丢弃 | |
+| `mcp_servers`、`container` | — | 400 |
+| 其他未知顶层字段 | — | 400（与 T20/T25 一致） |
+
+### 6.2 IR → OpenAI Chat（T23，T27 复用）
+
+| IR | Chat | 说明 |
+|:--|:--|:--|
+| `System` | 每个 TextPart 一条 `{"role":"system","content":<字符串>}`，放在最前 | `cache_control` 丢弃 |
+| user 消息中的 `ToolResultPart` | 每个一条 `{"role":"tool","tool_call_id","content":<文本拼接>}`，按出现顺序放在该 user 消息其余内容之前 | 结果中含 `ImagePart` → 400；`is_error` 丢弃（错误文本已在 content 中） |
+| user 消息其余内容只有一个 TextPart | `{"role":"user","content":<字符串>}` | 多数兼容上游只稳定支持字符串 content |
+| user 消息其余内容为多个块或含图片 | `content` 数组：`{"type":"text"}` / `{"type":"image_url","image_url":{"url"}}` | `Data` 编码为 `data:<media_type>;base64,...` |
+| assistant 消息的 TextPart | `content`（多个直接拼接） | 没有文本时 `content: null` |
+| assistant 消息的 `ToolCallPart` | `tool_calls[{id, type:"function", function:{name, arguments:<JSON 字符串>}}]` | |
+| `ThinkingPart` | 丢弃 | 任何厂商都不回传给 Chat 上游 |
+| `Tools` | `tools[{type:"function", function:{name, description, parameters}}]` | `cache_control` 丢弃 |
+| `ToolChoice` `auto` / `any` / `none` / `tool` | `"auto"` / `"required"` / `"none"` / `{"type":"function","function":{"name"}}` | |
+| `MaxTokens` | `max_tokens`（0 时不发送） | 兼容上游普遍只认 `max_tokens`；见下方待定项 |
+| `Temperature`、`TopP` | 同名 | |
+| `StopSequences` | `stop` 数组 | 超过 4 个 → 400 |
+| `Stream` | `stream`；为 true 时同时发送 `stream_options: {"include_usage": true}` | 由合成器显式写入，PT-03 不再注入，因此 FWD-02 不会过滤 usage chunk，§6.3 能拿到用量 |
+| `User` | `user` | |
+
+### 6.3 Chat 响应 → Anthropic 响应（T24）
+
+非流式：
+
+| Chat | Anthropic |
+|:--|:--|
+| `id` | `id`：`chatcmpl-` 前缀改为 `msg_`；缺失时网关签发 `msg_` + 24 位 base32 |
+| — | `type: "message"`、`role: "assistant"`、`model` = 客户端请求的模型名、`stop_sequence: null` |
+| `choices[0].message.content` 非空 | 一个 `text` 块 |
+| `choices[0].message.refusal` 非空 | 一个 `text` 块（拒绝文本），`stop_reason: "refusal"` |
+| `choices[0].message.tool_calls[]` | 每个一个 `tool_use` 块（`input` = `arguments` 解析后的对象；无法解析为 JSON 对象 → 502 `upstream_error`） |
+| `choices[0].message.reasoning_content` | 丢弃（没有签名，回传给 Anthropic 上游会被拒绝） |
+| `finish_reason`：`stop` → `end_turn`；`length` → `max_tokens`；`tool_calls` / `function_call` → `tool_use`；`content_filter` → `refusal` | `stop_reason` |
+| `usage` | `input_tokens = prompt_tokens − cached_tokens`、`cache_read_input_tokens = prompt_tokens_details.cached_tokens`、`cache_creation_input_tokens = 0`、`output_tokens = completion_tokens` |
+| `choices` 不是恰好 1 个 | 502 `upstream_error` |
+
+流式（状态机；输出的 content block `index` 从 0 递增）：
+
+| Chat chunk | 输出 Anthropic 事件 |
+|:--|:--|
+| 第一个 chunk | `message_start`（`content: []`、`stop_reason: null`、`usage: {input_tokens: 0, output_tokens: 0}`；真实用量在 `message_delta` 中给出） |
+| `delta.content` 非空 | 没有打开的 text 块时：先关闭打开的块，再 `content_block_start`（text）；然后 `content_block_delta`（`text_delta`） |
+| `delta.tool_calls[]` 中出现新的 `index` | 关闭打开的块，`content_block_start`（`tool_use`，`id`、`name`、`input: {}`） |
+| `delta.tool_calls[].function.arguments` 非空 | `content_block_delta`（`input_json_delta`）；参数属于已关闭的工具调用（交错输出）→ 流错误 |
+| `delta.reasoning_content` | 丢弃 |
+| `finish_reason` 非空 | 关闭打开的块（`content_block_stop`），记下 stop_reason（映射同非流式） |
+| `choices: []` 且 `usage` 非 null | 记下用量 |
+| `[DONE]` | `message_delta`（`delta: {stop_reason, stop_sequence: null}`，`usage` 按非流式映射）→ `message_stop` |
+| `{"error":...}` chunk、上游流在 `[DONE]` 前结束、`[DONE]` 前没有 `finish_reason` | 返回入站适配器 `StreamError`（`event: error`）并结束 |
+
+### 6.4 必测用例
+
+§7 的 10 个用例全部适用，另加：服务端工具 → 400；`top_k` → 400；`thinking` 被丢弃；`tool_result` 带 `is_error`；
+`stop_sequences` 超过 4 个 → 400；流式 usage chunk 映射到 `message_delta.usage`；`content_filter` → `refusal`。
+
+### 6.5 待定项（起草时的取舍，审批时请确认）
+
+1. `max_tokens` 而非 `max_completion_tokens`：前者兼容 DeepSeek / Qwen 等，后者是 OpenAI 官方 o 系列推理模型的要求。若需要直连 OpenAI 官方推理模型，应改为可按池配置。
+2. `reasoning_content` → Anthropic 一律丢弃：保守做法；代价是 Claude Code 看不到 DeepSeek 的思考过程。
+3. `thinking` 参数丢弃而不是 400：否则 Claude Code（默认开启 thinking）无法使用 Chat 上游。
+4. `top_k`、`disable_parallel_tool_use` 选择 400 而不是丢弃：按 §1 第 2 条「改变采样/调用语义的不默默丢弃」。
 
 ## 7. 必测用例（每个方向至少）
 
@@ -189,6 +280,11 @@ Anthropic 入站 → OpenAI 上游：按 §3/§4 的逆映射实现；任务卡 
 | 上游流中错误 | 入站适配器的 `StreamError`（IN-R07）后结束 |
 
 思考增量（Anthropic `thinking_delta`、Chat `reasoning_content`）不输出。`output_index` 按项出现顺序从 0 编号。
+
+自 Chat 上游（T27）时的来源映射：文本 = `delta.content` / `message.content`；工具调用 = `tool_calls[]`（按 `index` 区分，交错输出 → 流错误）；
+`finish_reason: length` → `incomplete`，其余 → `completed`；`usage.input_tokens = prompt_tokens`（已含缓存）、
+`input_tokens_details.cached_tokens = prompt_tokens_details.cached_tokens`、`output_tokens = completion_tokens`；
+流式在收到 `[DONE]` 时输出 `response.completed`（用量取之前的 usage chunk；§6.2 保证合成请求带 `include_usage`）。
 
 ### 8.4 必测用例
 

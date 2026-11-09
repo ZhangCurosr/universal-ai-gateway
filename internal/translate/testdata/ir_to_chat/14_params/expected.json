@@ -1,0 +1,38 @@
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Go"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get weather",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "tool_choice": "required",
+  "max_tokens": 256,
+  "temperature": 0.2,
+  "top_p": 0.9,
+  "stop": [
+    "END"
+  ],
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  },
+  "user": "u-42"
+}

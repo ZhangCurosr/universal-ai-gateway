@@ -1,0 +1,34 @@
+{
+  "max_tokens": 100,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Compare",
+          "type": "text"
+        },
+        {
+          "data": "iVBORw==",
+          "media_type": "image/png",
+          "type": "image",
+          "url": ""
+        },
+        {
+          "media_type": "",
+          "type": "image",
+          "url": "https://example.com/cat.jpg"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": null,
+  "top_p": null,
+  "user": ""
+}

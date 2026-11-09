@@ -1,0 +1,72 @@
+{
+  "max_tokens": 100,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Weather in Paris?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "arguments": {
+            "city": "Paris"
+          },
+          "id": "toolu_1",
+          "name": "get_weather",
+          "type": "tool_call"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "content": [
+            {
+              "text": "timeout",
+              "type": "text"
+            }
+          ],
+          "is_error": true,
+          "tool_call_id": "toolu_1",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": {
+    "Mode": "auto",
+    "Name": ""
+  },
+  "tools": [
+    {
+      "Name": "get_weather",
+      "Description": "Get weather",
+      "InputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string"
+          }
+        }
+      },
+      "CacheControl": {
+        "Type": "ephemeral",
+        "TTL": ""
+      }
+    }
+  ],
+  "top_p": null,
+  "user": ""
+}

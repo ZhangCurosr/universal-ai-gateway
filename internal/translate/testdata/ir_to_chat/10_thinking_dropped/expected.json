@@ -1,0 +1,21 @@
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {
+      "role": "user",
+      "content": "2+2?"
+    },
+    {
+      "role": "assistant",
+      "content": "4"
+    },
+    {
+      "role": "user",
+      "content": "3+3?"
+    },
+    {
+      "role": "user",
+      "content": "Hello?"
+    }
+  ]
+}

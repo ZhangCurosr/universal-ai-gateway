@@ -1,0 +1,9 @@
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Hi"
+    }
+  ]
+}

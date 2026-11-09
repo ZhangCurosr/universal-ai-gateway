@@ -1,0 +1,88 @@
+{
+  "max_tokens": 100,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Paris and Rome?",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "parts": [
+        {
+          "text": "Checking both.",
+          "type": "text"
+        },
+        {
+          "arguments": {
+            "city": "Paris"
+          },
+          "id": "toolu_a",
+          "name": "get_weather",
+          "type": "tool_call"
+        },
+        {
+          "arguments": {
+            "city": "Rome"
+          },
+          "id": "toolu_b",
+          "name": "get_weather",
+          "type": "tool_call"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "parts": [
+        {
+          "content": [
+            {
+              "text": "18C",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "tool_call_id": "toolu_a",
+          "type": "tool_result"
+        },
+        {
+          "content": [
+            {
+              "text": "21C",
+              "type": "text"
+            }
+          ],
+          "is_error": false,
+          "tool_call_id": "toolu_b",
+          "type": "tool_result"
+        },
+        {
+          "text": "Thanks",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": [
+    {
+      "Name": "get_weather",
+      "Description": "",
+      "InputSchema": {
+        "type": "object"
+      },
+      "CacheControl": null
+    }
+  ],
+  "top_p": null,
+  "user": ""
+}

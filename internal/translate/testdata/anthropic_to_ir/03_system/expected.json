@@ -1,0 +1,36 @@
+{
+  "max_tokens": 100,
+  "messages": [
+    {
+      "parts": [
+        {
+          "text": "Hi",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "claude-x",
+  "stop_sequences": null,
+  "stream": false,
+  "system": [
+    {
+      "text": "You are terse.",
+      "type": "text"
+    },
+    {
+      "cache_control": {
+        "Type": "ephemeral",
+        "TTL": "1h"
+      },
+      "text": "Long context...",
+      "type": "text"
+    }
+  ],
+  "temperature": null,
+  "tool_choice": null,
+  "tools": null,
+  "top_p": null,
+  "user": ""
+}

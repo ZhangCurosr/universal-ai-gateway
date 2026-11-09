@@ -1,0 +1,1 @@
+{"model":"claude-x","max_tokens":2000,"thinking":{"type":"enabled","budget_tokens":1024},"messages":[{"role":"user","content":"2+2?"},{"role":"assistant","content":[{"type":"thinking","thinking":"simple sum","signature":"sig-1"},{"type":"redacted_thinking","data":"enc"},{"type":"text","text":"4"}]},{"role":"user","content":"3+3?"}]}

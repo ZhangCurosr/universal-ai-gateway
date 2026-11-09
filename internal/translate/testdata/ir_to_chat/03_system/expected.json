@@ -1,0 +1,17 @@
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are terse."
+    },
+    {
+      "role": "system",
+      "content": "Long context..."
+    },
+    {
+      "role": "user",
+      "content": "Hi"
+    }
+  ]
+}

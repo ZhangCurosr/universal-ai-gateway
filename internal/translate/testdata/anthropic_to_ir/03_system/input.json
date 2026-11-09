@@ -1,0 +1,1 @@
+{"model":"claude-x","max_tokens":100,"system":[{"type":"text","text":"You are terse."},{"type":"text","text":"Long context...","cache_control":{"type":"ephemeral","ttl":"1h"}}],"messages":[{"role":"user","content":"Hi"}]}

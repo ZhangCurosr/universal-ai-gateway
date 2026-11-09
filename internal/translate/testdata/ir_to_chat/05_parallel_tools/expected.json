@@ -1,0 +1,68 @@
+{
+  "model": "deepseek-chat",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Paris and Rome?"
+    },
+    {
+      "role": "assistant",
+      "content": "Checking both.",
+      "tool_calls": [
+        {
+          "id": "toolu_a",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Paris\"}"
+          }
+        },
+        {
+          "id": "toolu_b",
+          "type": "function",
+          "function": {
+            "name": "get_weather",
+            "arguments": "{\"city\":\"Rome\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "18C",
+      "tool_call_id": "toolu_a"
+    },
+    {
+      "role": "tool",
+      "content": "21C",
+      "tool_call_id": "toolu_b"
+    },
+    {
+      "role": "user",
+      "content": "Thanks"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "get_weather",
+        "description": "Get weather",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "tool_choice": {
+    "function": {
+      "name": "get_weather"
+    },
+    "type": "function"
+  }
+}
