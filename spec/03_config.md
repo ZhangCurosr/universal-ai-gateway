@@ -51,7 +51,7 @@ audit:
   queue_capacity: 8192
   batch_size: 256
   flush_interval: 250ms
-  retention_days: 30
+  retention_days: 30               # 保留天数，必须 >= 1（CFG-14）
 
 pools:
   - name: anthropic-main
@@ -148,6 +148,7 @@ models:                           # 客户端可见的「服务」：大模型�
 | CFG-11 | `trusted_proxies` 每一项都必须是 CIDR（`netip.ParsePrefix` 可解析）；单个 IP 要写成 `/32` 或 `/128` |
 | CFG-13 | `mcp.max_result_bytes > 0` |
 | CFG-12 | `max_in_flight_requests > 0`、`preauth_ip_rpm >= 0`、`max_buffered_body_bytes >= max_request_body_bytes`、`max_stream_body_bytes > 0` |
+| CFG-14 | `audit.retention_days >= 1`，否则网关拒绝启动（配置校验 fail-fast） |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 
