@@ -1,0 +1,45 @@
+{
+  "model": "claude-sonnet-4-5",
+  "stream": true,
+  "prompt_cache_key": "<redacted>",
+  "include": [
+    "reasoning.encrypted_content"
+  ],
+  "input": [
+    {
+      "type": "message",
+      "role": "developer",
+      "content": "<redacted>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<redacted>"
+    },
+    {
+      "type": "reasoning",
+      "encrypted_content": "<redacted>"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_01X9TEST1",
+      "name": "exec_command",
+      "arguments": "{}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_01X9TEST1",
+      "output": "<redacted>"
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": "<redacted>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<redacted>"
+    }
+  ]
+}

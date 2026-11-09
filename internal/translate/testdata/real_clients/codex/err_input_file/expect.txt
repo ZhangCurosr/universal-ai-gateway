@@ -1,0 +1,1 @@
+error: image_url required (file_id is not supported when translating to another protocol)

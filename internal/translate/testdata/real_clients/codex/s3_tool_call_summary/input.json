@@ -1,0 +1,45 @@
+{
+  "model": "claude-sonnet-4-5",
+  "stream": true,
+  "tools": [
+    {
+      "type": "function",
+      "name": "exec_command",
+      "description": "<redacted>",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "cmd": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "cmd"
+        ]
+      }
+    }
+  ],
+  "input": [
+    {
+      "type": "message",
+      "role": "developer",
+      "content": "<redacted>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<redacted>"
+    },
+    {
+      "type": "function_call",
+      "call_id": "call_01X9TEST1",
+      "name": "exec_command",
+      "arguments": "{\"cmd\":\"<redacted>\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_01X9TEST1",
+      "output": "<redacted>"
+    }
+  ]
+}

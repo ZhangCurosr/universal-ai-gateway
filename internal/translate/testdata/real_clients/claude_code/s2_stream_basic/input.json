@@ -1,0 +1,44 @@
+{
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 64000,
+  "system": [
+    {
+      "type": "text",
+      "text": "<redacted>",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "<redacted>",
+          "cache_control": {
+            "type": "ephemeral"
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "user_id": "<redacted>"
+  },
+  "thinking": {
+    "type": "enabled",
+    "budget_tokens": 1024,
+    "display": "omitted"
+  },
+  "context_management": {
+    "edits": [
+      {
+        "type": "clear_thinking_20251015",
+        "keep": "all"
+      }
+    ]
+  },
+  "stream": true
+}

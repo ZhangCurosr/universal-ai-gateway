@@ -1,0 +1,1 @@
+error: images in tool results are not supported by this upstream

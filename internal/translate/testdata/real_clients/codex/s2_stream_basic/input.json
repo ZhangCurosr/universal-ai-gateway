@@ -1,0 +1,21 @@
+{
+  "model": "claude-sonnet-4-5",
+  "stream": true,
+  "input": [
+    {
+      "type": "message",
+      "role": "developer",
+      "content": "<redacted>"
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": "<redacted>"
+    }
+  ],
+  "reasoning": {
+    "effort": "medium"
+  },
+  "store": false,
+  "parallel_tool_calls": true
+}

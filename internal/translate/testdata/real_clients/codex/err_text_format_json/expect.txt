@@ -1,0 +1,1 @@
+error: text.format "json_schema" is not supported for model
