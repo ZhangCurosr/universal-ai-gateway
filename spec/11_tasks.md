@@ -78,7 +78,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 ## T02 SQLite 仓储：上游 Key、计费事件、审计 — 状态：`DONE`
 
 - **前置**：T01
-- **必读规格**：04 §3–§4（STO-06 ~ STO-15）、05 §2.3
+- **必读规格**：04 §3–§4（STO-06 ~ STO-16）、05 §2.3
 - **涉及文件**：`internal/store/sqlite/keys.go`、`internal/store/sqlite/usage.go`、`internal/store/sqlite/audit.go`、`internal/store/sqlite/keys_test.go`、`internal/store/sqlite/usage_test.go`
 - **要做的事**：
   1. `InsertUpstreamKey` 严格按 STO-06 的四步在**一个事务**中完成；`seal` 返回错误时回滚并返回该错误。

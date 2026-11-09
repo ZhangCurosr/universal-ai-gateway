@@ -10,7 +10,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
 
-// InsertUsageEvents 实现 STO-10：单事务批量插入，重复 request_id 静默跳过（幂等）。
+// InsertUsageEvents 实现 STO-10、STO-16：单事务批量插入，重复 request_id 静默跳过（幂等）；usage 列按键排序序列化。
 //
 // 用 ON CONFLICT(request_id) DO NOTHING 而不是 INSERT OR IGNORE：后者还会静默吞掉
 // NOT NULL / CHECK 违例，导致计费事件被丢弃却不报错（AGENTS §3 #4）。

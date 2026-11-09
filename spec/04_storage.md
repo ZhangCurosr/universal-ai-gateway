@@ -166,7 +166,7 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 | STO-10 | `InsertUsageEvents` | 单个事务批量插入；使用 `INSERT OR IGNORE`，重复 `request_id` 静默跳过（幂等）；空切片直接返回 nil |
 | STO-11 | `SumCostByClient` | `SELECT client_id, SUM(cost_nano_usd) ... GROUP BY client_id` |
 | STO-12 | `QueryUsage` | 按 `UsageQuery{ClientID(0=全部), From, To}` 过滤 `created_at ∈ [From, To)`，按 `client_id, model` 分组（按此顺序排序）汇总请求数、成本与**各单位用量之和**（`Usage` map；可用 SQLite 的 `json_each(usage)` 在 SQL 中汇总，也可逐行解析后在 Go 中累加）；没有用量的组 `Usage` 为空 map |
-| STO-15 | `InsertUsageEvents` | `usage` 列写 `json.Marshal(ev.Usage)`（Go 的 map 序列化按键排序，满足「键按字母序」）；`ev.Usage` 为 nil 时写 `{}` |
+| STO-16 | `InsertUsageEvents` | `usage` 列写 `json.Marshal(ev.Usage)`（Go 的 map 序列化按键排序，满足「键按字母序」）；`ev.Usage` 为 nil 时写 `{}` |
 | STO-13 | `InsertAuditRecords` | 单个事务批量插入；空切片返回 nil |
 | STO-14 | `DeleteAuditBefore` | 删除 `created_at < before` 的行，返回删除行数 |
 | STO-15 | `GetSetting` / `PutSetting` | `PutSetting` 为 upsert；`GetSetting` 不存在时返回 `("", false, nil)` |

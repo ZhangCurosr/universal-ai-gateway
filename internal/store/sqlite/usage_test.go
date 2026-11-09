@@ -131,3 +131,28 @@ func TestAuditRecordsEmptyAndNoneDeleted(t *testing.T) {
 		t.Fatalf("DeleteAuditBefore(empty) = %d, %v; want 0", n, err)
 	}
 }
+
+// STO-16：usage 列按键排序序列化；Usage 为 nil 时写 {}。
+func TestUsageColumnSerialization(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	withUsage := ev("r-sorted", 1, "m", 1, fixedNow)
+	withUsage.Usage = map[string]int64{"output_tokens": 5, "cache_read_tokens": 2, "input_tokens": 10}
+	noUsage := ev("r-nil", 1, "m", 0, fixedNow)
+	noUsage.Usage = nil
+	if err := db.InsertUsageEvents(ctx, []store.UsageEvent{withUsage, noUsage}); err != nil {
+		t.Fatal(err)
+	}
+	for reqID, want := range map[string]string{
+		"r-sorted": `{"cache_read_tokens":2,"input_tokens":10,"output_tokens":5}`,
+		"r-nil":    `{}`,
+	} {
+		var got string
+		if err := db.db.QueryRowContext(ctx, `SELECT usage FROM usage_events WHERE request_id = ?`, reqID).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("usage for %s = %s, want %s", reqID, got, want)
+		}
+	}
+}

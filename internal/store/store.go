@@ -128,7 +128,7 @@ type AuditRecord struct {
 	CreatedAt        time.Time
 }
 
-// Store 是全部持久化操作。方法语义见 spec/04 §4.1（STO-01 ~ STO-15）。
+// Store 是全部持久化操作。方法语义见 spec/04 §4.1（STO-01 ~ STO-16）。
 type Store interface {
 	CreateClient(ctx context.Context, c *Client) (int64, error)
 	GetClient(ctx context.Context, id int64) (*Client, error)
