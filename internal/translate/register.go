@@ -11,7 +11,7 @@ import (
 
 // Register 注册本包实现的全部跨协议转换器（spec/10 §0），由 cmd/gateway/adapters.go 调用。
 func Register(r *protocol.Registry) error {
-	for _, t := range []protocol.Translator{ChatToAnthropic{}, ResponsesToAnthropic{}} {
+	for _, t := range []protocol.Translator{ChatToAnthropic{}, ResponsesToAnthropic{}, AnthropicToChat{}} {
 		if err := r.RegisterTranslator(t); err != nil {
 			return fmt.Errorf("register translators: %w", err)
 		}
@@ -121,6 +121,59 @@ func (t ChatToAnthropic) Response(env *protocol.Envelope, resp *protocol.Respons
 			Kind:   protocol.ResponseEvents,
 			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
 			Events: newChatStream(resp.Events, env.Model, now, newID, includeUsage(env.Body)),
+			Meter:  resp.Meter,
+		}, nil
+	default:
+		return resp, nil // 字节流没有协议结构，原样返回
+	}
+}
+
+// AnthropicToChat 让 Anthropic 客户端（Claude Code 等）使用只提供 OpenAI Chat 的上游（spec/10 §6，T23 + T24）。
+// 无状态、并发安全；零值可用。
+type AnthropicToChat struct {
+	// NewID 仅供测试注入；为 nil 时使用 crypto/rand 生成的 ID。
+	NewID func(prefix string) string
+}
+
+func (AnthropicToChat) From() protocol.Protocol { return protoAnthropic }
+func (AnthropicToChat) To() protocol.Protocol   { return protoOpenAIChat }
+
+// Request：Anthropic 请求 → IR（§6.1）→ Chat 请求（§6.2）。
+func (t AnthropicToChat) Request(env *protocol.Envelope, upstreamModel string) (*protocol.Call, error) {
+	if env.Op != opAnthropicCreate {
+		return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("operation %s is not supported for model %q", env.Op, env.Model))
+	}
+	req, err := lowerAnthropic(env.Body)
+	if err != nil {
+		return nil, err
+	}
+	req.Model = upstreamModel
+	body, err := synthesizeOpenAIChat(req)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.Call{Op: opChatCompletions, Model: upstreamModel, Stream: req.Stream, Body: body, Header: env.Header}, nil
+}
+
+// Response：Chat 响应/流 → Anthropic 响应/流（T24，§6.3）。model 写客户端请求的模型名。
+func (t AnthropicToChat) Response(env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
+	newID := idsOr(t.NewID)
+	switch resp.Kind {
+	case protocol.ResponseBuffered:
+		body, err := chatToAnthropicBody(resp.Body, env.Model, newID)
+		if err != nil {
+			return nil, err
+		}
+		return &protocol.Response{
+			Kind: protocol.ResponseBuffered, Status: resp.Status,
+			Header: http.Header{"Content-Type": {"application/json"}},
+			Body:   body, Meter: resp.Meter,
+		}, nil
+	case protocol.ResponseEvents:
+		return &protocol.Response{
+			Kind:   protocol.ResponseEvents,
+			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
+			Events: newAnthropicStream(resp.Events, env.Model, newID),
 			Meter:  resp.Meter,
 		}, nil
 	default:

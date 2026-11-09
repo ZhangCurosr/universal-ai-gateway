@@ -331,6 +331,9 @@ func TestRegister(t *testing.T) {
 			t.Errorf("translator %s -> anthropic not registered", from)
 		}
 	}
+	if _, ok := r.Translator(protoAnthropic, protoOpenAIChat); !ok {
+		t.Error("translator anthropic -> openai_chat not registered")
+	}
 	if err := Register(r); err == nil {
 		t.Error("second Register() succeeded")
 	}

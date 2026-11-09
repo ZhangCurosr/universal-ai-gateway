@@ -1,0 +1,76 @@
+event: message_start
+data: {
+data:   "message": {
+data:     "id": "msg_up1",
+data:     "type": "message",
+data:     "role": "assistant",
+data:     "model": "deepseek-for-claude",
+data:     "content": [],
+data:     "stop_reason": null,
+data:     "stop_sequence": null,
+data:     "usage": {
+data:       "input_tokens": 0,
+data:       "cache_creation_input_tokens": 0,
+data:       "cache_read_input_tokens": 0,
+data:       "output_tokens": 0
+data:     }
+data:   },
+data:   "type": "message_start"
+data: }
+
+event: content_block_start
+data: {
+data:   "content_block": {
+data:     "text": "",
+data:     "type": "text"
+data:   },
+data:   "index": 0,
+data:   "type": "content_block_start"
+data: }
+
+event: content_block_delta
+data: {
+data:   "delta": {
+data:     "text": "Hel",
+data:     "type": "text_delta"
+data:   },
+data:   "index": 0,
+data:   "type": "content_block_delta"
+data: }
+
+event: content_block_delta
+data: {
+data:   "delta": {
+data:     "text": "lo!",
+data:     "type": "text_delta"
+data:   },
+data:   "index": 0,
+data:   "type": "content_block_delta"
+data: }
+
+event: content_block_stop
+data: {
+data:   "index": 0,
+data:   "type": "content_block_stop"
+data: }
+
+event: message_delta
+data: {
+data:   "delta": {
+data:     "stop_reason": "end_turn",
+data:     "stop_sequence": null
+data:   },
+data:   "type": "message_delta",
+data:   "usage": {
+data:     "input_tokens": 6,
+data:     "cache_creation_input_tokens": 0,
+data:     "cache_read_input_tokens": 4,
+data:     "output_tokens": 2
+data:   }
+data: }
+
+event: message_stop
+data: {
+data:   "type": "message_stop"
+data: }
+

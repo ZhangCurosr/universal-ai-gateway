@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-up4","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"Let me"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-up4","choices":[{"index":0,"delta":{"reasoning_content":" think"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-up4","choices":[{"index":0,"delta":{"content":"4"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-up4","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}
+
+data: [DONE]
+

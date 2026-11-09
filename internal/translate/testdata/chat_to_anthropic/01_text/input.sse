@@ -1,0 +1,12 @@
+data: {"id":"chatcmpl-up1","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-up1","choices":[{"index":0,"delta":{"content":"Hel"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-up1","choices":[{"index":0,"delta":{"content":"lo!"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-up1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-up1","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":4}}}
+
+data: [DONE]
+

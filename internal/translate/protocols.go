@@ -14,5 +14,5 @@ const (
 const (
 	opChatCompletions = "chat.completions" // openai_chat
 	opResponsesCreate = "responses.create" // openai_responses
-	opAnthropicCreate = "messages"         // anthropic
+	opAnthropicCreate = "messages"         // anthropic（入站与出站操作名相同）
 )
