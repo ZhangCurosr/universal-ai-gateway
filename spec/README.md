@@ -22,6 +22,7 @@
 | 12 | [12_deployment.md](./12_deployment.md) | 局域网 / 域名对外部署、反向代理示例、调参、开机自启 | 部署者；做 T14、T15 的人 |
 | 13 | [13_core.md](./13_core.md) | 内核：协议无关的处理流程、透传/转译选择、三种响应形态的转发、结算、超时、**冻结接口与变更流程** | 改 `core` 的人；任何想改契约的人 |
 | 14 | [14_ai_access.md](./14_ai_access.md) | 供 AI 调用：工具契约、MCP 服务端、命令行、Claude Code / Codex CLI 等客户端的配置 | 改 `mcp`、实现工具的人；部署者 |
+| 15 | [15_metrics.md](./15_metrics.md) | （M3）Prometheus 格式指标端点（`GET /admin/metrics`）、指标清单与输出规则 | 改 `metrics`、`admin`、部署监控的人 |
 
 ## 规格写法约定
 
