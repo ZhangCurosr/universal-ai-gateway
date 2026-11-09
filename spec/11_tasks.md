@@ -304,3 +304,19 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T25 | OpenAI Responses 请求 → IR（10 §8.1、§8.2），含 RX-01 ~ RX-05 的拒绝规则 — `DONE` | T21 | 10 §1、§8 |
 | T26 | Anthropic 响应/流 → Responses 响应/流（10 §8.3）；注册 `openai_responses → anthropic` 转换器 — `DONE`（`translate.Register` 与 `adapters.go` 注册已在本卡完成） | T25 | 10 §8.3、§8.4 |
 | T27 | Chat 响应/流 → Responses 响应/流（10 §8.3）；注册 `openai_responses → openai_chat` 转换器 — `DONE` | T25、T23 | 10 §8.3、§8.4 |
+
+---
+
+## M2 之后的任务（交接）
+
+> 详细说明见 [`docs/handoff/`](../docs/handoff/README.md)，开工前先读该目录的 README（审批门、分支与交付要求）。
+> 标「需审批」的卡分两阶段：先提交 spec 草案给用户批准，批准后再写代码。
+
+| 卡 | 内容 | 前置 | 需审批 | 状态 |
+|:--|:--|:--|:--|:--|
+| T40 | 竞态检测与持续集成（[说明](../docs/handoff/T40_race_and_ci.md)） | — | 否 | `TODO` |
+| T41 | 真实客户端兼容性实测与回归用例（[说明](../docs/handoff/T41_real_client_compat.md)） | — | 否 | `TODO` |
+| T42 | 转译层未知字段策略（[说明](../docs/handoff/T42_field_tolerance.md)） | T41 | 是 | `TODO` |
+| T43 | 响应转换经过 IR（流式 IR）（[说明](../docs/handoff/T43_stream_ir.md)） | 建议 T42 之后 | 是 | `TODO` |
+| T44 | SPEC-GAP 决策与落地（[说明](../docs/handoff/T44_spec_gap_decisions.md)） | — | 是（用户填决策表） | `TODO` |
+| T45 | Prometheus 指标端点，M3 第一项（[说明](../docs/handoff/T45_metrics.md)） | T40 | 是 | `TODO` |
