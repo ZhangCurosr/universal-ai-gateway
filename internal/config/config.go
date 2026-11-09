@@ -5,14 +5,14 @@ import "time"
 
 // Config 是配置文件的根结构。
 type Config struct {
-	Server ServerConfig  `yaml:"server"`
-	Limits LimitsConfig  `yaml:"limits"`
-	Ledger LedgerConfig  `yaml:"ledger"`
+	Server      ServerConfig      `yaml:"server"`
+	Limits      LimitsConfig      `yaml:"limits"`
+	Ledger      LedgerConfig      `yaml:"ledger"`
 	Audit       AuditConfig       `yaml:"audit"`
 	Translation TranslationConfig `yaml:"translation"`
 	MCP         MCPConfig         `yaml:"mcp"`
-	Pools  []PoolConfig  `yaml:"pools"`
-	Models []ModelConfig `yaml:"models"`
+	Pools       []PoolConfig      `yaml:"pools"`
+	Models      []ModelConfig     `yaml:"models"`
 }
 
 type ServerConfig struct {

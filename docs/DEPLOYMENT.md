@@ -146,6 +146,8 @@ server:
 | Codex CLI | 在 `~/.codex/config.toml` 中定义 provider：`base_url = "https://gw.example.com/v1"`、`env_key = "UAIG_TOKEN"`、`wire_api = "responses"` |
 | OpenAI SDK / Cursor 等 | `base_url = https://gw.example.com/v1`，API Key 填客户端 Token |
 
+> **提示（智能体客户端字段容忍）**：接入 Claude Code、Codex CLI 等智能体客户端进行跨协议转译时（例如客户端使用 Anthropic/Responses 协议，目标上游为 OpenAI Chat 等），智能体客户端常会随版本升级附带实验性或环境专用的未定义字段。建议在 `gateway.yaml` 中配置 `translation.unknown_fields: drop`（spec/10 §1 第 5 条），容忍并丢弃未知字段，避免请求被默认策略严格 400 阻断。
+
 ### 6.2 作为 MCP 工具
 
 远程方式（推荐，客户端机器上不需要网关二进制）：

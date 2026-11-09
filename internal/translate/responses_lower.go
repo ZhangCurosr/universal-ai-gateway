@@ -9,9 +9,8 @@ import (
 
 // responsesTopLevel 是 Responses 请求中本转换器处理的顶层字段（spec/10 §8.1、§8.2）。
 // 值为 true 的字段被转换或校验；值为 false 的字段按 §8.2 丢弃。
-//
-// SPEC-GAP(T25): §8.2 没有说明未列出字段的处理方式，与 T20 一致按最保守处理：未列出的字段返回 400
-// 并写出字段名。text 只接受 format（按 §8.2 校验）与 verbosity（丢弃：目标上游没有等价参数）。
+// 未知字段按 spec/10 §1 第 5、6 条处理：reject 模式返回 400，drop 模式丢弃并记单次告警日志。
+// text 只接受 format（按 §8.2 校验）与 verbosity（丢弃：目标上游没有等价参数）。
 var responsesTopLevel = map[string]bool{
 	"model": true, "instructions": true, "input": true, "tools": true, "tool_choice": true,
 	"max_output_tokens": true, "temperature": true, "top_p": true, "stream": true,
@@ -19,12 +18,23 @@ var responsesTopLevel = map[string]bool{
 	"user": true, "safety_identifier": true,
 	// §8.2：丢弃
 	"reasoning": false, "parallel_tool_calls": false, "truncation": false, "metadata": false,
+	"client_metadata":  false, // T42: Codex CLI 客户端元数据，安全丢弃
 	"prompt_cache_key": false, "include": false, "service_tier": false,
+}
+
+var responsesItemKeys = map[string]bool{
+	"id": true, "type": true, "role": true, "content": true, "call_id": true,
+	"name": true, "arguments": true, "output": true, "encrypted_content": true,
+	"status": true, "summary": true,
 }
 
 // lowerOpenAIResponses 把 OpenAI Responses 创建请求解析为 IR（spec/10 §8.1、§8.2，T25）。
 // 有状态特性（RX-01、RX-03）与无法表达的特性返回 apperr.CodeInvalidRequest。
-func lowerOpenAIResponses(body []byte) (*ir.Request, error) {
+func lowerOpenAIResponses(body []byte, opts Options, directions ...string) (*ir.Request, error) {
+	from, to := "openai_responses", "anthropic"
+	if len(directions) >= 2 {
+		from, to = directions[0], directions[1]
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, invalid("request body must be a JSON object")
@@ -38,7 +48,10 @@ func lowerOpenAIResponses(body []byte) (*ir.Request, error) {
 	}
 	for k, v := range top {
 		if _, known := responsesTopLevel[k]; !known && present(v) {
-			return nil, invalid(fmt.Sprintf("%s is not supported for model %q", k, req.Model))
+			if !opts.DropUnknownFields {
+				return nil, invalid(fmt.Sprintf("%s is not supported for model %q", k, req.Model))
+			}
+			logDroppedField(opts, from, to, k)
 		}
 	}
 
@@ -73,10 +86,10 @@ func lowerOpenAIResponses(body []byte) (*ir.Request, error) {
 			req.System = append(req.System, ir.TextPart{Text: s})
 		}
 	}
-	if err := lowerResponsesInput(top["input"], req); err != nil {
+	if err := lowerResponsesInput(top["input"], req, opts, from, to); err != nil {
 		return nil, err
 	}
-	if err := lowerResponsesTools(top["tools"], req); err != nil {
+	if err := lowerResponsesTools(top["tools"], top["tool_choice"], req); err != nil {
 		return nil, err
 	}
 	if err := lowerResponsesToolChoice(top["tool_choice"], req); err != nil {
@@ -155,6 +168,7 @@ func checkResponsesText(raw json.RawMessage, model string) error {
 
 // responsesItem 是 input[] 中一项本转换器认识的字段。
 type responsesItem struct {
+	ID               string          `json:"id"`
 	Type             string          `json:"type"`
 	Role             string          `json:"role"`
 	Content          json.RawMessage `json:"content"`
@@ -163,9 +177,11 @@ type responsesItem struct {
 	Arguments        string          `json:"arguments"`
 	Output           json.RawMessage `json:"output"`
 	EncryptedContent string          `json:"encrypted_content"`
+	Status           string          `json:"status"`
+	Summary          json.RawMessage `json:"summary"`
 }
 
-func lowerResponsesInput(raw json.RawMessage, req *ir.Request) error {
+func lowerResponsesInput(raw json.RawMessage, req *ir.Request, opts Options, from, to string) error {
 	if !present(raw) {
 		return invalid("input: required")
 	}
@@ -185,6 +201,18 @@ func lowerResponsesInput(raw json.RawMessage, req *ir.Request) error {
 	sawConversation := false
 	for i, rawItem := range items {
 		path := fmt.Sprintf("input[%d]", i)
+		var rawKeys map[string]json.RawMessage
+		if err := json.Unmarshal(rawItem, &rawKeys); err != nil {
+			return invalid(path + " must be an object")
+		}
+		for k, v := range rawKeys {
+			if !responsesItemKeys[k] && present(v) {
+				if !opts.DropUnknownFields {
+					return invalid(fmt.Sprintf("%s.%s is not supported when translating to another protocol", path, k))
+				}
+				logDroppedField(opts, from, to, "input[]."+k)
+			}
+		}
 		var it responsesItem
 		if err := json.Unmarshal(rawItem, &it); err != nil {
 			return invalid(path + " must be an object")
@@ -348,8 +376,8 @@ func lowerFunctionOutput(raw json.RawMessage, field string) ([]ir.Part, error) {
 	return lowerResponsesContent(raw, field, true)
 }
 
-func lowerResponsesTools(raw json.RawMessage, req *ir.Request) error {
-	if !present(raw) {
+func lowerResponsesTools(rawTools, rawToolChoice json.RawMessage, req *ir.Request) error {
+	if !present(rawTools) {
 		return nil
 	}
 	var tools []struct {
@@ -359,11 +387,15 @@ func lowerResponsesTools(raw json.RawMessage, req *ir.Request) error {
 		Parameters  json.RawMessage `json:"parameters"`
 		// strict：§8.2 丢弃
 	}
-	if err := json.Unmarshal(raw, &tools); err != nil {
+	if err := json.Unmarshal(rawTools, &tools); err != nil {
 		return invalid("tools must be an array")
 	}
 	for i, t := range tools {
 		if t.Type != "function" {
+			// T42: 非 function 内置工具（namespace, web_search）未在 tool_choice 中显式指定时过滤忽略
+			if (t.Type == "namespace" || t.Type == "web_search") && !isToolForcedInChoice(rawToolChoice, t.Type, t.Name) {
+				continue
+			}
 			return invalid(fmt.Sprintf("built-in tool %q is not supported for model %q", t.Type, req.Model))
 		}
 		if t.Name == "" {
@@ -376,6 +408,26 @@ func lowerResponsesTools(raw json.RawMessage, req *ir.Request) error {
 		req.Tools = append(req.Tools, tool)
 	}
 	return nil
+}
+
+func isToolForcedInChoice(rawChoice json.RawMessage, toolType, toolName string) bool {
+	if !present(rawChoice) {
+		return false
+	}
+	var obj struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(rawChoice, &obj); err != nil {
+		return false
+	}
+	if obj.Type != "" && obj.Type == toolType {
+		return true
+	}
+	if toolName != "" && obj.Name != "" && obj.Name == toolName {
+		return true
+	}
+	return false
 }
 
 func lowerResponsesToolChoice(raw json.RawMessage, req *ir.Request) error {

@@ -316,7 +316,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 |:--|:--|:--|:--|:--|
 | T40 | 竞态检测与持续集成（[说明](../docs/handoff/T40_race_and_ci.md)） | — | 否 | `TODO` |
 | T41 | 真实客户端兼容性实测与回归用例（[说明](../docs/handoff/T41_real_client_compat.md)） | — | 否 | `TODO` |
-| T42 | 转译层未知字段策略（[说明](../docs/handoff/T42_field_tolerance.md)） | T41 | 是 | `TODO` |
+| T42 | 转译层未知字段策略（[说明](../docs/handoff/T42_field_tolerance.md)） | T41 | 是 | `DONE` |
 | T43 | 响应转换经过 IR（流式 IR）（[说明](../docs/handoff/T43_stream_ir.md)） | 建议 T42 之后 | 是 | `TODO` |
 | T44 | SPEC-GAP 决策与落地（[说明](../docs/handoff/T44_spec_gap_decisions.md)） | — | 是（用户填决策表） | `DONE` |
 | T45 | Prometheus 指标端点，M3 第一项（[说明](../docs/handoff/T45_metrics.md)） | T40 | 是 | `TODO` |

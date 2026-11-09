@@ -10,29 +10,45 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ir"
 )
 
-// anthropicTopLevel 是 Anthropic Messages 请求体中本转换器处理的顶层字段（spec/10 §6.1）：
-// true = 映射或明确丢弃；false = 明确拒绝。未列出的字段一律 400（与 T20/T25 一致）。
+// anthropicTopLevel 是 Anthropic Messages 请求体中本转换器处理的顶层字段（spec/10 §6.1）。
+// 未知字段按 spec/10 §1 第 5、6 条处理：reject 模式返回 400，drop 模式丢弃并记单次告警日志。
 var anthropicTopLevel = map[string]bool{
 	"model": true, "max_tokens": true, "system": true, "messages": true,
 	"tools": true, "tool_choice": true, "stop_sequences": true,
 	"temperature": true, "top_p": true, "stream": true, "metadata": true,
 	"thinking": true, "service_tier": true, "context_management": true, // 丢弃
-	"top_k": false, "mcp_servers": false, "container": false, // 拒绝
+	"top_k": true, // T42: spec/10 §6.1 丢弃
+}
+
+// anthropicRejected 是 spec/10 §6.1 明确不支持的顶层字段（始终 400，不受 unknown_fields 影响）。
+var anthropicRejected = map[string]bool{
+	"mcp_servers": true,
+	"container":   true,
 }
 
 // lowerAnthropic 把 Anthropic Messages 请求体解析为 IR（spec/10 §6.1，T23）。
 // 任何无法表达的特性返回 apperr.CodeInvalidRequest。
 //
-// SPEC-GAP(T23): §6.1 没有规定内容块与工具定义中未列出的键（如 text.citations 以外的提示性字段）
-// 怎么处理；这里只按块的 type 判断是否支持，块内其他键丢弃，避免客户端新增的提示字段让请求整体失败。
-func lowerAnthropic(body []byte) (*ir.Request, error) {
+// 内容块与工具定义中未列出的键（如 text.citations 以外的提示性字段）按 spec/10 §1 第 5 条
+// 始终丢弃，避免客户端新增的提示字段让请求整体失败。
+func lowerAnthropic(body []byte, opts Options, directions ...string) (*ir.Request, error) {
+	from, to := "anthropic", "openai_chat"
+	if len(directions) >= 2 {
+		from, to = directions[0], directions[1]
+	}
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {
 		return nil, invalid("request body must be a JSON object")
 	}
 	for k, v := range top {
-		if ok, known := anthropicTopLevel[k]; (!known || !ok) && present(v) {
+		if anthropicRejected[k] && present(v) {
 			return nil, invalid(k + " is not supported when translating to another protocol")
+		}
+		if !anthropicTopLevel[k] && present(v) {
+			if !opts.DropUnknownFields {
+				return nil, invalid(k + " is not supported when translating to another protocol")
+			}
+			logDroppedField(opts, from, to, k)
 		}
 	}
 
@@ -56,7 +72,7 @@ func lowerAnthropic(body []byte) (*ir.Request, error) {
 	if err := lowerAnthropicSystem(top["system"], req); err != nil {
 		return nil, err
 	}
-	if err := lowerAnthropicMessages(top["messages"], req); err != nil {
+	if err := lowerAnthropicMessages(top["messages"], req, opts, from, to); err != nil {
 		return nil, err
 	}
 	if err := lowerAnthropicTools(top["tools"], req); err != nil {
@@ -154,7 +170,7 @@ func (b anthropicInBlock) cache() *ir.CacheControl {
 	return &ir.CacheControl{Type: b.CacheControl.Type, TTL: b.CacheControl.TTL}
 }
 
-func lowerAnthropicMessages(raw json.RawMessage, req *ir.Request) error {
+func lowerAnthropicMessages(raw json.RawMessage, req *ir.Request, opts Options, from, to string) error {
 	if !present(raw) {
 		return invalid("messages: required")
 	}
@@ -173,7 +189,10 @@ func lowerAnthropicMessages(raw json.RawMessage, req *ir.Request) error {
 		}
 		for k, v := range keys {
 			if k != "role" && k != "content" && present(v) {
-				return invalid(path + "." + k + " is not supported when translating to another protocol")
+				if !opts.DropUnknownFields {
+					return invalid(path + "." + k + " is not supported when translating to another protocol")
+				}
+				logDroppedField(opts, from, to, "messages[]."+k)
 			}
 		}
 		var role string
