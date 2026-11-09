@@ -48,17 +48,19 @@ func (u chatInUsage) toAnthropic() anthropicOutUsage {
 
 // stopReasonFor 实现 §6.3 的 finish_reason 映射。
 //
-// SPEC-GAP(T24): §6.3 未列出的 finish_reason（以及缺失值）按 end_turn 处理。
-func stopReasonFor(finish string) string {
+// spec/10 §6.3：未列出的非标准中断原因（如 insufficient_system_resource）及缺失值视为上游故障（非流式 502，流式流错误）。
+func stopReasonFor(finish string) (string, error) {
 	switch finish {
+	case "stop":
+		return "end_turn", nil
 	case "length":
-		return "max_tokens"
+		return "max_tokens", nil
 	case "tool_calls", "function_call":
-		return "tool_use"
+		return "tool_use", nil
 	case "content_filter":
-		return "refusal"
+		return "refusal", nil
 	default:
-		return "end_turn"
+		return "", upstreamInvalid(fmt.Sprintf("upstream returned unrecognised finish_reason %q", finish))
 	}
 }
 
@@ -136,7 +138,10 @@ func chatToAnthropicBody(body []byte, model string, newID idGen) ([]byte, error)
 		return nil, upstreamInvalid(fmt.Sprintf("upstream returned %d choices, want exactly 1", len(in.Choices)))
 	}
 	c := in.Choices[0]
-	stop := stopReasonFor(c.FinishReason)
+	stop, err := stopReasonFor(c.FinishReason)
+	if err != nil {
+		return nil, err
+	}
 	out := anthropicOutMessage{ID: anthropicMsgID(in.ID, newID), Type: "message", Role: "assistant", Model: model,
 		Content: []anthropicOutBlock{}, StopReason: &stop, Usage: in.Usage.toAnthropic()}
 	if m := c.Message.Content; m != nil && *m != "" {
@@ -223,7 +228,10 @@ func (s *anthropicStream) handle(ev sse.Event) error {
 			return streamFail(protocol.OutcomeServerError, errors.New("upstream sent [DONE] without finish_reason"))
 		}
 		s.start("")
-		stop := stopReasonFor(s.stop)
+		stop, err := stopReasonFor(s.stop)
+		if err != nil {
+			return streamFail(protocol.OutcomeServerError, err)
+		}
 		s.emit("message_delta", map[string]any{
 			"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil},
 			"usage": s.usage.toAnthropic(),
@@ -291,6 +299,9 @@ func (s *anthropicStream) handle(ev sse.Event) error {
 		}
 		if c.FinishReason != nil && *c.FinishReason != "" {
 			s.closeBlock()
+			if _, err := stopReasonFor(*c.FinishReason); err != nil {
+				return streamFail(protocol.OutcomeServerError, err)
+			}
 			s.stop = *c.FinishReason
 		}
 	}
