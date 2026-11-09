@@ -248,7 +248,7 @@ func TestAnthropicToChatRequest(t *testing.T) {
 	}
 
 	for name, env := range map[string]*protocol.Envelope{
-		"top_k":        {Op: opAnthropicCreate, Model: "m", Body: []byte(`{"model":"m","max_tokens":1,"top_k":5,"messages":[{"role":"user","content":"hi"}]}`)},
+		"container":    {Op: opAnthropicCreate, Model: "m", Body: []byte(`{"model":"m","max_tokens":1,"container":"c1","messages":[{"role":"user","content":"hi"}]}`)},
 		"count_tokens": {Op: "messages.count_tokens", Model: "m"},
 		"too many stops": {Op: opAnthropicCreate, Model: "m",
 			Body: []byte(`{"model":"m","max_tokens":1,"stop_sequences":["a","b","c","d","e"],"messages":[{"role":"user","content":"hi"}]}`)},

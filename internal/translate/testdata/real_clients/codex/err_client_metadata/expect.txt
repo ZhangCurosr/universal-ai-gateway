@@ -1,1 +1,1 @@
-error: client_metadata is not supported for model
+ok

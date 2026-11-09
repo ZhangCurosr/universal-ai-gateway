@@ -75,7 +75,9 @@ func dumpRequest(r *ir.Request) []byte {
 
 // spec/10 §7：openai → IR 方向的黄金文件用例（testdata/chat_to_ir/<用例>/{input,expected}.json）。
 func TestLowerOpenAIChatGolden(t *testing.T) {
-	runLowerGolden(t, "chat_to_ir", lowerOpenAIChat)
+	runLowerGolden(t, "chat_to_ir", func(b []byte) (*ir.Request, error) {
+		return lowerOpenAIChat(b, Options{})
+	})
 }
 
 // runLowerGolden 对 testdata/<group>/* 中每个用例运行 lower，并与 expected.json 比较。
@@ -129,7 +131,7 @@ func TestLowerOpenAIChatRejects(t *testing.T) {
 		{"logprobs", `{"model":"m","logprobs":true,` + msgs + `}`, "logprobs"},
 		{"audio", `{"model":"m","audio":{"voice":"x"},` + msgs + `}`, "audio"},
 		{"modalities", `{"model":"m","modalities":["text","audio"],` + msgs + `}`, "modalities"},
-		{"unknown top-level field", `{"model":"m","seed":1,` + msgs + `}`, "seed"},
+		{"unknown top-level field", `{"model":"m","unknown_field":1,` + msgs + `}`, "unknown_field"},
 		{"parallel_tool_calls false", `{"model":"m","parallel_tool_calls":false,` + msgs + `}`, "parallel_tool_calls"},
 		{"system after user", `{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"system","content":"s"}]}`, "before user"},
 		{"only system", `{"model":"m","messages":[{"role":"system","content":"s"}]}`, "at least one"},
@@ -152,7 +154,7 @@ func TestLowerOpenAIChatRejects(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := lowerOpenAIChat([]byte(tt.body))
+			_, err := lowerOpenAIChat([]byte(tt.body), Options{})
 			ae, ok := apperr.As(err)
 			if !ok || ae.Code != apperr.CodeInvalidRequest {
 				t.Fatalf("error = %v, want invalid_request", err)
@@ -164,12 +166,14 @@ func TestLowerOpenAIChatRejects(t *testing.T) {
 	}
 }
 
-// 明确放行的写法：null 视为未提供；n=1、logprobs=false、parallel_tool_calls=true、stream_options。
+// 明确放行的写法：null 视为未提供；n=1、logprobs=false、parallel_tool_calls=true、stream_options；
+// T42 静态放宽字段：presence_penalty, frequency_penalty, seed, reasoning_effort 按 spec/10 §3 丢弃。
 func TestLowerOpenAIChatAcceptsNeutralFields(t *testing.T) {
 	body := `{"model":"m","n":1,"logprobs":false,"parallel_tool_calls":true,"stream":true,
-		"stream_options":{"include_usage":true},"response_format":null,"seed":null,
+		"stream_options":{"include_usage":true},"response_format":null,"seed":42,
+		"presence_penalty":0.5,"frequency_penalty":-0.5,"reasoning_effort":"medium",
 		"messages":[{"role":"user","content":"hi","name":"alice"}]}`
-	req, err := lowerOpenAIChat([]byte(body))
+	req, err := lowerOpenAIChat([]byte(body), Options{})
 	if err != nil {
 		t.Fatalf("lowerOpenAIChat() error = %v", err)
 	}
@@ -180,7 +184,7 @@ func TestLowerOpenAIChatAcceptsNeutralFields(t *testing.T) {
 
 // max_completion_tokens 优先于 max_tokens。
 func TestLowerOpenAIChatMaxCompletionTokensWins(t *testing.T) {
-	req, err := lowerOpenAIChat([]byte(`{"model":"m","max_tokens":10,"max_completion_tokens":20,"messages":[{"role":"user","content":"hi"}]}`))
+	req, err := lowerOpenAIChat([]byte(`{"model":"m","max_tokens":10,"max_completion_tokens":20,"messages":[{"role":"user","content":"hi"}]}`), Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

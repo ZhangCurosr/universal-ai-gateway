@@ -44,7 +44,7 @@ func TestCheckConfig(t *testing.T) {
 
 // 全部已注册的适配器必须能通过注册表校验（REG-01 ~ REG-04）。
 func TestRegistrySeals(t *testing.T) {
-	reg, err := newRegistry()
+	reg, err := newRegistry(nil, nil)
 	if err != nil {
 		t.Fatalf("newRegistry() error = %v", err)
 	}
