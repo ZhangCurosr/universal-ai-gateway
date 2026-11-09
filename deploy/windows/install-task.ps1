@@ -32,6 +32,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$InstallDir = $InstallDir.TrimEnd('\', '/')
 
 # 1. Administrator check: registering a task with -User SYSTEM requires elevation.
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
