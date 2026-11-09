@@ -194,6 +194,23 @@ func TestWriterInsertErrorDropsBatch(t *testing.T) {
 	}
 }
 
+type safeBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *safeBuffer) Write(p []byte) (n int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *safeBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
 func TestWriterLogsDroppedWarn(t *testing.T) {
 	p := NewPipeline(2)
 	// Fill buffer and drop 2 records
@@ -205,7 +222,7 @@ func TestWriterLogsDroppedWarn(t *testing.T) {
 	}
 
 	st := &fakeStore{}
-	var buf bytes.Buffer
+	var buf safeBuffer
 	logger := obs.NewLogger(&buf, "warn")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -236,7 +253,7 @@ func (e *errorDeleter) DeleteAuditBefore(_ context.Context, _ time.Time) (int64,
 
 func TestRetentionErrorLogsWarn(t *testing.T) {
 	st := &errorDeleter{err: errors.New("delete failed")}
-	var buf bytes.Buffer
+	var buf safeBuffer
 	logger := obs.NewLogger(&buf, "warn")
 
 	ctx, cancel := context.WithCancel(context.Background())
