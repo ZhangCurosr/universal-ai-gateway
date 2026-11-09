@@ -109,6 +109,10 @@ func (c *Config) Validate() error {
 	if c.Audit.RetentionDays < 1 {
 		return fieldErr("audit.retention_days", "must be >= 1, got %d", c.Audit.RetentionDays)
 	}
+	// CFG-15
+	if c.Translation.UnknownFields != "reject" && c.Translation.UnknownFields != "drop" {
+		return fieldErr("translation.unknown_fields", "must be \"reject\" or \"drop\", got %q", c.Translation.UnknownFields)
+	}
 
 	// CFG-09
 	if len(c.Pools) == 0 {

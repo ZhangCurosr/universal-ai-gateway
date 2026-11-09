@@ -39,6 +39,9 @@ func TestParseAppliesDefaults(t *testing.T) {
 	if p.Timeouts.NonStreamTotal != 10*time.Minute || p.PinTTL != 24*time.Hour {
 		t.Errorf("NonStreamTotal = %v, PinTTL = %v; want 10m, 24h", p.Timeouts.NonStreamTotal, p.PinTTL)
 	}
+	if cfg.Translation.UnknownFields != "reject" {
+		t.Errorf("Translation.UnknownFields = %q, want reject", cfg.Translation.UnknownFields)
+	}
 }
 
 func TestUpstreamModelDefaultsToName(t *testing.T) {
@@ -81,6 +84,8 @@ func TestValidate(t *testing.T) {
 		{"CFG-12 body budget too small", func(c *Config) { c.Limits.MaxBufferedBodyBytes = 1 }, "max_buffered_body_bytes"},
 		{"CFG-14 retention_days zero", func(c *Config) { c.Audit.RetentionDays = 0 }, "audit.retention_days"},
 		{"CFG-14 retention_days negative", func(c *Config) { c.Audit.RetentionDays = -1 }, "audit.retention_days"},
+		{"CFG-15 unknown_fields invalid", func(c *Config) { c.Translation.UnknownFields = "ignore" }, "translation.unknown_fields"},
+		{"CFG-15 unknown_fields empty", func(c *Config) { c.Translation.UnknownFields = "" }, "translation.unknown_fields"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -94,6 +99,17 @@ func TestValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestTranslationUnknownFieldsDropValid(t *testing.T) {
+	yamlStr := minimalYAML + "\ntranslation:\n  unknown_fields: drop\n"
+	cfg, err := Parse([]byte(yamlStr))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if cfg.Translation.UnknownFields != "drop" {
+		t.Errorf("Translation.UnknownFields = %q, want drop", cfg.Translation.UnknownFields)
 	}
 }
 

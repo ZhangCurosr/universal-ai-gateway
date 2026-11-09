@@ -8,8 +8,9 @@ type Config struct {
 	Server ServerConfig  `yaml:"server"`
 	Limits LimitsConfig  `yaml:"limits"`
 	Ledger LedgerConfig  `yaml:"ledger"`
-	Audit  AuditConfig   `yaml:"audit"`
-	MCP    MCPConfig     `yaml:"mcp"`
+	Audit       AuditConfig       `yaml:"audit"`
+	Translation TranslationConfig `yaml:"translation"`
+	MCP         MCPConfig         `yaml:"mcp"`
 	Pools  []PoolConfig  `yaml:"pools"`
 	Models []ModelConfig `yaml:"models"`
 }
@@ -59,6 +60,11 @@ type AuditConfig struct {
 	BatchSize     int           `yaml:"batch_size"`
 	FlushInterval time.Duration `yaml:"flush_interval"`
 	RetentionDays int           `yaml:"retention_days"`
+}
+
+// TranslationConfig 是转译层字段容忍配置（spec/10 §1 第 5 条，spec/03）。
+type TranslationConfig struct {
+	UnknownFields string `yaml:"unknown_fields"` // reject | drop（CFG-15）
 }
 
 // 池策略取值。
@@ -148,11 +154,15 @@ func Default() Config {
 			FlushInterval: 250 * time.Millisecond,
 			RetentionDays: 30,
 		},
+		Translation: TranslationConfig{
+			UnknownFields: "reject",
+		},
 	}
 }
 
 // Normalize 为每个池填充缺省字段。Load 会自动调用。
 func (c *Config) Normalize() {
+	setDefault(&c.Translation.UnknownFields, "reject")
 	for i := range c.Pools {
 		p := &c.Pools[i]
 		setDefault(&p.Strategy, StrategyLeastInflight)
