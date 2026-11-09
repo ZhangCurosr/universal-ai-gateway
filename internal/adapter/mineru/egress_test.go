@@ -266,7 +266,7 @@ func TestEgressDo_PageCountBilledFromUpstream(t *testing.T) {
 	}
 }
 
-// SPEC-GAP(T31)：任务提交后轮询失败不得重试，否则会重复上传、产生第二个付费任务。
+// spec/08 §8.2：任务提交后轮询失败不得重试，否则会重复上传、产生第二个付费任务。
 func TestEgressDo_FailureAfterSubmitNotRetryable(t *testing.T) {
 	_, up := mineruStub(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

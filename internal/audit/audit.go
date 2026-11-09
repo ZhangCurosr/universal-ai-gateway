@@ -208,7 +208,7 @@ func (r *Retention) Run(ctx context.Context) error {
 	}
 	retentionDays := r.RetentionDays
 	if retentionDays <= 0 {
-		// SPEC-GAP(T13): 当 RetentionDays <= 0 时默认按 30 天处理，避免误删全部审计日志
+		// spec/03 §4 CFG-14：retention_days 在配置校验中保证 >= 1；此处兜底避免误删全部审计日志
 		retentionDays = 30
 	}
 

@@ -141,7 +141,7 @@ type chatMessage struct {
 	Content          json.RawMessage `json:"content"`
 	ToolCalls        json.RawMessage `json:"tool_calls"`
 	ToolCallID       string          `json:"tool_call_id"`
-	Name             json.RawMessage `json:"name"`              // 参与者名：IR / Anthropic 无对应字段，丢弃（SPEC-GAP(T20)）
+	Name             json.RawMessage `json:"name"`              // spec/10 §3：参与者名丢弃（IR / Anthropic 无对应字段）
 	ReasoningContent json.RawMessage `json:"reasoning_content"` // §3：丢弃
 	Refusal          json.RawMessage `json:"refusal"`
 }
