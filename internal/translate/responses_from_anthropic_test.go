@@ -293,7 +293,7 @@ func TestResponsesToAnthropicRawPassthrough(t *testing.T) {
 	}
 }
 
-// spec/10 §8.3：max_tokens → max_output_tokens，refusal/pause_turn → content_filter。
+// spec/10 §8.3：max_tokens → max_output_tokens，refusal → content_filter，pause_turn 等其他值 → completed。
 func TestStatusFor(t *testing.T) {
 	tests := []struct {
 		stopReason string
@@ -302,7 +302,7 @@ func TestStatusFor(t *testing.T) {
 	}{
 		{"max_tokens", "incomplete", "max_output_tokens"},
 		{"refusal", "incomplete", "content_filter"},
-		{"pause_turn", "incomplete", "content_filter"},
+		{"pause_turn", "completed", ""},
 		{"end_turn", "completed", ""},
 		{"stop_sequence", "completed", ""},
 		{"tool_use", "completed", ""},
@@ -326,8 +326,8 @@ func TestStatusFor(t *testing.T) {
 	}
 }
 
-func TestAnthropicToResponsesRefusalAndPauseTurn(t *testing.T) {
-	for _, stop := range []string{"refusal", "pause_turn"} {
+func TestAnthropicToResponsesRefusal(t *testing.T) {
+	for _, stop := range []string{"refusal"} {
 		body := []byte(fmt.Sprintf(`{"id":"msg_1","content":[{"type":"text","text":"Blocked"}],"stop_reason":%q,"usage":{"input_tokens":5,"output_tokens":2}}`, stop))
 		out, err := anthropicToResponsesBody(body, "m", fixedTime, seqIDs())
 		if err != nil {

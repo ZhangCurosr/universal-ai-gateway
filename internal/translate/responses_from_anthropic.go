@@ -98,14 +98,14 @@ func (dst anthropicUsage) toResponses() *respUsage {
 }
 
 // statusFor 实现 §8.3 的停止原因映射：达到输出上限 → incomplete(max_output_tokens)，
-// refusal / pause_turn → incomplete(content_filter)，其余 → completed。
+// refusal → incomplete(content_filter)，其余（含 pause_turn）→ completed。
 //
-// spec/10 §8.3：refusal / pause_turn 映射为 incomplete + content_filter。
+// spec/10 §8.3：refusal 映射为 incomplete + content_filter。pause_turn 是服务端工具暂停而非审核中断，按其他值处理。
 func statusFor(stopReason string) (string, *respIncomplete) {
 	switch stopReason {
 	case "max_tokens":
 		return "incomplete", &respIncomplete{Reason: "max_output_tokens"}
-	case "refusal", "pause_turn":
+	case "refusal":
 		return "incomplete", &respIncomplete{Reason: "content_filter"}
 	default:
 		return "completed", nil

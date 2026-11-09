@@ -48,7 +48,8 @@ func (u chatInUsage) toAnthropic() anthropicOutUsage {
 
 // stopReasonFor 实现 §6.3 的 finish_reason 映射。
 //
-// spec/10 §6.3：未列出的非标准中断原因（如 insufficient_system_resource）及缺失值视为上游故障（非流式 502，流式流错误）。
+// spec/10 §6.3：insufficient_system_resource（推理因上游资源不足被中断，输出不完整）视为上游故障
+// （非流式 502，流式流错误）；其他未列出的值与缺失值按 end_turn 处理。
 func stopReasonFor(finish string) (string, error) {
 	switch finish {
 	case "stop":
@@ -59,8 +60,10 @@ func stopReasonFor(finish string) (string, error) {
 		return "tool_use", nil
 	case "content_filter":
 		return "refusal", nil
+	case "insufficient_system_resource":
+		return "", upstreamInvalid(fmt.Sprintf("upstream returned finish_reason %q (output incomplete)", finish))
 	default:
-		return "", upstreamInvalid(fmt.Sprintf("upstream returned unrecognised finish_reason %q", finish))
+		return "end_turn", nil
 	}
 }
 

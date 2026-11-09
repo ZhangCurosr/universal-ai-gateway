@@ -185,7 +185,7 @@ func TestChatToAnthropicBufferedErrors(t *testing.T) {
 func TestStopReasonFor(t *testing.T) {
 	valid := map[string]string{
 		"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use", "function_call": "tool_use",
-		"content_filter": "refusal",
+		"content_filter": "refusal", "": "end_turn", "unknown_custom": "end_turn",
 	}
 	for in, want := range valid {
 		got, err := stopReasonFor(in)
@@ -196,7 +196,7 @@ func TestStopReasonFor(t *testing.T) {
 			t.Errorf("stopReasonFor(%q) = %q, want %q", in, got, want)
 		}
 	}
-	for _, in := range []string{"insufficient_system_resource", "", "unknown_custom"} {
+	for _, in := range []string{"insufficient_system_resource"} {
 		if got, err := stopReasonFor(in); err == nil {
 			t.Errorf("stopReasonFor(%q) = %q, want error", in, got)
 		} else if ae, ok := apperr.As(err); !ok || ae.Code != apperr.CodeUpstreamError {

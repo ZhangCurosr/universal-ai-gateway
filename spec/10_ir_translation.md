@@ -188,7 +188,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `choices[0].message.refusal` 非空 | 一个 `text` 块（拒绝文本），`stop_reason: "refusal"` |
 | `choices[0].message.tool_calls[]` | 每个一个 `tool_use` 块（`input` = `arguments` 解析后的对象；无法解析为 JSON 对象 → 502 `upstream_error`） |
 | `choices[0].message.reasoning_content` | 丢弃（没有签名，回传给 Anthropic 上游会被拒绝） |
-| `finish_reason`：`stop` → `end_turn`；`length` → `max_tokens`；`tool_calls` / `function_call` → `tool_use`；`content_filter` → `refusal`；其他未列出的非标准中断原因（如 DeepSeek `insufficient_system_resource`）及缺失值视为上游故障（非流式 502 `upstream_error`，流式返回流错误） | `stop_reason` |
+| `finish_reason`：`stop` → `end_turn`；`length` → `max_tokens`；`tool_calls` / `function_call` → `tool_use`；`content_filter` → `refusal`；`insufficient_system_resource`（DeepSeek：推理因资源不足被中断，输出不完整）视为上游故障（非流式 502 `upstream_error`，流式返回流错误）；其他未列出的值与缺失值 → `end_turn` | `stop_reason` |
 | `usage` | `input_tokens = prompt_tokens − cached_tokens`、`cache_read_input_tokens = prompt_tokens_details.cached_tokens`、`cache_creation_input_tokens = 0`、`output_tokens = completion_tokens` |
 | `choices` 不是恰好 1 个 | 502 `upstream_error` |
 
@@ -204,7 +204,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `finish_reason` 非空 | 关闭打开的块（`content_block_stop`），记下 stop_reason（映射同非流式） |
 | `choices: []` 且 `usage` 非 null | 记下用量 |
 | `[DONE]` | `message_delta`（`delta: {stop_reason, stop_sequence: null}`，`usage` 按非流式映射）→ `message_stop` |
-| `{"error":...}` chunk、上游流在 `[DONE]` 前结束、`[DONE]` 前没有 `finish_reason`、非标准 `finish_reason` | 返回入站适配器 `StreamError`（`event: error`）并结束 |
+| `{"error":...}` chunk、上游流在 `[DONE]` 前结束、`[DONE]` 前没有 `finish_reason`、`finish_reason` 为 `insufficient_system_resource` | 返回入站适配器 `StreamError`（`event: error`）并结束 |
 
 ### 6.4 必测用例
 
@@ -274,7 +274,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 - 文本 → 一个 `{"type":"message","id","role":"assistant","status":"completed","content":[{"type":"output_text","text","annotations":[]}]}`；
 - 工具调用 → 每个一个 `{"type":"function_call","id","call_id":<上游工具调用 ID>,"name","arguments","status":"completed"}`；
 - 思考内容丢弃（不输出 `reasoning` 项）；
-- 停止原因：正常结束 / 工具调用 → `status: "completed"`；达到输出上限 → `status: "incomplete"`、`incomplete_details: {"reason":"max_output_tokens"}`；`refusal` / `pause_turn` 等安全或审核中断 → `status: "incomplete"`、`incomplete_details: {"reason":"content_filter"}`；其他未列出值 → `status: "completed"`；
+- 停止原因：正常结束 / 工具调用 → `status: "completed"`；达到输出上限 → `status: "incomplete"`、`incomplete_details: {"reason":"max_output_tokens"}`；`refusal` → `status: "incomplete"`、`incomplete_details: {"reason":"content_filter"}`；其他未列出值（含 `pause_turn`）→ `status: "completed"`；
 - `usage`：`input_tokens = input + cache_read + cache_write`、`input_tokens_details.cached_tokens = cache_read`、`output_tokens = output`、`total_tokens` 为两者之和。
 
 流式事件序列（每个事件的 `sequence_number` 从 0 递增，`event:` 名与 `data.type` 相同）：
@@ -288,7 +288,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | 工具调用开始 | `response.output_item.added`（function_call 项，`arguments: ""`） |
 | 工具参数增量 | `response.function_call_arguments.delta` |
 | 工具调用结束 | `response.function_call_arguments.done`（完整 arguments）→ `response.output_item.done` |
-| 上游正常结束 | `response.completed`（完整 response，含 `usage`）；达到输出上限或安全中断（`refusal` / `pause_turn`）时改为 `response.incomplete` |
+| 上游正常结束 | `response.completed`（完整 response，含 `usage`）；达到输出上限或 `refusal` 时改为 `response.incomplete` |
 | 上游流中错误 | 入站适配器的 `StreamError`（IN-R07）后结束 |
 
 思考增量（Anthropic `thinking_delta`、Chat `reasoning_content`）不输出。`output_index` 按项出现顺序从 0 编号。
