@@ -15,6 +15,15 @@
 2. 转译是**有损**的：无法表达的特性必须**明确拒绝**（400 `invalid_request`，消息说明哪个特性不支持）或**明确丢弃**（下表标注「丢弃」），**禁止**默默编造等价物。
 3. 思考签名、加密推理内容**只能回传给签发它的厂商**；跨厂商一律丢弃（详见 06_architecture_review ADR-03）。
 4. 入站解析（Lower）与出站合成（Synthesize）分开写，每个方向独立测试：`openai → IR`、`IR → anthropic`、`anthropic → IR`、`IR → openai`。
+5. **未知字段策略**：请求中出现本章字段表未列出的字段，按配置 `translation.unknown_fields`（spec/03）处理：
+   - `reject`（默认）：400 `invalid_request`，消息为 `<字段路径> is not supported when translating to another protocol`；
+   - `drop`：丢弃该字段继续处理，并按第 6 条记日志。
+
+   「字段表未列出」指：顶层字段、消息（或 Responses 输入项）级字段。内容块级未知键保持始终丢弃。
+   字段表中**标为 400 的字段**始终拒绝，不受此配置影响；**标为丢弃的字段**始终丢弃，不记日志。
+   值为 JSON `null` 的字段视为未提供，不触发此规则。
+6. `drop` 模式下，每个进程对每个（转换方向、字段路径）组合只记**一次** `Warn` 日志：`msg="translation dropped unknown field"`，属性 `from`、`to`、`field`（字段路径，如 `messages[].foo`，数组下标统一写成 `[]`）。
+   日志**不得**包含字段的值。
 
 ## 2. IR 类型（`internal/ir/types.go`，已提供）
 
@@ -64,6 +73,7 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `n > 1` | — | 400（不支持） |
 | `response_format`、`logprobs`、`audio`、`modalities` | — | 400（不支持） |
 | `reasoning_content`（历史 assistant 消息） | — | 丢弃 |
+| `presence_penalty`、`frequency_penalty`、`seed`、`reasoning_effort` | — | 丢弃 |
 
 ## 4. IR → Anthropic Messages（T21）
 
@@ -141,11 +151,11 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `tool_choice.disable_parallel_tool_use: true` | — | 400（IR 无法表达；与 T20 拒绝 `parallel_tool_calls=false` 一致） |
 | `stop_sequences`、`temperature`、`top_p`、`stream` | 对应字段 | |
 | `metadata.user_id` | `User` | `metadata` 其他字段丢弃 |
-| `top_k` | — | 400（Chat 无等价参数） |
+| `top_k` | — | 丢弃（Chat 无等价参数） |
 | `thinking`（`enabled` / `adaptive` / `disabled`） | 丢弃 | 与 §8.2 `reasoning.effort` 同理，不做猜测性映射 |
 | `service_tier`、`context_management` | 丢弃 | |
 | `mcp_servers`、`container` | — | 400 |
-| 其他未知顶层字段 | — | 400（与 T20/T25 一致） |
+| 其他未知顶层字段 | — | 见 §1 第 5 条未知字段策略（默认 400） |
 
 ### 6.2 IR → OpenAI Chat（T23，T27 复用）
 
@@ -247,13 +257,14 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 | `input[]` 中 `{"type":"function_call_output","call_id","output"}` | user 消息中的 `ToolResultPart{ToolCallID: call_id}` | 连续的多个合并为一条 user 消息 |
 | `input[]` 中 `{"type":"reasoning","encrypted_content"}` | `ThinkingPart{Vendor: openai, Encrypted}` | 合成时按 §1 第 3 条跨厂商丢弃 |
 | `tools[]` 中 `{"type":"function","name","description","parameters"}` | `Tool` | `strict` 丢弃 |
-| `tools[]` 中其他类型（`web_search`、`file_search`、`code_interpreter`、`computer_use`、`mcp` 等内置工具） | — | 400（`built-in tool "<type>" is not supported for model "<name>"`） |
+| `tools[]` 中非 function 内置工具（`namespace`、`web_search` 等）未在 `tool_choice` 中显式指定时 | — | 忽略/丢弃（避免阻断客户端整体请求） |
+| `tools[]` 中其他类型（或在 `tool_choice` 中被显式指定调用时） | — | 400（`built-in tool "<type>" is not supported for model "<name>"`） |
 | `tool_choice` | `ToolChoice`：`auto` → auto，`required` → any，`none` → none，`{"type":"function","name"}` → tool | |
 | `max_output_tokens` | `MaxTokens` | |
 | `temperature`、`top_p` | 同名 | |
 | `reasoning.effort` | 丢弃 | 目标上游的思考预算语义不同，不做猜测性映射 |
 | `text.format` 为 `json_schema` / `json_object` | — | 400（无法保证等价） |
-| `parallel_tool_calls`、`truncation`、`metadata`、`prompt_cache_key`、`safety_identifier`、`user`、`include`、`service_tier` | 丢弃（`safety_identifier` 或 `user` 写入 `IR.User`） | |
+| `parallel_tool_calls`、`truncation`、`metadata`、`client_metadata`、`prompt_cache_key`、`safety_identifier`、`user`、`include`、`service_tier` | 丢弃（`safety_identifier` 或 `user` 写入 `IR.User`） | |
 | `stream` | `Stream` | 合成 Chat 请求时按 PT-03 加 `stream_options.include_usage` |
 
 ### 8.3 响应 → Responses（T26：自 Anthropic，T27：自 Chat）
