@@ -282,82 +282,125 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 // Bridge 实现 stdio 传输到 Streamable HTTP 的桥（CLI-04）：从 in 逐行读取 JSON-RPC 消息（每行一条，
 // 单行上限 MaxMessageBytes），用 Post 转发，把非空响应作为一行写到 out；in 读到 EOF 或 ctx 取消时返回 nil。
 // 单条消息转发失败时：若是请求，向 out 写一条该 id 的 JSON-RPC 错误（CodeInternalError）后继续；若是通知，忽略。
+// 超过上限的行被丢弃：记一条诊断，并回一条 id 为 null 的 CodeInvalidRequest 错误（无法可靠取得其 id），然后继续，
+// 不让单条超长消息结束整个会话。
 // 诊断信息写到 log（stderr），绝不写到 out（out 只能出现 JSON-RPC 报文）。
 func Bridge(ctx context.Context, c *Client, in io.Reader, out io.Writer, log io.Writer) error {
-	sc := bufio.NewScanner(in)
-	sc.Buffer(make([]byte, 64*1024), MaxMessageBytes)
-	for sc.Scan() {
+	br := bufio.NewReaderSize(in, 64*1024)
+	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 {
-			continue
-		}
-
-		var probe struct {
-			ID json.RawMessage `json:"id"`
-		}
-		_ = json.Unmarshal(line, &probe)
-
-		respBody, err := c.Post(ctx, line)
-		if err != nil {
+		raw, tooLong, rerr := readLine(br, MaxMessageBytes)
+		if rerr != nil && !errors.Is(rerr, io.EOF) {
 			if ctx.Err() != nil {
 				return nil
 			}
-			if log != nil {
-				errMsg := err.Error()
-				if c.Token != "" {
-					errMsg = strings.ReplaceAll(errMsg, c.Token, "[REDACTED]")
-				}
-				fmt.Fprintf(log, "gateway: %s\n", errMsg)
-				if f, ok := log.(interface{ Flush() error }); ok {
-					_ = f.Flush()
-				}
-			}
-			if len(probe.ID) > 0 && validID(probe.ID) && string(probe.ID) != "null" {
-				errMsg := err.Error()
-				if ap, ok := apperr.As(err); ok {
-					errMsg = ap.Message
-				}
-				if c.Token != "" {
-					errMsg = strings.ReplaceAll(errMsg, c.Token, "[REDACTED]")
-				}
-				errResp := ErrorResponse(probe.ID, CodeInternalError, errMsg)
-				b, _ := json.Marshal(errResp)
-				if _, werr := fmt.Fprintf(out, "%s\n", b); werr != nil {
-					return werr
-				}
-				if f, ok := out.(interface{ Flush() error }); ok {
-					_ = f.Flush()
-				}
-			}
-			continue
+			c.diag(log, "gateway bridge read: "+rerr.Error())
+			return rerr
 		}
-
-		if len(bytes.TrimSpace(respBody)) > 0 {
-			trimmed := bytes.TrimRight(respBody, "\r\n")
-			if _, werr := fmt.Fprintf(out, "%s\n", trimmed); werr != nil {
-				return werr
+		if tooLong {
+			c.diag(log, fmt.Sprintf("gateway: dropped a message larger than %d bytes", MaxMessageBytes))
+			if err := writeLine(out, ErrorResponse(json.RawMessage("null"), CodeInvalidRequest,
+				fmt.Sprintf("message exceeds %d bytes", MaxMessageBytes))); err != nil {
+				return err
 			}
-			if f, ok := out.(interface{ Flush() error }); ok {
-				_ = f.Flush()
+		} else if line := bytes.TrimSpace(raw); len(line) > 0 {
+			if err := c.forward(ctx, line, out, log); err != nil {
+				return err
 			}
 		}
-	}
-
-	if err := sc.Err(); err != nil {
-		if ctx.Err() != nil || errors.Is(err, io.EOF) {
+		if errors.Is(rerr, io.EOF) {
 			return nil
 		}
-		if log != nil {
-			errMsg := err.Error()
-			if c.Token != "" {
-				errMsg = strings.ReplaceAll(errMsg, c.Token, "[REDACTED]")
-			}
-			fmt.Fprintf(log, "gateway bridge read: %s\n", errMsg)
+	}
+}
+
+// forward 转发一条消息并写出响应；只有写 out 失败时返回错误。
+func (c *Client) forward(ctx context.Context, line []byte, out, log io.Writer) error {
+	var probe struct {
+		ID json.RawMessage `json:"id"`
+	}
+	_ = json.Unmarshal(line, &probe) // 只用于取 id；不是合法 JSON 时交给网关报错
+
+	respBody, err := c.Post(ctx, line)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
 		}
-		return err
+		c.diag(log, "gateway: "+err.Error())
+		if len(probe.ID) == 0 || !validID(probe.ID) || string(probe.ID) == "null" {
+			return nil // 通知：忽略
+		}
+		msg := err.Error()
+		if ap, ok := apperr.As(err); ok {
+			msg = ap.Message
+		}
+		return writeLine(out, ErrorResponse(probe.ID, CodeInternalError, c.redact(msg)))
+	}
+	if body := bytes.TrimSpace(respBody); len(body) > 0 {
+		return writeRaw(out, body)
 	}
 	return nil
+}
+
+// readLine 读取一行（不含换行符）。行超过 max 字节时丢弃到行尾并返回 tooLong=true。
+// 最后一行没有换行符时与 io.EOF 一起返回。
+func readLine(r *bufio.Reader, max int) (line []byte, tooLong bool, err error) {
+	var buf []byte
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if !tooLong {
+			if len(buf)+len(chunk) > max+1 { // +1：允许结尾的换行符
+				tooLong, buf = true, nil
+			} else {
+				buf = append(buf, chunk...)
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if tooLong {
+			return nil, true, err
+		}
+		return bytes.TrimRight(buf, "\r\n"), false, err
+	}
+}
+
+func (c *Client) redact(s string) string {
+	if c.Token == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, c.Token, "[REDACTED]")
+}
+
+// diag 把诊断写到 log（脱敏 Token）；log 为 nil 时丢弃。
+func (c *Client) diag(log io.Writer, msg string) {
+	if log == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(log, "%s\n", c.redact(msg)) // 诊断写失败不影响桥接
+	flush(log)
+}
+
+func writeLine(out io.Writer, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("marshal json-rpc message: %w", err)
+	}
+	return writeRaw(out, b)
+}
+
+func writeRaw(out io.Writer, b []byte) error {
+	if _, err := fmt.Fprintf(out, "%s\n", b); err != nil {
+		return err
+	}
+	flush(out)
+	return nil
+}
+
+func flush(w io.Writer) {
+	if f, ok := w.(interface{ Flush() error }); ok {
+		_ = f.Flush() // 尽力而为：后续写入会再次暴露错误
+	}
 }
