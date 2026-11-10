@@ -1,0 +1,4 @@
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"}]},"index":0}],"usageMetadata":{"promptTokenCount":20,"cachedContentTokenCount":8},"modelVersion":"gemini-3-pro","responseId":"gemresp01"}
+
+data: {"candidates":[{"content":{"role":"model","parts":[{"text":" world"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":5,"totalTokenCount":36,"cachedContentTokenCount":8,"thoughtsTokenCount":3},"modelVersion":"gemini-3-pro","responseId":"gemresp01"}
+

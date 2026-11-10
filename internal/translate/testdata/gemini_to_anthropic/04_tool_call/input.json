@@ -1,0 +1,1 @@
+{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"Paris"}},"thoughtSignature":"c2ln"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":30,"candidatesTokenCount":7,"totalTokenCount":37,"toolUsePromptTokenCount":4},"modelVersion":"gemini-3-pro","responseId":"gemresp04"}

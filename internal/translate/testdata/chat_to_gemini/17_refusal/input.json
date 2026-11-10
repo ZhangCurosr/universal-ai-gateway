@@ -1,0 +1,1 @@
+{"id":"chatcmpl-up7","choices":[{"index":0,"message":{"role":"assistant","content":null,"refusal":"I cannot help with that."},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":6}}

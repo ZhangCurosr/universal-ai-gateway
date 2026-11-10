@@ -1,0 +1,8 @@
+data: {"id":"chatcmpl-up5","choices":[{"index":0,"delta":{"role":"assistant","content":"Once upon"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-up5","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}
+
+data: {"id":"chatcmpl-up5","choices":[],"usage":{"prompt_tokens":5,"completion_tokens":3}}
+
+data: [DONE]
+

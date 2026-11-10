@@ -16,3 +16,9 @@ const (
 	opResponsesCreate = "responses.create" // openai_responses
 	opAnthropicCreate = "messages"         // anthropic（入站与出站操作名相同）
 )
+
+// Gemini（spec/08 §10，spec/10 §10）。
+const (
+	protoGemini  protocol.Protocol = "gemini"
+	opGeminiCall                   = "models.call" // 入站与出站操作名相同；方法在 Params["method"]
+)

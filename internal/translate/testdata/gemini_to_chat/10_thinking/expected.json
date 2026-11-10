@@ -1,0 +1,26 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": "42",
+        "reasoning_content": "Let me think."
+      }
+    }
+  ],
+  "created": 1700000000,
+  "id": "chatcmpl-gemresp10",
+  "model": "claude-for-chat",
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 7,
+    "total_tokens": 17,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  }
+}

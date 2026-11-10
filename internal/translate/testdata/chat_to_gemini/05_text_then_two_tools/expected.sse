@@ -1,0 +1,86 @@
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": [
+data:           {
+data:             "text": "Checking both."
+data:           }
+data:         ]
+data:       },
+data:       "index": 0
+data:     }
+data:   ],
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up3"
+data: }
+
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": [
+data:           {
+data:             "functionCall": {
+data:               "id": "call_a",
+data:               "name": "get_weather",
+data:               "args": {
+data:                 "city": "Paris"
+data:               }
+data:             }
+data:           }
+data:         ]
+data:       },
+data:       "index": 0
+data:     }
+data:   ],
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up3"
+data: }
+
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": [
+data:           {
+data:             "functionCall": {
+data:               "id": "call_b",
+data:               "name": "get_weather",
+data:               "args": {
+data:                 "city": "Rome"
+data:               }
+data:             }
+data:           }
+data:         ]
+data:       },
+data:       "index": 0
+data:     }
+data:   ],
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up3"
+data: }
+
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": []
+data:       },
+data:       "finishReason": "STOP",
+data:       "index": 0
+data:     }
+data:   ],
+data:   "usageMetadata": {
+data:     "promptTokenCount": 30,
+data:     "candidatesTokenCount": 12,
+data:     "totalTokenCount": 42
+data:   },
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up3"
+data: }
+

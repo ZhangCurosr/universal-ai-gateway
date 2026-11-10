@@ -1,0 +1,81 @@
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "content": "",
+data:         "role": "assistant"
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp01",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "content": "Hello"
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp01",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "content": " world"
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp01",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {},
+data:       "finish_reason": "stop",
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp01",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp01",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk",
+data:   "usage": {
+data:     "prompt_tokens": 20,
+data:     "completion_tokens": 8,
+data:     "total_tokens": 28,
+data:     "prompt_tokens_details": {
+data:       "cached_tokens": 8
+data:     }
+data:   }
+data: }
+
+data: [DONE]
+

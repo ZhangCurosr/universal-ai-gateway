@@ -1,0 +1,57 @@
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": [
+data:           {
+data:             "text": "Hello"
+data:           }
+data:         ]
+data:       },
+data:       "index": 0
+data:     }
+data:   ],
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up1"
+data: }
+
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": [
+data:           {
+data:             "text": " world"
+data:           }
+data:         ]
+data:       },
+data:       "index": 0
+data:     }
+data:   ],
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up1"
+data: }
+
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": []
+data:       },
+data:       "finishReason": "STOP",
+data:       "index": 0
+data:     }
+data:   ],
+data:   "usageMetadata": {
+data:     "promptTokenCount": 16,
+data:     "candidatesTokenCount": 5,
+data:     "totalTokenCount": 21,
+data:     "cachedContentTokenCount": 4
+data:   },
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up1"
+data: }
+

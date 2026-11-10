@@ -1,0 +1,30 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "id": "call_1",
+              "name": "shell",
+              "args": {
+                "cmd": "ls"
+              }
+            }
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 20,
+    "candidatesTokenCount": 8,
+    "totalTokenCount": 28,
+    "cachedContentTokenCount": 16
+  },
+  "modelVersion": "claude-for-gemini",
+  "responseId": "up2"
+}

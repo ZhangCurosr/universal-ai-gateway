@@ -1,0 +1,25 @@
+{
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": "Hello world"
+      }
+    }
+  ],
+  "created": 1700000000,
+  "id": "chatcmpl-gemresp01",
+  "model": "claude-for-chat",
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 20,
+    "completion_tokens": 8,
+    "total_tokens": 28,
+    "prompt_tokens_details": {
+      "cached_tokens": 8
+    }
+  }
+}

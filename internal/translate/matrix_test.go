@@ -9,13 +9,13 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
 )
 
-// TestStreamMatrix 跨协议 Decoder/Encoder 全组合矩阵测试（24 组用例）。
+// TestStreamMatrix 跨协议 Decoder/Encoder 全组合矩阵测试（48 组用例）。
 // 覆盖：
 //
-//	2 个上游 Decoder（Anthropic, Chat）
-//	× 3 个客户端 Encoder（Chat, Anthropic, Responses）
+//	3 个上游 Decoder（Anthropic, Chat, Gemini）
+//	× 4 个客户端 Encoder（Chat, Anthropic, Responses, Gemini）
 //	× 4 类标准流式用例（文本、工具调用、思考/推理、长度截断）
-//	= 24 组用例
+//	= 48 组用例（T48 由 24 组扩展）
 //
 // 验证每个组合在流式处理时不报错，且输出事件流严格满足目标客户端协议的结构约束。
 func TestStreamMatrix(t *testing.T) {
@@ -54,6 +54,19 @@ func TestStreamMatrix(t *testing.T) {
 				{"Length", "testdata/chat_to_anthropic/15_length/input.sse"},
 			},
 		},
+		{
+			name:    "GeminiUpstream",
+			decoder: geminiDecoder{newID: mockIDGen},
+			cases: []struct {
+				name string
+				path string
+			}{
+				{"Text", "testdata/gemini_to_chat/01_text/input.sse"},
+				{"TwoTools", "testdata/gemini_to_chat/05_text_then_two_tools/input.sse"},
+				{"Thinking", "testdata/gemini_to_chat/10_thinking/input.sse"},
+				{"MaxTokens", "testdata/gemini_to_chat/15_max_tokens/input.sse"},
+			},
+		},
 	}
 
 	encoders := []struct {
@@ -79,6 +92,12 @@ func TestStreamMatrix(t *testing.T) {
 			env:      &protocol.Envelope{Protocol: protoOpenAIResponses, Op: opResponsesCreate, Model: "matrix-responses"},
 			encoder:  newResponsesEncoder(fixedTime, mockIDGen),
 			validate: checkSequence,
+		},
+		{
+			name:     "GeminiClient",
+			env:      &protocol.Envelope{Protocol: protoGemini, Op: opGeminiCall, Model: "matrix-gemini"},
+			encoder:  newGeminiEncoder(mockIDGen),
+			validate: checkGeminiChunks,
 		},
 	}
 
@@ -111,7 +130,7 @@ func TestStreamMatrix(t *testing.T) {
 		}
 	}
 
-	if total != 24 {
-		t.Fatalf("expected 24 matrix test cases, ran %d", total)
+	if total != 48 {
+		t.Fatalf("expected 48 matrix test cases, ran %d", total)
 	}
 }

@@ -1,0 +1,1 @@
+{"id":"chatcmpl-up5","choices":[{"index":0,"message":{"role":"assistant","content":"Once upon"},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}

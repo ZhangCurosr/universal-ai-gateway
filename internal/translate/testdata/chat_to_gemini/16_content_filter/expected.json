@@ -1,0 +1,19 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": []
+      },
+      "finishReason": "SAFETY",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 5,
+    "candidatesTokenCount": 0,
+    "totalTokenCount": 5
+  },
+  "modelVersion": "claude-for-gemini",
+  "responseId": "up6"
+}
