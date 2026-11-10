@@ -5,8 +5,6 @@ package ir
 
 import (
 	"encoding/json"
-
-	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 )
 
 // Role 是消息角色。system 提示放在 Request.System，不作为消息。
@@ -60,6 +58,7 @@ type CacheControl struct {
 type TextPart struct {
 	Text         string
 	CacheControl *CacheControl
+	IsRefusal    bool
 }
 
 type ImagePart struct {
@@ -120,11 +119,46 @@ const (
 	StopRefusal   StopReason = "refusal"
 )
 
+// TokenUsage 是规范化的 token 用量。Input 不含缓存（Anthropic 口径）。
+type TokenUsage struct {
+	Input      int64
+	CacheRead  int64
+	CacheWrite int64
+	Output     int64
+}
+
+// StreamEventKind 是流式 IR 事件的类型。
+type StreamEventKind int
+
+const (
+	EventStart     StreamEventKind = iota // 流开始；ID 字段有效（可能为空）
+	EventText                             // 文本增量；Text 有效（非空）
+	EventThinking                         // 思考增量；Text 有效（仅供展示，签名不进入流式 IR）
+	EventToolStart                        // 工具调用开始；ToolIndex、ToolID、ToolName 有效
+	EventToolArgs                         // 工具参数增量；ToolIndex、Text（JSON 片段）有效
+	EventToolEnd                          // 工具调用结束；ToolIndex 有效（Encoder 可以忽略，按需隐式关闭）
+	EventUsage                            // 用量（累计值，后到的覆盖先到的）；Usage 有效
+	EventStop                             // 停止原因；Stop 有效
+	EventEnd                              // 上游正常结束（收到结束标记）。之后 Decoder 返回 io.EOF
+)
+
+// StreamEvent 是规范化的流式 IR 事件。
+type StreamEvent struct {
+	Kind      StreamEventKind
+	ID        string
+	Text      string
+	ToolIndex int    // 本响应内第几个工具调用，从 0 开始
+	ToolID    string // 上游工具调用 ID
+	ToolName  string
+	Usage     TokenUsage
+	Stop      StopReason
+}
+
 // Response 是协议中立的非流式响应。
 type Response struct {
 	ID         string
 	Model      string
 	Parts      []Part
 	StopReason StopReason
-	Usage      pricing.Usage
+	Usage      TokenUsage
 }
