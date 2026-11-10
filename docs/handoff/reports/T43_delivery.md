@@ -3,7 +3,7 @@
 - 实现：`task/t43-stream-ir` 分支前 5 个提交（`63f9976` … `bb7c258`）
 - 验收修复：`21692bd`
 - 合入 main：`6efea9e`
-- 检查：`go run ./tools/check` 全部通过（Windows，无 `-race`；Linux `-race` 复跑见 [T46 §9](../T46_race_verify_linux.md#9-复跑)）
+- 检查：`go run ./tools/check` 全部通过（Windows，无 `-race`；Linux `-race` 复跑通过，见 [T46 复跑报告](T46_race_verify_report_r2.md)）
 
 ## 1. 结构
 
@@ -74,5 +74,5 @@
 
 ## 6. 未完成或有风险的地方
 
-- 合并后的代码还没在 Linux 上用 `-race` 跑过：要做的事见 T46 §9。
+- 合并后的代码已在 Linux 上用 `-race` 复跑（各 30 次），未发现竞态：见 [T46 复跑报告](T46_race_verify_report_r2.md)。`-race` 只能发现测试实际执行到的竞态。
 - 阶段 A 的规范和阶段 B 的实现是一起交来的，没有先单独审批；规范内容已在本次验收中由用户确认。
