@@ -1,0 +1,41 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "Checking both."
+          },
+          {
+            "functionCall": {
+              "id": "toolu_a",
+              "name": "get_weather",
+              "args": {
+                "city": "Paris"
+              }
+            }
+          },
+          {
+            "functionCall": {
+              "id": "toolu_b",
+              "name": "get_weather",
+              "args": {
+                "city": "Rome"
+              }
+            }
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 30,
+    "candidatesTokenCount": 12,
+    "totalTokenCount": 42
+  },
+  "modelVersion": "claude-for-gemini",
+  "responseId": "up3"
+}

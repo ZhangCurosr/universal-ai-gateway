@@ -332,3 +332,200 @@ type StreamEvent struct { Kind StreamEventKind; ID, Text string; IsRefusal bool;
 1. **Chat 上游的停止原因**：只映射一次（§6.3 的 `finish_reason` 表）。因此发给 Responses 客户端时，`content_filter` → `incomplete` + `content_filter`，`insufficient_system_resource` → 上游故障，与发给 Anthropic 客户端的语义一致（T44 G3/G4）。
 2. **拒绝说明（B9）**：Chat 上游的 `refusal` 文本在 IR 中是 `TextPart{IsRefusal: true}`（流式为 `EventText` + `IsRefusal`）。Anthropic Encoder 把它输出为 text，并把 `stop_reason` 写为 `refusal`（非流式与流式一致）；Responses Encoder 把它与正文拼接为 `output_text`，不因此改变 `status`。
 3. **工具参数**：`ToolCallPart.Arguments` 与 `EventToolArgs` 的 JSON 原样透传给客户端，Encoder 不得解析后重新编码（会改变键序、损失大整数精度）；为空时输出 `{}`。
+
+### 9.4 转换器注册：组件登记 + 组合表（T48）
+
+| 编号 | 规则 |
+|:--|:--|
+| REG-01 | 每个协议在 `internal/translate` 中**登记一次**自己的组件：作为客户端协议时提供「接受检查（Op / Params）、Lower、Encoder」，作为上游协议时提供「上游 `Call.Op`、Synth、Decoder」。转换器由一个通用的组合类型生成：`Request` = 接受检查 → Lower → 设置上游模型 → Synth；`Response` = 该上游的 Decoder + 该客户端的 Encoder |
+| REG-02 | 开放哪些方向由一张**显式的组合表**（`[客户端协议, 上游协议]` 列表）决定，不是所有组合的笛卡尔积。新增协议 = 登记组件 + 在组合表中加行，不再为每个方向手写转换器类型 |
+| REG-03 | 组合类型对客户端协议不支持的 `Op` 返回 400 `invalid_request`；`Now` / `NewID` 的测试注入能力保留 |
+| REG-04 | 计费用量（出站适配器的 Meter）与客户端可见用量（Decoder → Encoder 输出的 `usage`）必须一致，由 `cmd/gateway/usage_consistency_test.go` 对组合表中**每个方向**逐计量单位核对。客户端协议本身无法表达的单位（如 Chat 客户端的缓存写入）在测试中显式列出 |
+
+## 10. Gemini 的转译（T48）
+
+本章规定 Gemini（`gemini`，spec/08 §10）与 `anthropic`、`openai_chat`、`openai_responses` 之间的转译。开放的方向（§9.4 组合表新增 5 行）：
+
+| 客户端（入站） | 上游 | 典型场景 |
+|:--|:--|:--|
+| `gemini` | `anthropic` | Gemini CLI / genai SDK 使用 Claude |
+| `gemini` | `openai_chat` | Gemini 客户端使用 DeepSeek 等 Chat 兼容上游 |
+| `anthropic` | `gemini` | Claude Code 使用 Gemini |
+| `openai_chat` | `gemini` | Chat 客户端使用 Gemini |
+| `openai_responses` | `gemini` | Codex CLI 使用 Gemini |
+
+`gemini → openai_responses` 不开放（与现有矩阵一致：Responses 只作为客户端协议）。
+
+### 10.1 工具调用 ID
+
+Gemini 的 `functionCall.id` 可选，多数响应不带；IR 与另外三种协议要求每个工具调用都有 ID。
+
+| 编号 | 规则 |
+|:--|:--|
+| GID-01 | **Decoder**（Gemini 上游）：`functionCall` 不带 `id` 时，网关签发 `call_` + 24 位小写 base32（`crypto/rand`，同 RX-05 的实现）；带 `id` 时原样使用 |
+| GID-02 | **Synth**（IR → Gemini 上游）：`ToolResultPart.ToolCallID` 换回函数名：在**同一请求的历史**中找 ID 相同的 `ToolCallPart`，取其 `Name`；找不到 → 400 `tool result "<id>" has no matching tool call`。不需要网关保存状态 |
+| GID-03 | **Lower**（Gemini 客户端）：`functionCall` 不带 `id` 时生成确定性 ID `gemini_call_<n>`（`n` 为该调用在整个 `contents` 中的序号，从 0 开始） |
+| GID-04 | **Lower**：`functionResponse` 带 `id` 时按 `id` 对应；不带时按 `name` 对应到**紧邻的上一条 model 消息**中第一个尚未被对应的同名调用。对应不上 → 400 `functionResponse "<name>" has no matching functionCall` |
+
+### 10.2 思考签名
+
+| 编号 | 规则 |
+|:--|:--|
+| GSIG-01 | 来自 Gemini 客户端的 `thoughtSignature` 只能回传给 Gemini；本章的方向都是跨厂商，因此 Lower 读到的签名只进入 `ThinkingPart.Signature`，Synth 到其他厂商时丢弃（§1 第 3 条） |
+| GSIG-02 | Synth（IR → Gemini）在每条 model 消息的**第一个** `functionCall` part 上加 `"thoughtSignature": "skip_thought_signature_validator"`（Google 文档给出的占位值，用于历史不是由该模型生成的情况）。上游模型名以 `gemini-1.` 或 `gemini-2.` 开头时**不**注入（旧模型不要求签名）；其余一律注入（§10.8 第 1 条） |
+
+### 10.3 Gemini 请求 → IR（Lower）
+
+| 编号 | 规则 |
+|:--|:--|
+| GL-01 | 只接受 `Params["method"]` 为 `generateContent` / `streamGenerateContent`。`countTokens` → 400 `countTokens is not supported for model "<name>"`（§10.8 第 2 条） |
+| GL-02 | `Stream` 取 `Envelope.Stream`；`Model` 取 `Envelope.Model`（Gemini 请求体中没有模型名） |
+
+| Gemini 字段 | IR | 说明 |
+|:--|:--|:--|
+| `contents[]` | `Messages` | 至少 1 条，否则 400 |
+| `contents[].role` `user`（缺省也视为 `user`）/ `model` | `RoleUser` / `RoleAssistant` | 旧版 `function` 角色视为 `user`；其他值 → 400 |
+| part `text`（无 `thought` 或 `thought: false`） | `TextPart` | |
+| part `text` 且 `thought: true`（仅 model） | `ThinkingPart{Vendor: gemini, Text, Signature: thoughtSignature}` | 合成到其他厂商时丢弃（§1 第 3 条） |
+| 非思考 part 上的 `thoughtSignature` | 丢弃 | 只能回传给 Gemini |
+| part `inlineData`，`mimeType` 以 `image/` 开头 | `ImagePart{MediaType, Data}` | base64 非法 → 400 |
+| part `inlineData` 其他类型（PDF、音频、视频） | — | 400 `inlineData mimeType "<t>" is not supported for model "<name>"` |
+| part `fileData` | — | 400（Files API 的 URI 在其他厂商不可用） |
+| part `functionCall`（仅 model） | `ToolCallPart{ID: GID-03, Name, Arguments: args}` | `args` 缺失 → `{}`；不是对象 → 400 |
+| part `functionResponse`（仅 user / function） | `ToolResultPart{ToolCallID: GID-04, Content: [TextPart{response 的紧凑 JSON}]}` | `IsError` 恒为 false（错误信息已在 JSON 中）；带 `parts`（多模态结果）→ 400 |
+| part `executableCode`、`codeExecutionResult`、`videoMetadata` 等其他 part | — | 400（消息指出 part 类型） |
+| `systemInstruction.parts[].text` | `System`（每个一个 TextPart） | 其他 part 类型 → 400 |
+| `tools[].functionDeclarations[]` | `Tool{Name, Description, InputSchema}` | `parametersJsonSchema` 原样作为 `InputSchema`；只有 `parameters`（OpenAPI 风格）时按 GL-03 转换；都没有 → `{"type":"object","properties":{}}` |
+| `tools[]` 中的内置工具（`googleSearch`、`googleSearchRetrieval`、`codeExecution`、`urlContext`、`googleMaps`、`fileSearch`、`computerUse` 等） | — | 400 `built-in tool "<名>" is not supported for model "<name>"` |
+| `toolConfig.functionCallingConfig.mode` `AUTO` / `ANY` / `NONE` | `auto` / `any` / `none` | `ANY` 且 `allowedFunctionNames` 恰好 1 个 → `tool` + 该名字；多于 1 个 → 400；其他 mode（如 `VALIDATED`）→ 400 |
+| `generationConfig.maxOutputTokens` | `MaxTokens` | |
+| `generationConfig.temperature`、`topP` | 同名 | |
+| `generationConfig.stopSequences` | `StopSequences` | |
+| `generationConfig.candidateCount` > 1 | — | 400 |
+| `generationConfig.topK` | 丢弃 | 与 §6.1 `top_k` 一致（§6.5 第 4 条） |
+| `generationConfig.seed`、`presencePenalty`、`frequencyPenalty`、`responseLogprobs`、`logprobs` | — | 400（改变采样语义或输出形状，§1 第 2 条） |
+| `generationConfig.responseMimeType` 不是 `text/plain`；`responseSchema`、`responseJsonSchema`、`responseFormat`；`responseModalities` 含 `TEXT` 以外的值；`speechConfig`、`imageConfig` | — | 400（IR 不能表达结构化输出与多模态输出） |
+| `generationConfig.thinkingConfig`、`mediaResolution` | 丢弃 | 与 §6.1 `thinking` 同理 |
+| `safetySettings` | 丢弃 | 只对 Gemini 有意义 |
+| `cachedContent` | — | 400（引用 Gemini 账号下的缓存对象） |
+| 其他未知字段 | — | §1 第 5 条。`generationConfig` 下的字段按顶层字段对待 |
+
+| 编号 | 规则 |
+|:--|:--|
+| GL-03 | `parameters`（OpenAPI 风格 Schema）→ JSON Schema：递归地把 `type` 的值改成小写；`nullable: true` 改为 `"type": [<原类型>, "null"]` 并删除 `nullable`；删除 `propertyOrdering`；其余键原样保留 |
+
+### 10.4 IR → Gemini 请求（Synth）
+
+输出的请求体**不含模型名**；`Call = {Op: "models.call", Model: <上游模型>, Stream: req.Stream, Params: {"method": Stream ? "streamGenerateContent" : "generateContent"}, Body}`。出站适配器按 EG-G-01 选择上游方法，流式时追加 `alt=sse`。
+
+| IR | Gemini | 说明 |
+|:--|:--|:--|
+| `System` | `systemInstruction: {"parts": [{"text"}...]}` | `cache_control` 丢弃 |
+| user 消息 | `{"role":"user","parts":[...]}` | `ToolResultPart` 生成的 `functionResponse` 放在该消息其余 part 之前 |
+| assistant 消息 | `{"role":"model","parts":[...]}` | |
+| `TextPart` | `{"text"}` | 空文本跳过 |
+| `ImagePart{Data}` | `{"inlineData":{"mimeType","data":<base64>}}` | |
+| `ImagePart{URL}` | — | 400（Gemini 不能按任意 URL 取图） |
+| `ToolCallPart` | `{"functionCall":{"name","args"}}` | 不发送 `id`；GSIG-02 |
+| `ToolResultPart` | `{"functionResponse":{"name":<GID-02 查到的函数名>,"response":{"output":<文本拼接>}}}`；`IsError` 时键名为 `error` | 结果含 `ImagePart` → 400 |
+| `ThinkingPart` | 丢弃 | 来源都不是 Gemini（§1 第 3 条） |
+| `Tools` | `tools: [{"functionDeclarations": [{"name","description","parametersJsonSchema": InputSchema}]}]` | 用 `parametersJsonSchema` 而不是 `parameters`，InputSchema 原样透传，不做转换（§10.8 第 3 条） |
+| `ToolChoice` `auto` / `any` / `none` / `tool` | `toolConfig.functionCallingConfig.mode` `AUTO` / `ANY` / `NONE` / `ANY` + `allowedFunctionNames: [Name]` | |
+| `MaxTokens` | `generationConfig.maxOutputTokens` | 0 时不发送 |
+| `Temperature`、`TopP` | `generationConfig.temperature`、`topP` | |
+| `StopSequences` | `generationConfig.stopSequences` | 超过 5 个 → 400 |
+| `User` | 丢弃 | Gemini 没有对应字段 |
+
+连续两条相同角色的消息原样输出，不合并。
+
+### 10.5 Gemini 响应 → IR（Decoder）
+
+非流式：
+
+| Gemini | IR |
+|:--|:--|
+| `responseId` | `ID` |
+| `candidates` 恰好 1 个 | 取它；不是 1 个且没有 `promptFeedback.blockReason` → 502 `upstream_error` |
+| `candidates` 为空且有 `promptFeedback.blockReason` | `Parts` 为空，`StopRefusal` |
+| part `text`（非思考） | `TextPart`（空文本不输出，§9.2 第 2 条） |
+| part `text` 且 `thought: true` | `ThinkingPart{Vendor: gemini, Text}` |
+| part `functionCall` | `ToolCallPart{ID: GID-01, Name, Arguments: args 或 {}}`；`args` 不是对象 → 502 |
+| `usageMetadata` | `Usage`，口径同 USE-G-02：`Input = promptTokenCount − cachedContentTokenCount（不小于 0）+ toolUsePromptTokenCount`，`CacheRead = cachedContentTokenCount`，`CacheWrite = 0`，`Output = candidatesTokenCount + thoughtsTokenCount` |
+
+`finishReason` 映射（非流式与流式共用）：
+
+| `finishReason` | IR |
+|:--|:--|
+| `STOP`，且该候选含 `functionCall` | `StopToolUse` |
+| `STOP`（无 `functionCall`）、缺失、`FINISH_REASON_UNSPECIFIED`、`OTHER`、`LANGUAGE` | `StopEndTurn` |
+| `MAX_TOKENS` | `StopMaxTokens` |
+| `SAFETY`、`RECITATION`、`BLOCKLIST`、`PROHIBITED_CONTENT`、`SPII`、`IMAGE_SAFETY`、`IMAGE_PROHIBITED_CONTENT`、`IMAGE_RECITATION` | `StopRefusal` |
+| `MALFORMED_FUNCTION_CALL`、`UNEXPECTED_TOOL_CALL`、`TOO_MANY_TOOL_CALLS`、`MISSING_THOUGHT_SIGNATURE`、`MALFORMED_RESPONSE` | 上游故障：非流式 502 `upstream_error`，流式返回流错误（同 §9.3 第 1 条对 `insufficient_system_resource` 的处理） |
+| 其他未列出的值 | `StopEndTurn`（§9.2 第 3 条） |
+
+流式（每个 SSE 事件的 `data` 是一个完整的 `GenerateContentResponse` 片段）：
+
+| 上游 | IR 事件 |
+|:--|:--|
+| 第一个 chunk | `EventStart`（`ID = responseId`） |
+| 文本 part | `EventText`；思考 part → `EventThinking` |
+| `functionCall` part | `EventToolStart` → 一个 `EventToolArgs`（`args` 的紧凑 JSON 原样）→ `EventToolEnd`。Gemini 的 `functionCall` 总是完整出现在一个 chunk 中 |
+| `usageMetadata` | `EventUsage`（累计值，后到覆盖先到） |
+| `finishReason` 非空 | `EventStop`（映射同上表） |
+| 上游 EOF，且此前出现过 `finishReason` | `EventEnd` |
+| 上游 EOF 但从未出现 `finishReason` | 流错误（`OutcomeNetworkError`，同 Anthropic Decoder 的「`message_stop` 前结束」）。同协议透传（STR-G-02）不检查这一点，转译路径必须检查，否则客户端无法发现截断 |
+| 带顶层 `error` 的 chunk | 流错误，分类同 STR-G-01 |
+
+### 10.6 IR → Gemini 响应（Encoder）
+
+非流式：
+
+```json
+{
+  "candidates": [{"content": {"role": "model", "parts": [...]}, "finishReason": "<见下表>", "index": 0}],
+  "usageMetadata": {"promptTokenCount": <Input+CacheRead+CacheWrite>, "candidatesTokenCount": <Output>,
+                    "totalTokenCount": <两者之和>, "cachedContentTokenCount": <CacheRead>},
+  "modelVersion": "<客户端请求的模型名>",
+  "responseId": "<IR ID；为空时网关签发>"
+}
+```
+
+`cachedContentTokenCount` 为 0 时省略。
+
+| IR | Gemini |
+|:--|:--|
+| `TextPart`（含 `IsRefusal`） | `{"text"}` |
+| `ThinkingPart` | 丢弃（与 T43 B4 一致：只有 Chat 客户端输出思考内容） |
+| `ToolCallPart` | `{"functionCall":{"id","name","args"}}`：带上 `id`，客户端回传 `functionResponse.id` 时 Lower 能按 GID-04 精确对应；`args` 原样输出（§9.3 第 3 条），为空时 `{}` |
+| `StopEndTurn`、`StopToolUse`、`StopSequence` | `STOP` |
+| `StopMaxTokens` | `MAX_TOKENS` |
+| `StopRefusal`，或含 `IsRefusal` 的文本 | `SAFETY` |
+
+流式：
+
+| 编号 | 规则 |
+|:--|:--|
+| GE-01 | 每个 IR 文本事件输出一个 chunk：`candidates[0].content = {"role":"model","parts":[{"text"}]}`，不带 `finishReason` |
+| GE-02 | 工具调用：把同一个工具调用的 `EventToolArgs` 拼接起来，在 `EventToolEnd`（或下一个 `EventToolStart`、`EventStop`、`EventEnd`）时输出一个只含该 `functionCall` 的 chunk。拼出的不是 JSON 对象 → 流错误；拼接缓冲超过 1 MiB → 流错误（禁止无界缓冲） |
+| GE-03 | `EventEnd` 时输出最后一个 chunk：`parts` 为空数组，带 `finishReason` 与 `usageMetadata`（字段同非流式） |
+| GE-04 | **不输出** `[DONE]` 或其他结束标记；最后一个 chunk 之后 Encoder 返回 `io.EOF` |
+| GE-05 | 每个 chunk 都带 `modelVersion` 与 `responseId`（整个流中相同） |
+
+### 10.7 必测用例
+
+除 §7 的通用用例外，每个 Gemini 方向还要覆盖：工具 ID（GID-01 ~ GID-04，含并行两个同名调用）；占位签名（GSIG-02）；Schema 转换（GL-03）；§10.5 每一类 `finishReason` 与 `promptFeedback.blockReason`；用量的三个特殊字段；流式 EOF 前无 `finishReason`；GE-02 的非对象与超限；§10.3 中每个标为 400 与丢弃的字段；`TestStreamMatrix` 全部组合；REG-04 的用量一致性。
+
+### 10.8 决策记录（2026-11-10 用户确认）
+
+1. **占位思考签名（GSIG-02）**。Google 文档要求 Gemini 3 在当前轮的工具调用历史中回传签名，缺失时 400；占位值 `skip_thought_signature_validator` 可以绕过校验，但官方说明它会降低模型表现，只应作为最后手段。Vercel AI SDK、LiteLLM 都在跨模型时自动注入它。
+   - **采用 a**：注入，但上游模型名以 `gemini-1.` 或 `gemini-2.` 开头时不注入。旧模型不要求签名，这样可避开它们拒绝未知字段的风险，以后的 `gemini-3.x`、`gemini-4` 等自动覆盖。
+   - b. 对所有模型都注入（阶段 B 需要用真实上游验证 Gemini 2.5 接受它）。
+   - c. 不注入：Claude Code / Codex CLI 用 Gemini 3 做多轮工具调用会直接 400。
+2. **`countTokens` 在转译路径上（GL-01）**。
+   - **采用 a**：400。Translator 只能生成上游调用，不能本地作答。
+   - b. 修改内核让 Translator 本地返回估算结果：要改冻结的 `internal/core` / `internal/protocol`，不建议。
+   - 阶段 B 的真实客户端验证要确认 Gemini CLI 在 `countTokens` 失败时能否继续对话；不能的话，部署文档写明「Gemini CLI 只能使用 Gemini 上游」。
+3. **工具 Schema 字段（§10.4）**。
+   - **采用 a**：`parametersJsonSchema`：标准 JSON Schema 原样透传，`const`、`additionalProperties` 等关键字不丢失，也不用写转换。
+   - b. 转换成 OpenAPI 风格的 `parameters`：兼容更旧的模型，但要写反向转换并删除 Gemini 不支持的关键字。
+   - 阶段 B 用真实上游确认目标模型接受 `parametersJsonSchema`；不接受时改为 b，并作为 SPEC-GAP 报告。

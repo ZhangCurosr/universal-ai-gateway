@@ -1,0 +1,38 @@
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": [
+data:           {
+data:             "text": "Once upon"
+data:           }
+data:         ]
+data:       },
+data:       "index": 0
+data:     }
+data:   ],
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up5"
+data: }
+
+data: {
+data:   "candidates": [
+data:     {
+data:       "content": {
+data:         "role": "model",
+data:         "parts": []
+data:       },
+data:       "finishReason": "MAX_TOKENS",
+data:       "index": 0
+data:     }
+data:   ],
+data:   "usageMetadata": {
+data:     "promptTokenCount": 5,
+data:     "candidatesTokenCount": 3,
+data:     "totalTokenCount": 8
+data:   },
+data:   "modelVersion": "claude-for-gemini",
+data:   "responseId": "up5"
+data: }
+

@@ -1,0 +1,25 @@
+{
+  "choices": [
+    {
+      "finish_reason": "content_filter",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": null
+      }
+    }
+  ],
+  "created": 1700000000,
+  "id": "chatcmpl-gemresp16",
+  "model": "claude-for-chat",
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 9,
+    "completion_tokens": 0,
+    "total_tokens": 9,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  }
+}
