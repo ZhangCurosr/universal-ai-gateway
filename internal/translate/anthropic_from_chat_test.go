@@ -188,16 +188,16 @@ func TestStopReasonFor(t *testing.T) {
 		"content_filter": "refusal", "": "end_turn", "unknown_custom": "end_turn",
 	}
 	for in, want := range valid {
-		got, err := stopReasonFor(in)
+		got, err := chatFinishToIR(in)
 		if err != nil {
 			t.Errorf("stopReasonFor(%q) returned unexpected error: %v", in, err)
 		}
-		if got != want {
+		if string(got) != want {
 			t.Errorf("stopReasonFor(%q) = %q, want %q", in, got, want)
 		}
 	}
 	for _, in := range []string{"insufficient_system_resource"} {
-		if got, err := stopReasonFor(in); err == nil {
+		if got, err := chatFinishToIR(in); err == nil {
 			t.Errorf("stopReasonFor(%q) = %q, want error", in, got)
 		} else if ae, ok := apperr.As(err); !ok || ae.Code != apperr.CodeUpstreamError {
 			t.Errorf("stopReasonFor(%q) error = %v, want CodeUpstreamError", in, err)

@@ -310,7 +310,7 @@ func TestStatusFor(t *testing.T) {
 		{"unknown", "completed", ""},
 	}
 	for _, tt := range tests {
-		status, inc := statusFor(tt.stopReason)
+		status, inc := mapStopReasonToResponses(mapAnthropicStopReason(tt.stopReason))
 		if status != tt.wantStatus {
 			t.Errorf("statusFor(%q) status = %q, want %q", tt.stopReason, status, tt.wantStatus)
 		}

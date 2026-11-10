@@ -206,7 +206,7 @@ func TestFinishReasonFor(t *testing.T) {
 		"end_turn": "stop", "stop_sequence": "stop", "max_tokens": "length", "tool_use": "tool_calls",
 		"refusal": "content_filter", "pause_turn": "stop", "": "stop",
 	} {
-		if got := finishReasonFor(in); got != want {
+		if got := mapStopReasonToChat(mapAnthropicStopReason(in)); got != want {
 			t.Errorf("finishReasonFor(%q) = %q, want %q", in, got, want)
 		}
 	}

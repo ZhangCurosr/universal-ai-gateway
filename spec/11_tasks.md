@@ -317,9 +317,29 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T40 | 竞态检测与持续集成（[说明](../docs/handoff/T40_race_and_ci.md)） | — | 否 | `DONE` |
 | T41 | 真实客户端兼容性实测与回归用例（[说明](../docs/handoff/T41_real_client_compat.md)） | — | 否 | `DONE` |
 | T42 | 转译层未知字段策略（[说明](../docs/handoff/T42_field_tolerance.md)） | T41 | 是 | `DONE` |
-| T43 | 响应转换经过 IR（流式 IR）（[说明](../docs/handoff/T43_stream_ir.md)） | 建议 T42 之后 | 是 | `TODO` |
+| T43 | 响应转换经过 IR（流式 IR）（[说明](../docs/handoff/T43_stream_ir.md)） | 建议 T42 之后 | 是 | `DONE` |
 | T44 | SPEC-GAP 决策与落地（[说明](../docs/handoff/T44_spec_gap_decisions.md)） | — | 是（用户填决策表） | `DONE` |
 | T45 | Prometheus 指标端点，M3 第一项（[说明](../docs/handoff/T45_metrics.md)） | T40 | 是 | `DONE` |
+
+---
+
+## T43 响应转换经过 IR（流式 IR） — 状态：`DONE`
+
+- **前置**：T42
+- **必读规格**：10 §2、§5、§6.3、§8.3、§9；`internal/ir/types.go`；`docs/handoff/T43_stream_ir.md`
+- **涉及文件**：`spec/10_ir_translation.md`、`spec/11_tasks.md`、`internal/ir/types.go`、`internal/translate/decode*.go`、`internal/translate/encode*.go`、`internal/translate/register.go`、`internal/translate/doc.go`、`internal/translate/matrix_test.go`
+- **要做的事**：
+  1. 规格：在 `spec/10` 中定义规范化响应与流式 IR 事件（`ir.Response`、`ir.StreamEvent`、`ir.TokenUsage`）；
+  2. IR 类型：在 `internal/ir/types.go` 中实现规范化类型定义；
+  3. 解耦重构：实现上游 `decoder`（`anthropicDecoder`、`chatDecoder`）与客户端 `encoder`（`chatEncoder`、`anthropicEncoder`、`responsesEncoder`）；
+  4. 替换旧成对转换：统一将转换器 `Response` 方法改为 `Decoder + Encoder` 组合，删除旧的成对状态机；
+  5. 组合矩阵测试：验证每个 Decoder 接每个 Encoder 流式事件序列的一致性与合法性；
+  6. 架构文档：更新 `internal/translate/doc.go` 说明 Lower / Synthesize / Decode / Encode 四类组件与新协议扩展机制。
+- **测试**：
+  - 现有全部黄金测试（Chat ↔ Anthropic, Chat ↔ Responses, Anthropic ↔ Responses）逐字节通过；
+  - 全部单向 Decoder 与 Encoder 独立单元测试通过；
+  - 跨协议 Decoder/Encoder 全组合矩阵测试（24 组用例）全部通过。
+
 
 ---
 
