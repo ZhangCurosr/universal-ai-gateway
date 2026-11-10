@@ -179,6 +179,16 @@ func TestLowerGeminiRejects(t *testing.T) {
 	}
 }
 
+func TestLowerGeminiSignatureOnlyPartDropped(t *testing.T) {
+	req := mustLowerGemini(t, `{"contents":[
+		{"role":"user","parts":[{"text":"q"}]},
+		{"role":"model","parts":[{"text":"a"},{"thoughtSignature":"c2ln"}]}
+	]}`)
+	if got := len(req.Messages[1].Parts); got != 1 {
+		t.Fatalf("model parts = %d (%+v), want the signature-only part dropped", got, req.Messages[1].Parts)
+	}
+}
+
 func TestLowerGeminiDropUnknown(t *testing.T) {
 	req, err := lowerGemini(geminiEnv(`{"contents":[{"parts":[{"text":"x"}]}],"foo":1,"generationConfig":{"bar":2}}`),
 		Options{DropUnknownFields: true}, "gemini", "anthropic")

@@ -234,6 +234,8 @@ func lowerGeminiContents(raw json.RawMessage, req *ir.Request, model string, opt
 					return err
 				}
 				results = append(results, tr)
+			case p.ThoughtSignature != "" && onlyKeys(keys, "thoughtSignature", "thought"):
+				// 只携带签名的空 part：签名只能回传给 Gemini（§1 第 3 条），跨厂商丢弃
 			default:
 				return invalid(pp + ": part has no supported content (text, inlineData, functionCall, functionResponse)")
 			}
@@ -252,6 +254,16 @@ func lowerGeminiContents(raw json.RawMessage, req *ir.Request, model string, opt
 		return invalid("contents must contain at least one non-empty message")
 	}
 	return nil
+}
+
+// onlyKeys 报告 obj 中值不为 null 的键都在 allowed 里。
+func onlyKeys(obj map[string]json.RawMessage, allowed ...string) bool {
+	for k, v := range obj {
+		if present(v) && !slices.Contains(allowed, k) {
+			return false
+		}
+	}
+	return true
 }
 
 func lowerGeminiInline(raw json.RawMessage, path, model string) (ir.ImagePart, error) {
