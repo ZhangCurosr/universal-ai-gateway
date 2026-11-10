@@ -191,6 +191,43 @@ print(response.choices[0].message.content)
 4. 在 API Key 输入框中填入网关发放的客户端 Token：`uai_live_...`。
 5. 在模型列表中点击 **Add Model** 添加网关配置的服务名称（如 `deepseek-chat` 或 `gpt-5`）。
 
+**Gemini 客户端（Google GenAI SDK 与 Gemini CLI）**：
+网关支持 Google AI Studio 的 Gemini API（`generateContent`、`streamGenerateContent`、`countTokens` 以及模型列表，spec/08 §10 / T47）。
+- **Python（google-genai SDK）**：
+  ```python
+  from google import genai
+  from google.genai import types
+
+  # 指向网关数据面（不要在末尾带 /v1beta，SDK 会自动补齐端点路径）
+  client = genai.Client(
+      api_key="uai_live_...",
+      http_options=types.HttpOptions(base_url="https://gw.example.com"),
+  )
+
+  # 非流式生成
+  response = client.models.generate_content(
+      model="gemini-2.5-pro",
+      contents="用一句话解释微内核架构",
+  )
+  print(response.text)
+
+  # 流式生成（SDK 自动请求 alt=sse）
+  for chunk in client.models.generate_content_stream(
+      model="gemini-2.5-pro",
+      contents="数到五",
+  ):
+      print(chunk.text, end="")
+  ```
+- **Gemini CLI**：
+  ```bash
+  export GEMINI_API_KEY="uai_live_..."
+  # 将官方 API 基础地址指向网关
+  export GOOGLE_GENAI_BASE_URL="https://gw.example.com"
+  gemini "你好"
+  ```
+- **安全与凭据说明**：网关**不支持**在 URL 查询串中传 `?key=<Token>`（AUTH-03，避免凭据在反向代理、访问日志和监控中泄露）。客户端必须将网关 Token 放在请求头 `x-goog-api-key` 或 `Authorization: Bearer` 中传递。
+- **阶梯定价配置提示**：Gemini 官方部分模型（如 Gemini 2.5 Pro）根据单次请求 Prompt 是否超过 200k 实行不同阶梯单价。当前网关的静态价格表按单一单价计费，建议在 `gateway.yaml` 的 `models[].price` 中按你的常见使用场景（例如 200k 以内的主流档位）配置基准单价。
+
 > **提示（智能体客户端字段容忍）**：接入 Claude Code、Codex CLI 等智能体客户端进行跨协议转译时（例如客户端使用 Anthropic/Responses 协议，目标上游为 OpenAI Chat 等），智能体客户端常会随版本升级附带实验性或环境专用的未定义字段。建议在 `gateway.yaml` 中配置 `translation.unknown_fields: drop`（spec/10 §1 第 5 条），容忍并丢弃未知字段，避免请求被默认策略严格 400 阻断。
 
 ### 6.2 作为 MCP 工具

@@ -86,6 +86,24 @@ models:
     price: { input_tokens: "1.25/1M", output_tokens: "10/1M", cache_read_tokens: "0.125/1M" }
     reserve: { output_tokens: 32000 }
 
+# Gemini API 的写法示例（Google AI Studio，见 spec/08 §10，任务卡 T47）：
+#
+# pools:
+#   - name: gemini-main
+#     protocol: gemini
+#     base_url: "https://generativelanguage.googleapis.com"
+#     strategy: least_inflight
+#     affinity_ttl: 5m
+#
+# models:
+#   - name: "gemini-2.5-pro"
+#     pool: gemini-main
+#     price:
+#       input_tokens: "1.25/1M"
+#       output_tokens: "10.00/1M"
+#       cache_read_tokens: "0.3125/1M"
+#     reserve: { output_tokens: 8192 }
+
 # 非大模型 API 的写法示例（需要对应的适配器已注册，见 spec/08 §8）：
 #
 # pools:

@@ -34,9 +34,13 @@ Universal AI Gateway 是一个**单进程、单静态二进制**的 AI API 网�
 
 OpenAI 入站 → Anthropic 上游、Anthropic 入站 → OpenAI 上游（请求、非流式响应、流式响应），见 `10_ir_translation.md`。
 
-### M3：运维增强
+### M3：运维增强与协议扩展
 
-Prometheus 指标端点（`GET /admin/metrics`，详见 `15_metrics.md`）、Gemini 协议、WASM 插件、管理 Web UI（`GET /admin/ui/`，详见 `09_http_api.md` §6）。除指标端点与管理 Web UI 外，其余 M3 的规格在 M2 完成后补充。
+Prometheus 指标端点（`GET /admin/metrics`，详见 `15_metrics.md`，T45 已完成）、Gemini 协议（同协议透传见 `08_adapters.md` §10 / T47，跨协议转译见 `10_ir_translation.md` §11 / T48）、管理 Web UI（`GET /admin/ui/`，详见 `09_http_api.md` §6 / T49）、WASM 插件。
+
+Gemini 协议范围：
+- 支持 Google AI Studio 的 Gemini API（`generativelanguage.googleapis.com`）的 `generateContent`、`streamGenerateContent`（需 `alt=sse`）、`countTokens` 以及模型目录 `GET /v1beta/models`。
+- 明确不做：Vertex AI（OAuth/服务账号认证及独立端点）、`embedContent`、`batchEmbedContents`、文件上传（Files API）、`cachedContents` 管理 API、Live API（WebSocket）及 Batch API。
 
 ### 明确不做（任何里程碑都不做）
 

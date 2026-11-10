@@ -41,6 +41,7 @@ var layers = map[string]int{
 	"internal/metrics":             2,
 	"internal/scheduler":           2,
 	"internal/adapter/anthropic":   2,
+	"internal/adapter/gemini":      2,
 	"internal/adapter/mineru":      2,
 	"internal/adapter/openai":      2,
 	"internal/adapter/openairesp":  2,

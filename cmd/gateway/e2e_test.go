@@ -85,6 +85,15 @@ func fakeUpstream(t *testing.T) *httptest.Server {
 		case "/v1/responses":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"CAP says pick two"}]}],"usage":{"input_tokens":9,"output_tokens":6}}`)
+		case "/v1beta/models/gemini-test:generateContent":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"candidates":[{"content":{"parts":[{"text":"gemini ok"}]}}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}`)
+		case "/v1beta/models/gemini-test:streamGenerateContent":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"gemini stream ok\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":3}}\n\n")
+		case "/v1beta/models/gemini-test:countTokens":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"totalTokens":5}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -836,5 +845,155 @@ func TestE2EResponsesToChat(t *testing.T) {
 	if len(sums) != 1 || sums[0].Requests != 2 || sums[0].Model != "deepseek-test" ||
 		sums[0].Usage["input_tokens"] != 7+6 || sums[0].Usage["output_tokens"] != 2+3 {
 		t.Fatalf("usage = %+v, want 2 requests on deepseek-test with input 13 / output 5", sums)
+	}
+}
+
+// T47：Gemini 客户端经网关同协议透传调用 Gemini 上游（spec/08 §10）。
+func TestE2EGeminiPassthrough(t *testing.T) {
+	up := fakeUpstream(t)
+	g := startGateway(t, up.URL, func(c *config.Config) {
+		c.Pools = append(c.Pools, config.PoolConfig{
+			Name:     "gem",
+			Protocol: "gemini",
+			BaseURL:  up.URL,
+		})
+		c.Models = append(c.Models, config.ModelConfig{
+			Name: "gemini-test",
+			Pool: "gem",
+			Price: map[string]string{
+				"input_tokens":      "1.25/1M",
+				"output_tokens":     "10/1M",
+				"cache_read_tokens": "0.125/1M",
+			},
+			Reserve: map[string]int64{
+				"output_tokens": 1024,
+			},
+		})
+		c.Normalize()
+	})
+	adminURL := "http://" + g.admin + "/admin/api"
+	dataURL := "http://" + g.data
+
+	var created struct {
+		Client struct {
+			ID int64 `json:"id"`
+		} `json:"client"`
+		Token string `json:"token"`
+	}
+	if code := doJSON(t, "POST", adminURL+"/clients", g.adminToken,
+		map[string]any{"name": "gemini-user", "role": "user", "quota_nano_usd": int64(1e12)}, &created); code != http.StatusCreated {
+		t.Fatalf("create client: %d", code)
+	}
+	if code := doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+		map[string]any{"pool": "gem", "name": "gem-k1", "secret": "gemini-upstream-secret"}, nil); code != http.StatusCreated {
+		t.Fatalf("create key: %d", code)
+	}
+
+	// 1. 非流式 generateContent：使用 x-goog-api-key 鉴权
+	reqBody := `{"contents":[{"parts":[{"text":"hi"}]}]}`
+	req, _ := http.NewRequest("POST", dataURL+"/v1beta/models/gemini-test:generateContent", bytes.NewReader([]byte(reqBody)))
+	req.Header.Set("x-goog-api-key", created.Token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("generateContent status = %d, body = %s", resp.StatusCode, b)
+	}
+	var genResp struct {
+		Candidates []struct {
+			Content struct {
+				Parts []struct {
+					Text string `json:"text"`
+				} `json:"parts"`
+			} `json:"content"`
+		} `json:"candidates"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&genResp)
+	resp.Body.Close()
+	if len(genResp.Candidates) == 0 || len(genResp.Candidates[0].Content.Parts) == 0 || genResp.Candidates[0].Content.Parts[0].Text != "gemini ok" {
+		t.Fatalf("unexpected generateContent body: %+v", genResp)
+	}
+
+	// 2. 流式 streamGenerateContent?alt=sse
+	reqStream, _ := http.NewRequest("POST", dataURL+"/v1beta/models/gemini-test:streamGenerateContent?alt=sse", bytes.NewReader([]byte(reqBody)))
+	reqStream.Header.Set("x-goog-api-key", created.Token)
+	reqStream.Header.Set("Content-Type", "application/json")
+	respStream, err := http.DefaultClient.Do(reqStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if respStream.StatusCode != http.StatusOK {
+		t.Fatalf("streamGenerateContent status = %d", respStream.StatusCode)
+	}
+	var streamText string
+	sc := bufio.NewScanner(respStream.Body)
+	for sc.Scan() {
+		line := sc.Text()
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			var chunk struct {
+				Candidates []struct {
+					Content struct {
+						Parts []struct {
+							Text string `json:"text"`
+						} `json:"parts"`
+					} `json:"content"`
+				} `json:"candidates"`
+			}
+			if json.Unmarshal([]byte(data), &chunk) == nil && len(chunk.Candidates) > 0 && len(chunk.Candidates[0].Content.Parts) > 0 {
+				streamText = chunk.Candidates[0].Content.Parts[0].Text
+			}
+		}
+	}
+	respStream.Body.Close()
+	if streamText != "gemini stream ok" {
+		t.Fatalf("stream text = %q, want gemini stream ok", streamText)
+	}
+
+	// 3. countTokens
+	reqCount, _ := http.NewRequest("POST", dataURL+"/v1beta/models/gemini-test:countTokens", bytes.NewReader([]byte(reqBody)))
+	reqCount.Header.Set("x-goog-api-key", created.Token)
+	reqCount.Header.Set("Content-Type", "application/json")
+	respCount, err := http.DefaultClient.Do(reqCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if respCount.StatusCode != http.StatusOK {
+		t.Fatalf("countTokens status = %d", respCount.StatusCode)
+	}
+	var countResp struct {
+		TotalTokens int64 `json:"totalTokens"`
+	}
+	_ = json.NewDecoder(respCount.Body).Decode(&countResp)
+	respCount.Body.Close()
+	if countResp.TotalTokens != 5 {
+		t.Fatalf("totalTokens = %d, want 5", countResp.TotalTokens)
+	}
+
+	// 4. 计费落库验证：非流式 (5 in, 2 out) + 流式 (5 in, 3 out) = (10 in, 5 out)；countTokens 不计费
+	g.cancel()
+	select {
+	case err := <-g.done:
+		if err != nil {
+			t.Fatalf("run() = %v", err)
+		}
+		g.done <- nil
+	case <-time.After(10 * time.Second):
+		t.Fatal("gateway did not stop")
+	}
+	db, err := sqlite.Open(context.Background(), filepath.Join(g.cfg.Server.DataDir, "gateway.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	sums, err := db.QueryUsage(context.Background(), store.UsageQuery{ClientID: created.Client.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sums) != 1 || sums[0].Requests != 3 || sums[0].Model != "gemini-test" ||
+		sums[0].Usage["input_tokens"] != 5+5 || sums[0].Usage["output_tokens"] != 2+3 {
+		t.Fatalf("usage = %+v, want 3 requests on gemini-test with input 10 / output 5", sums)
 	}
 }

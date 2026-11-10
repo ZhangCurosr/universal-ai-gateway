@@ -406,3 +406,90 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 |:--|:--|
 | TL-R01 | `ToolRequest`：参数 `model`（必填，非空字符串）、`input`（必填，非空字符串）、`instructions`（可选字符串）、`max_output_tokens`（可选正整数），不允许其他字段；生成 `responses.create` 请求，请求体为上述字段加 `"store": false`，**不**设置 `stream` |
 | TL-R02 | `ToolResult`：2xx → 依次拼接 `output[*]` 中 `type == "message"` 的元素里 `content[*]` 中 `type == "output_text"` 的 `text`；非 2xx → `error.message`，`IsError = true` |
+
+## 10. Gemini API（`gemini`，任务卡 T47）
+
+本章规定 Google AI Studio 的 Gemini API（`generativelanguage.googleapis.com`）同协议透传适配器。
+
+### 10.1 包与常量
+
+| 项 | 规定 |
+|:--|:--|
+| 包 | `internal/adapter/gemini` |
+| 协议名 | `const Protocol protocol.Protocol = "gemini"` |
+| 操作名 | `const OpModelsCall = "models.call"` |
+| Params 键 | `method`：`generateContent` / `streamGenerateContent` / `countTokens` |
+
+### 10.2 入站（Ingress）
+
+| 编号 | 规则 |
+|:--|:--|
+| IN-G-01 | 路由：`POST /v1beta/models/{target}`（Call，Op `models.call`，`BodyBuffered`）；`GET /v1beta/models`（Catalog）。*待定 1：不支持 `/v1/...`：SDK 与 Gemini CLI 默认用 `v1beta`，且 `Op` 必须唯一* |
+| IN-G-02 | `target` 按**最后一个** `:` 拆分；拆不出来，或模型名为空 → `CodeInvalidRequest`，消息 `path must be /v1beta/models/{model}:{method}` |
+| IN-G-03 | 方法只接受 `generateContent`、`streamGenerateContent`、`countTokens`；其他方法 → `CodeInvalidRequest`，消息 `method "<m>" is not supported` |
+| IN-G-04 | `streamGenerateContent` 必须带查询参数 `alt=sse`，否则 `CodeInvalidRequest`，消息 `streamGenerateContent requires alt=sse`。*待定 2：不带 `alt=sse` 时返回逐步输出的 JSON 数组无法被流式处理，予以拒绝* |
+| IN-G-05 | `Envelope.Model` = 拆出的模型名（不带 `models/` 前缀）；`Stream` = 方法是 `streamGenerateContent`；`Params = {"method": <方法>}` |
+| IN-G-06 | 请求体不是 JSON 对象 → `CodeInvalidRequest`（同 IN-L01）。不读取请求体里的 `model`、`stream` |
+| IN-G-07 | `Estimate`：`generateContent` / `streamGenerateContent`：`input_tokens = EstimateInputTokens(len(body))`；`generationConfig.maxOutputTokens` 存在且为正整数时 `output_tokens` = 该值，存在但不是正整数 → `CodeInvalidRequest`。`countTokens`：三个单位全部显式为 0（不计费，IN-G04） |
+| IN-G-08 | 亲和线索：Gemini 无用户标识字段，用前缀线索：`systemInstruction` + `tools` + `contents[0]`（AFH-02 拼接规则）。`countTokens` 不设亲和 |
+| IN-G-09 | 查询串里只有 `alt` 有意义，其他查询参数（含 `key=`）一律不读、不转发。客户端需将网关 Token 放在 `x-goog-api-key` 头或 `Authorization: Bearer` 中 |
+| IN-G-10 | `Claims` 恒为 false（路由不与其他协议冲突） |
+
+**错误格式**（`WriteError`）：
+
+```json
+{"error":{"code":<HTTP 状态码>,"message":"<消息>","status":"<状态名>"}}
+```
+
+| apperr 错误码 | `status` |
+|:--|:--|
+| `invalid_request`、`request_too_large` | `INVALID_ARGUMENT` |
+| `unauthenticated` | `UNAUTHENTICATED` |
+| `permission_denied` | `PERMISSION_DENIED` |
+| `not_found` | `NOT_FOUND` |
+| `conflict` | `ABORTED` |
+| `rate_limited`、`insufficient_quota` | `RESOURCE_EXHAUSTED` |
+| `not_implemented` | `UNIMPLEMENTED` |
+| `timeout` | `DEADLINE_EXCEEDED` |
+| `overloaded`、`upstream_unavailable` | `UNAVAILABLE` |
+| `internal`、`upstream_error` | `INTERNAL` |
+
+**流错误事件**（`StreamError`）：`Name: ""`，`Data` 为上述错误体 JSON。
+
+**目录**（`WriteCatalog`）：
+
+```json
+{"models":[{"name":"models/<id>","displayName":"<id>","supportedGenerationMethods":["generateContent","streamGenerateContent","countTokens"]}]}
+```
+
+### 10.3 出站（Egress）
+
+| 编号 | 规则 |
+|:--|:--|
+| PT-G-01 | `Prepare`：请求体**原样**作为上游请求体，不做改写；`Call.Model = upstreamModel`，`Call.Stream = env.Stream`，`Call.Params = env.Params` |
+| PT-G-02 | 请求体不是 JSON 对象 → `CodeInvalidRequest`（PT-02） |
+| EG-G-01 | 上游方法：`Params["method"]` 为 `countTokens` 时用 `countTokens`；否则 `Call.Stream` 为 true 用 `streamGenerateContent`，为 false 用 `generateContent` |
+| EG-G-02 | 上游 URL：`protocol.JoinURL(base_url, "/v1beta/models/" + url.PathEscape(Call.Model) + ":" + 方法)`；流式时追加 `?alt=sse` |
+| HDR-G-01 | `POST`；`Content-Type: application/json`；`Accept: application/json, text/event-stream`；鉴权头 `x-goog-api-key: <secret>`。**不**使用查询参数 `key=` 传输上游 Key |
+| HDR-G-02 | 不复制任何客户端头（HDR-02）；`User-Agent` 同 HDR-05 |
+| EG-G-03 | 响应 `Content-Type` 以 `text/event-stream` 开头时返回 `ResponseEvents`，否则 `ResponseBuffered` |
+| EG-G-04 | 上游 429 错误体包含 `error.details[]` 中 `@type` 以 `RetryInfo` 结尾的项时，提取 `retryDelay`（如 `"30s"`）作为 `AttemptError.Outcome.RetryAfter` |
+| EG-G-05 | `Units() = [input_tokens, output_tokens, cache_read_tokens]` |
+
+**用量（`Meter`）**：
+
+| 编号 | 规则 |
+|:--|:--|
+| USE-G-01 | 来源：非流式响应体顶层 `usageMetadata`；流式时每个 chunk 携带的 `usageMetadata` 为累计值，后到覆盖先到 |
+| USE-G-02 | `cached = cachedContentTokenCount`；`input_tokens = max(promptTokenCount − cached, 0) + toolUsePromptTokenCount`；`cache_read_tokens = cached`；`output_tokens = candidatesTokenCount + thoughtsTokenCount`（思考按输出计费） |
+| USE-G-03 | `candidates[*].content.parts[*].text` 累计为 `textBytes`（USE-07 估算依据），含 `thought: true` 部分 |
+| USE-G-04 | `Usage()`：`countTokens` → `(nil, UsageUpstream)`；有 `promptTokenCount` → `UsageUpstream`；只有文本 → `UsageEstimated`；都没有 → `UsageNone` |
+
+**事件过滤与流中错误**：
+
+| 编号 | 规则 |
+|:--|:--|
+| FWD-G-01 | 透传时所有 SSE 事件原样转发 |
+| STR-G-01 | 带顶层 `error` 对象的 chunk 记为 Fault：`error.code == 429` 或 `status == "RESOURCE_EXHAUSTED"` → `RateLimited`；`503` / `UNAVAILABLE` → `Overloaded`；其他 → `ServerError` |
+| STR-G-02 | *待定 3：Gemini SSE 无 `[DONE]` 结束标记，透传路径将连接 EOF 视为正常结束，不强制检查尾帧 `finishReason`* |
+
