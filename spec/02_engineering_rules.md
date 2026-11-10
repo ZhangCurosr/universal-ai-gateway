@@ -8,6 +8,7 @@
 - 构建必须在 `CGO_ENABLED=0` 下通过。
 - 格式：`gofmt`。导入分组：标准库 / 第三方 / 本仓库，三组之间空一行。
 - 一键检查：`go run ./tools/check`。它依次执行 `gofmt -l`、`go vet ./...`、`go build ./...`、`CGO_ENABLED=0 go build ./cmd/gateway`、`go test ./...`（含 `internal/archtest` 分层检查）。**任何一步失败都不算完成。**
+- 推送前检查钩子（T50）：仓库提供 `.githooks/pre-push`，内容只运行 `go run ./tools/check -short`。每台开发机执行一次 `git config core.hooksPath .githooks` 启用。禁止用 `git push --no-verify` 绕过。GitHub Actions 恢复后 `.github/workflows/check.yml` 照常生效，钩子保留。
 
 ## 2. 目录与命名
 
@@ -101,6 +102,17 @@
 5. 数据库测试使用 `sqlite.Open(ctx, filepath.Join(t.TempDir(), "test.db"))`。
 6. 测试用例覆盖规格中编号行为时，在用例名或注释中写编号，如 `t.Run("LED-03 reserve exceeds quota", ...)`。
 7. 一个测试只验证一件事；失败信息必须说明「调用了什么、得到什么、期望什么」。
+
+### 10.1 基准测试（T50）
+
+| 编号 | 规则 |
+|:--|:--|
+| BEN-01 | 基准测试与被测代码放在同一个包的 `*_test.go` 里，函数名 `BenchmarkXxx`，只用标准库 `testing`，必须调用 `b.ReportAllocs()` |
+| BEN-02 | 基准测试不得访问外网、不得依赖真实上游；上游一律用 `httptest.NewServer` 返回事先序列化好的固定内容，不得 sleep |
+| BEN-03 | 准备工作（建库、起服务、构造请求体）放在 `b.ResetTimer()` 之前；循环体内不得有日志输出；端到端基准在循环内检查状态码，非预期即 `b.Fatalf` |
+| BEN-04 | 基准测试只记录，不作为检查门槛：`tools/check` 不运行它，CI 不比较数值。对比只在同一台机器的前后两次测量之间进行 |
+| BEN-05 | 每个基准测试在 `-benchtime=1x` 下必须能跑通（快速冒烟：`go test -run '^$' -bench . -benchtime=1x ./...`） |
+| BEN-06 | 耗时较长的负载测试（如并发内存测量）写成普通测试，默认 `t.Skip`，只在环境变量 `UAIG_MEMTEST=1` 时运行；这是 §10 之外唯一允许默认跳过的测试类型，跳过消息必须写明启用方法 |
 
 ## 11. 注释与文档
 
