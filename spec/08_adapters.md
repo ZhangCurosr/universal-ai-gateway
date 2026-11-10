@@ -314,7 +314,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 
 协议无关的通用规则，`protocol.Send` 已在内部使用。`ParseRetryAfter` 识别 `Retry-After`（秒数或 HTTP-date）、`anthropic-ratelimit-*-reset`（RFC 3339）、`x-ratelimit-reset-*`（Go 时长格式），取最大的正值。上游用 200 + 错误体表示失败的协议（不少国内 API 如此），由适配器在 `Do` 中解析错误体并自行构造 `*AttemptError`（`Outcome` 按语义选择）。
 
-## 8. 非大模型 API 接入范例（设计参考，尚未实现）
+## 8. 非大模型 API 接入
 
 以下两个范例已用临时实现跑通一致性套件，证明契约足以表达它们。真正接入时以厂商当时的官方文档为准核对字段。
 
@@ -356,9 +356,57 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 
 配置：`price: { pages: "0.01", requests: "0" }`，`reserve: { pages: 600 }`；池：`pin_ttl: 48h`、`timeouts: { response_header_base: 10m }`。
 
-### 8.3 通用 HTTP 转发（不解析请求体的任意 REST API）
+### 8.3 通用 REST 转发（`rest`，任务卡 T51）
 
-对只需要「换 Key + 按次计费 + 原样转发」的 API，可以写一个通用适配器：入站路由为一组 `{path...}` 通配路由，`Envelope.Params` 记下方法、剩余路径与查询串；出站原样拼接到 `base_url`，`Units() = ["requests"]`，Meter 恒报告 `requests: 1`；响应一律 `ResponseRaw`。这样任何 REST API 都能在不写协议代码的情况下接入（代价是没有协议级的用量、错误格式与亲和）。路由由代码声明而不是配置文件，因此每类这样的 API 仍需一个很薄的适配器包（几十行）。
+通用 REST 转发适配器（协议名 `rest`，包 `internal/adapter/rest`）用于快速接入无需请求体解析的任意外部 REST API（搜索、天气、通知、翻译等），实现「统一认证、上游换 Key、按次计费、透明转发」。
+
+#### 8.3.1 包与路由
+
+| 编号 | 规则 |
+|:--|:--|
+| RS-01 | 包 `internal/adapter/rest`；`const Protocol protocol.Protocol = "rest"`；注册优先级与 `tavily` 相同（10），不是 Fallback；`Claims` 恒为 false |
+| RS-02 | 路由（都是 `RouteCall`，无目录路由），路径一律为 `/rest/{service}/{path...}`：`GET` → Op `rest.get`，`BodyNone`（`http.ServeMux` 的 `GET` 模式同时匹配 `HEAD`，HEAD 请求也走这条路由，不单独声明）；`DELETE` → `rest.delete`，`BodyNone`；`PUT` → `rest.put`，`BodyBuffered`；`POST` → `rest.post`，`BodyStream`；`PATCH` → `rest.patch`，`BodyStream`。注册表要求 Op 在协议内唯一（REG-02），每个方法只有这一条路由；访问上游根路径用 `/rest/{service}/`（`{path...}` 可以为空）。另有两条可重试的路由，路径为 `/rest-idem/{service}/{path...}`：`POST` → `rest.post_idem`，`BodyBuffered`；`PATCH` → `rest.patch_idem`，`BodyBuffered`（`/rest-idem/` 下的其他方法不声明，落到数据面兜底路由，按 RTE-04 返回 404）。共 7 条路由 |
+| RS-03 | `Envelope.Model` = `{service}`，即配置 `models[].name`（`/rest/` 与 `/rest-idem/` 相同，`allowed_models` 对两者同样生效）；`X-UAIG-Model` 不适用（服务名已在路径里）。`{service}` 为空 → `CodeInvalidRequest` |
+| RS-04 | `Params`：`method`（`r.Method` 原样，因此 HEAD 以 HEAD 转发）、`path`（`{path...}` 的转义形式，取自 `r.URL.EscapedPath()`，不含 `/rest/{service}` 或 `/rest-idem/{service}` 前缀）、`query`（`r.URL.RawQuery` 原样） |
+| RS-05 | 路径安全：`path` 按 `/` 拆段后，任一段在百分号解码后等于 `.` 或 `..`，或含 `\`、NUL → `CodeInvalidRequest`，消息 `path must not contain dot segments` |
+| RS-06 | `Estimate = {requests: 1}`；无亲和线索 |
+
+#### 8.3.2 出站
+
+| 编号 | 规则 |
+|:--|:--|
+| RS-10 | 上游 URL = `protocol.JoinURL(base_url, path)`，有 `query` 时追加 `?` + `query`。`Call.Model`（`upstream_model`）不参与 URL |
+| RS-11 | 方法取 `Params["method"]`，只允许 `GET`、`HEAD`、`DELETE`、`PUT`、`POST`、`PATCH`，其他值 → `CodeInvalidRequest`；`PUT`、`rest.post_idem`、`rest.patch_idem` 的请求体用 `Call.Body`，`rest.post` / `rest.patch` 用 `Call.BodyStream`，其他方法无请求体 |
+| RS-12 | 请求头白名单（HDR-02）：`Content-Type`、`Accept`、`Accept-Language`、`If-Match`、`If-None-Match`、`If-Modified-Since`、`If-Unmodified-Since`、`Range`。另外，客户端请求头 `X-UAIG-Forward-<Name>: <value>` 以 `<Name>: <value>` 转发，用于上游要求的自定义头（如 `X-Api-Version`）；`<Name>` 是下列之一时丢弃并记一次 Warn：`Authorization`、`Proxy-Authorization`、`Cookie`、`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer`、`Keep-Alive`、`X-Api-Key`、`X-Goog-Api-Key`、任何 `X-Forwarded-*` 与 `X-UAIG-*` |
+| RS-13 | `User-Agent` 同 HDR-05 |
+| RS-14 | 上游 Key 按 §8.3.3 放置；Key 放置在头里时，同名的客户端转发头被覆盖；放置在查询参数里时，客户端查询串中的同名参数被删除 |
+| RS-15 | 2xx 响应一律 `ResponseRaw`，`Status` = 上游状态码；响应头白名单：`Content-Type`、`Content-Length`、`Content-Disposition`、`Content-Range`、`Accept-Ranges`、`Cache-Control`、`ETag`、`Last-Modified`、`Location`、`Link`（分页）、`Retry-After`、`RateLimit`、`RateLimit-Policy`，以及名字以 `X-RateLimit-` 或 `RateLimit-` 开头的头（剩余额度）。上游是 `text/event-stream` 时同样按字节流转发，不解析 |
+| RS-16 | 非 2xx：用 `protocol.Send` 的分类，但上游 403 改写为 `OutcomeClientError`（Status 保持 403），使内核原样转发错误体而不隔离 Key。每次改写都记一条 Warn：`rest upstream returned 403; key not quarantined`，字段为上游主机、去掉查询串的路径、`obs.MaskSecret(Key 明文)`；同一掩码每分钟至多一条（内存表以掩码为键，上限 1024 项，满了整体清空；有锁，无 goroutine）。错误体超过 8 KiB（`MaxErrorBodyBytes`）时被截断，这是已知限制，写进部署文档 |
+| RS-17 | 网络错误：交给内核前，把 `*url.Error` 的 `URL` 字段替换为去掉查询串的 URL（无论 Key 放在哪里，一律去掉），避免日志泄露凭据或客户端参数 |
+| RS-18 | `Units() = ["requests"]`；Meter 在 2xx 时报告 `{requests: 1}`（`UsageUpstream`），`Fault()` 恒为无 |
+| RS-19 | `rest.post_idem` / `rest.patch_idem` 与 `PUT` 一样按 spec/07 §6 重试（429、5xx、超时、网络错误换 Key），同一请求体可能被上游收到多次。只应用于没有副作用的接口，由客户端负责选择；DEPLOYMENT.md 写明。计费仍是每个成功请求 `requests: 1`（失败的尝试不计费） |
+
+#### 8.3.3 Key 的放置方式（`Secret` 的格式）
+
+| 写法 | 上游请求 | 说明 |
+|:--|:--|:--|
+| `bearer:<token>` | `Authorization: Bearer <token>` | 缺省或通用 Bearer Token |
+| `header:<Name>:<value>` | `<Name>: <value>` | `<Name>` 必须是合法的头名（RFC 9110 token），且不能是 RS-12 丢弃列表中除 `Authorization`、`X-Api-Key` 以外的名字 |
+| `query:<name>:<value>` | 查询参数 `<name>=<value>`（URL 编码） | `<name>` 只允许 `[A-Za-z0-9_.-]` |
+| `basic:<user>:<password>` | `Authorization: Basic base64(user:password)` | 密码中可以含 `:`（只按第一个 `:` 拆分 user） |
+| 不以上述前缀开头 | 视为 `bearer:<整个明文>` | 兼容最常见的情况 |
+
+| 编号 | 规则 |
+|:--|:--|
+| RS-20 | 格式不合法（如 `header:` 后缺少 `:`、头名非法）→ `Do` 返回 `*AttemptError{Outcome: OutcomeAuthFailed}`，错误信息只写「rest upstream key format is invalid」，不含任何部分明文。调度器因此隔离这个 Key，管理员会在 Key 列表里看到它 |
+| RS-21 | 管理 API 添加 Key 时不校验格式（管理面不认识协议）；DEPLOYMENT.md 写明格式与示例 |
+
+#### 8.3.4 部署文档安全规范
+
+| 编号 | 规则 |
+|:--|:--|
+| RS-30 | DEPLOYMENT.md「接入任意 REST API」一节开头用醒目的提示框写明：Key 的全部权限都暴露给被允许访问该服务的客户端，只放最小权限的 Key；读写分离用两个服务名 + `allowed_models` |
+| RS-31 | 写明 RS-16 的风险：上游用 403 表示 Key 失效时，Key 不会被自动隔离；看到同一掩码的 Warn 反复出现，就用 `PATCH /admin/api/keys/{id}`、请求体 `{"state":"disabled"}` 停用该 Key（ADM-15） |
 
 ## 9. OpenAI Responses API（`openai_responses`，任务卡 T09C）
 
