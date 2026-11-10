@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
@@ -14,33 +15,36 @@ import (
 func TestIngress_Routes(t *testing.T) {
 	in := Ingress{}
 	routes := in.Routes()
-	if len(routes) != 5 {
-		t.Fatalf("expected 5 routes, got %d", len(routes))
+	if len(routes) != 7 {
+		t.Fatalf("expected 7 routes, got %d", len(routes))
 	}
 
 	expected := map[string]struct {
 		method string
+		path   string
 		body   protocol.BodyMode
 	}{
-		OpGet:    {http.MethodGet, protocol.BodyNone},
-		OpDelete: {http.MethodDelete, protocol.BodyNone},
-		OpPut:    {http.MethodPut, protocol.BodyBuffered},
-		OpPost:   {http.MethodPost, protocol.BodyStream},
-		OpPatch:  {http.MethodPatch, protocol.BodyStream},
+		OpGet:       {http.MethodGet, "/rest/{service}/{path...}", protocol.BodyNone},
+		OpDelete:    {http.MethodDelete, "/rest/{service}/{path...}", protocol.BodyNone},
+		OpPut:       {http.MethodPut, "/rest/{service}/{path...}", protocol.BodyBuffered},
+		OpPost:      {http.MethodPost, "/rest/{service}/{path...}", protocol.BodyStream},
+		OpPatch:     {http.MethodPatch, "/rest/{service}/{path...}", protocol.BodyStream},
+		OpPostIdem:  {http.MethodPost, "/rest-idem/{service}/{path...}", protocol.BodyBuffered},
+		OpPatchIdem: {http.MethodPatch, "/rest-idem/{service}/{path...}", protocol.BodyBuffered},
 	}
 
 	seenOps := map[string]bool{}
 	for _, r := range routes {
-		if r.Path != "/rest/{service}/{path...}" {
-			t.Errorf("route %s path = %q, want /rest/{service}/{path...}", r.Op, r.Path)
-		}
-		if r.Kind != protocol.RouteCall {
-			t.Errorf("route %s kind = %v, want RouteCall", r.Op, r.Kind)
-		}
 		exp, ok := expected[r.Op]
 		if !ok {
 			t.Errorf("unexpected op %q", r.Op)
 			continue
+		}
+		if r.Path != exp.path {
+			t.Errorf("route %s path = %q, want %q", r.Op, r.Path, exp.path)
+		}
+		if r.Kind != protocol.RouteCall {
+			t.Errorf("route %s kind = %v, want RouteCall", r.Op, r.Kind)
 		}
 		if r.Method != exp.method {
 			t.Errorf("route %s method = %s, want %s", r.Op, r.Method, exp.method)
@@ -154,6 +158,26 @@ func TestIngress_Parse_Valid(t *testing.T) {
 			method:     http.MethodPatch,
 			url:        "/rest/users/42",
 			wantOp:     OpPatch,
+			wantModel:  "users",
+			wantMethod: http.MethodPatch,
+			wantPath:   "/42",
+			wantQuery:  "",
+		},
+		{
+			name:       "post idem request",
+			method:     http.MethodPost,
+			url:        "/rest-idem/bivia/boolean?trace=1",
+			wantOp:     OpPostIdem,
+			wantModel:  "bivia",
+			wantMethod: http.MethodPost,
+			wantPath:   "/boolean",
+			wantQuery:  "trace=1",
+		},
+		{
+			name:       "patch idem request",
+			method:     http.MethodPatch,
+			url:        "/rest-idem/users/42",
+			wantOp:     OpPatchIdem,
 			wantModel:  "users",
 			wantMethod: http.MethodPatch,
 			wantPath:   "/42",
@@ -310,5 +334,16 @@ func TestIngress_ErrorsAndCatalog(t *testing.T) {
 	in.WriteCatalog(wCatalog, nil)
 	if wCatalog.Code != http.StatusNotFound {
 		t.Errorf("WriteCatalog status = %d, want 404", wCatalog.Code)
+	}
+}
+
+func TestIngress_RestIdem_OtherMethodsNotDeclared(t *testing.T) {
+	in := Ingress{}
+	for _, rt := range in.Routes() {
+		if strings.HasPrefix(rt.Path, "/rest-idem/") {
+			if rt.Method != http.MethodPost && rt.Method != http.MethodPatch {
+				t.Errorf("unexpected method %s declared for /rest-idem/", rt.Method)
+			}
+		}
 	}
 }

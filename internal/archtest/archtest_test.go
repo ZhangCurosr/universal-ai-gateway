@@ -45,6 +45,7 @@ var layers = map[string]int{
 	"internal/adapter/mineru":      2,
 	"internal/adapter/openai":      2,
 	"internal/adapter/openairesp":  2,
+	"internal/adapter/rest":        2,
 	"internal/adapter/tavily":      2,
 	"internal/adapter/adaptertest": 2,
 	"internal/translate":           2,

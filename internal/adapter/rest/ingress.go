@@ -20,7 +20,7 @@ var _ protocol.Ingress = Ingress{}
 // Protocol 返回 Protocol。
 func (Ingress) Protocol() protocol.Protocol { return Protocol }
 
-// Routes 声明通用 REST 的 5 条路由（RS-02）。无目录路由。
+// Routes 声明通用 REST 的 7 条路由（RS-02）。无目录路由。
 // 注意：GET 路由通过 http.ServeMux 自然匹配 HEAD 请求。
 func (Ingress) Routes() []protocol.Route {
 	return []protocol.Route{
@@ -29,6 +29,8 @@ func (Ingress) Routes() []protocol.Route {
 		{Method: http.MethodPut, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPut, Body: protocol.BodyBuffered},
 		{Method: http.MethodPost, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPost, Body: protocol.BodyStream},
 		{Method: http.MethodPatch, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPatch, Body: protocol.BodyStream},
+		{Method: http.MethodPost, Path: "/rest-idem/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPostIdem, Body: protocol.BodyBuffered},
+		{Method: http.MethodPatch, Path: "/rest-idem/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPatchIdem, Body: protocol.BodyBuffered},
 	}
 }
 
@@ -66,21 +68,28 @@ func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol
 	}, nil
 }
 
-// extractSubpath 从 EscapedPath 中提取 /rest/{service} 之后的部分。
+// extractSubpath 从 EscapedPath 中提取 /rest/{service} 或 /rest-idem/{service} 之后的部分（RS-04）。
 func extractSubpath(escaped string) string {
+	var rem string
 	if strings.HasPrefix(escaped, "/rest/") {
-		afterRest := escaped[len("/rest/"):]
-		idx := strings.Index(afterRest, "/")
-		if idx >= 0 {
-			return afterRest[idx:]
-		}
-		return ""
+		rem = escaped[len("/rest/"):]
+	} else if strings.HasPrefix(escaped, "/rest-idem/") {
+		rem = escaped[len("/rest-idem/"):]
+	} else {
+		return strings.TrimPrefix(escaped, "/")
 	}
-	return escaped
+	idx := strings.Index(rem, "/")
+	if idx >= 0 {
+		return rem[idx:]
+	}
+	return ""
 }
 
 // validatePathSafety 检查路径防穿越（RS-05）。
 func validatePathSafety(subpath string) error {
+	if subpath == "" {
+		return nil
+	}
 	segments := strings.Split(subpath, "/")
 	for _, seg := range segments {
 		if seg == "" {
@@ -93,7 +102,10 @@ func validatePathSafety(subpath string) error {
 		if err != nil {
 			return apperr.New(apperr.CodeInvalidRequest, "path must not contain dot segments")
 		}
-		if dec == "." || dec == ".." || strings.ContainsAny(dec, "\\\x00") {
+		if dec == "." || dec == ".." {
+			return apperr.New(apperr.CodeInvalidRequest, "path must not contain dot segments")
+		}
+		if strings.ContainsAny(dec, "\\\x00") {
 			return apperr.New(apperr.CodeInvalidRequest, "path must not contain dot segments")
 		}
 	}

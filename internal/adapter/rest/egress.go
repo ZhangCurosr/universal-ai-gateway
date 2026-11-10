@@ -9,8 +9,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
@@ -20,12 +23,31 @@ type Egress struct {
 	// UserAgent 写入上游请求的 User-Agent（RS-13、HDR-05）；为空时使用 "universal-ai-gateway"。
 	UserAgent string
 
+	// Logger 用于记录日志；为空时使用 slog.Default()。
+	Logger *slog.Logger
+
 	// preserveClassifyHTTP 仅用于一致性测试 CONF-E04（该架构套件硬编码期望分类与 ClassifyHTTP 一致）。
 	// 生产环境默认为 false，严格执行 RS-16 将 403 改写为 OutcomeClientError。
 	preserveClassifyHTTP bool
+
+	state *egressState
+}
+
+type egressState struct {
+	mu        sync.Mutex
+	warned403 map[string]time.Time // guarded by mu, RS-16 限频表
 }
 
 var _ protocol.Egress = Egress{}
+
+// NewEgress 构造 Egress 实例。
+func NewEgress() Egress {
+	return Egress{
+		state: &egressState{
+			warned403: make(map[string]time.Time),
+		},
+	}
+}
 
 // Protocol 返回 Protocol。
 func (Egress) Protocol() protocol.Protocol { return Protocol }
@@ -38,7 +60,7 @@ func (Egress) Units() []string {
 // Prepare 实现同协议透传与参数校验（RS-11）。
 func (Egress) Prepare(env *protocol.Envelope, upstreamModel string) (*protocol.Call, error) {
 	switch env.Op {
-	case OpGet, OpDelete, OpPut, OpPost, OpPatch:
+	case OpGet, OpDelete, OpPut, OpPost, OpPatch, OpPostIdem, OpPatchIdem:
 	default:
 		return nil, apperr.New(apperr.CodeInvalidRequest, "unsupported operation: "+env.Op)
 	}
@@ -51,19 +73,31 @@ func (Egress) Prepare(env *protocol.Envelope, upstreamModel string) (*protocol.C
 		}
 	}
 
-	return &protocol.Call{
-		Op:         env.Op,
-		Model:      upstreamModel,
-		Stream:     env.Stream,
-		Body:       env.Body,
-		BodyStream: env.BodyStream,
-		Params:     env.Params,
-		Header:     env.Header,
-		State:      env.Estimate,
-	}, nil
+	call := &protocol.Call{
+		Op:     env.Op,
+		Model:  upstreamModel,
+		Stream: env.Stream,
+		Params: env.Params,
+		Header: env.Header,
+		State:  env.Estimate,
+	}
+
+	switch env.Op {
+	case OpPut, OpPostIdem, OpPatchIdem:
+		// 缓冲请求体（RS-11）
+		call.Body = env.Body
+	case OpPost, OpPatch:
+		// 流式请求体（RS-11）
+		call.BodyStream = env.BodyStream
+		if call.BodyStream == nil && len(env.Body) > 0 {
+			call.Body = env.Body
+		}
+	}
+
+	return call, nil
 }
 
-// Do 执行一次上游尝试（RS-10 ~ RS-18）。
+// Do 执行一次上游尝试（RS-10 ~ RS-19）。
 func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
 	// 1. 确定 HTTP 方法（RS-11）
 	method := http.MethodGet
@@ -77,9 +111,9 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 			method = http.MethodDelete
 		case OpPut:
 			method = http.MethodPut
-		case OpPost:
+		case OpPost, OpPostIdem:
 			method = http.MethodPost
-		case OpPatch:
+		case OpPatch, OpPatchIdem:
 			method = http.MethodPatch
 		}
 	}
@@ -125,10 +159,17 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 			bodyReader = bytes.NewReader(call.Body)
 		}
 	case http.MethodPost, http.MethodPatch:
-		if call.BodyStream != nil {
-			bodyReader = call.BodyStream
-		} else if len(call.Body) > 0 {
-			bodyReader = bytes.NewReader(call.Body)
+		switch call.Op {
+		case OpPostIdem, OpPatchIdem:
+			if len(call.Body) > 0 {
+				bodyReader = bytes.NewReader(call.Body)
+			}
+		default:
+			if call.BodyStream != nil {
+				bodyReader = call.BodyStream
+			} else if len(call.Body) > 0 {
+				bodyReader = bytes.NewReader(call.Body)
+			}
 		}
 	}
 
@@ -139,7 +180,6 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 
 	// 5. 过滤并复制请求头（RS-12、RS-13、RS-14）
 	if call.Header != nil {
-		// 白名单头复制
 		protocol.CopyHeaders(req.Header, call.Header,
 			"Content-Type",
 			"Accept",
@@ -156,8 +196,9 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 			lower := strings.ToLower(k)
 			if strings.HasPrefix(lower, "x-uaig-forward-") {
 				name := k[len("x-uaig-forward-"):]
+				name = strings.TrimSpace(name)
 				if isDropForwardHeader(name) {
-					slog.WarnContext(ctx, "rest: dropping forbidden forward header", "header", name)
+					e.logger().WarnContext(ctx, "rest: dropping forbidden forward header", "header", name)
 					continue
 				}
 				for _, v := range vals {
@@ -184,6 +225,7 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 			// RS-16: 403 改写为 OutcomeClientError，保留 403 状态码
 			if !e.preserveClassifyHTTP && attErr.Outcome.Status == http.StatusForbidden {
 				attErr.Outcome.Kind = protocol.OutcomeClientError
+				e.log403Warn(ctx, req.URL.Host, req.URL.Path, string(up.Secret))
 			}
 			return nil, attErr
 		}
@@ -196,17 +238,7 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 
 	// 7. 2xx 响应处理（RS-15、RS-18）
 	h := http.Header{}
-	protocol.CopyHeaders(h, resp.Header,
-		"Content-Type",
-		"Content-Length",
-		"Content-Disposition",
-		"Content-Range",
-		"Accept-Ranges",
-		"Cache-Control",
-		"ETag",
-		"Last-Modified",
-		"Location",
-	)
+	e.copyResponseHeaders(h, resp.Header)
 	if h.Get("Content-Type") == "" {
 		h.Set("Content-Type", "application/octet-stream")
 	}
@@ -230,6 +262,71 @@ func (e Egress) userAgent() string {
 		return e.UserAgent
 	}
 	return "universal-ai-gateway"
+}
+
+func (e Egress) logger() *slog.Logger {
+	if e.Logger != nil {
+		return e.Logger
+	}
+	return slog.Default()
+}
+
+func (e Egress) log403Warn(ctx context.Context, host, path, secret string) {
+	if e.state == nil {
+		return
+	}
+	mask := obs.MaskSecret(secret)
+	now := time.Now()
+
+	e.state.mu.Lock()
+	if len(e.state.warned403) >= 1024 {
+		clear(e.state.warned403)
+	}
+	last, ok := e.state.warned403[mask]
+	if ok && now.Sub(last) < time.Minute {
+		e.state.mu.Unlock()
+		return
+	}
+	e.state.warned403[mask] = now
+	e.state.mu.Unlock()
+
+	e.logger().WarnContext(ctx, "rest upstream returned 403; key not quarantined",
+		"upstream_host", host,
+		"path", path,
+		"key_mask", mask,
+	)
+}
+
+func (Egress) copyResponseHeaders(dst, src http.Header) {
+	protocol.CopyHeaders(dst, src,
+		"Content-Type",
+		"Content-Length",
+		"Content-Disposition",
+		"Content-Range",
+		"Accept-Ranges",
+		"Cache-Control",
+		"ETag",
+		"Last-Modified",
+		"Location",
+		"Link",
+		"Retry-After",
+		"RateLimit",
+		"RateLimit-Policy",
+	)
+
+	for k, vs := range src {
+		lower := strings.ToLower(k)
+		if strings.HasPrefix(lower, "x-rateLimit-") || strings.HasPrefix(lower, "x-ratelimit-") ||
+			strings.HasPrefix(lower, "rateLimit-") || strings.HasPrefix(lower, "ratelimit-") {
+			if dst.Get(k) == "" {
+				for _, v := range vs {
+					dst.Add(k, v)
+				}
+			}
+		}
+	}
+
+	dst.Del("Set-Cookie")
 }
 
 func isAllowedMethod(m string) bool {

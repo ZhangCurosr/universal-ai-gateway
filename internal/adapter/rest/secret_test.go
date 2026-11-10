@@ -11,12 +11,12 @@ import (
 
 func TestParseSecret_Valid(t *testing.T) {
 	cases := []struct {
-		name        string
-		raw         string
-		wantHeader  string
-		wantVal     string
-		wantQuery   string
-		wantQVal    string
+		name       string
+		raw        string
+		wantHeader string
+		wantVal    string
+		wantQuery  string
+		wantQVal   string
 	}{
 		{
 			name:       "bearer explicit",

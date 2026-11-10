@@ -8,6 +8,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/mineru"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openai"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openairesp"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/rest"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/tavily"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
@@ -24,6 +25,7 @@ var adapterRegistrars = []func(*protocol.Registry) error{
 	mineru.Register,
 	openai.Register,
 	openairesp.Register,
+	rest.Register,
 	tavily.Register,
 }
 

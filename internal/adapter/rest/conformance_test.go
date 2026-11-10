@@ -63,6 +63,22 @@ func TestIngressConformance(t *testing.T) {
 				WantEstimate: pricing.Usage{UnitRequests: 1},
 				WantParams:   map[string]string{"method": "PATCH", "path": "/user/10"},
 			},
+			{
+				Name:         "post idem call",
+				Op:           OpPostIdem,
+				Path:         "/rest-idem/suite-model/query",
+				WantModel:    adaptertest.SuiteModel,
+				WantEstimate: pricing.Usage{UnitRequests: 1},
+				WantParams:   map[string]string{"method": "POST", "path": "/query"},
+			},
+			{
+				Name:         "patch idem call",
+				Op:           OpPatchIdem,
+				Path:         "/rest-idem/suite-model/update",
+				WantModel:    adaptertest.SuiteModel,
+				WantEstimate: pricing.Usage{UnitRequests: 1},
+				WantParams:   map[string]string{"method": "PATCH", "path": "/update"},
+			},
 		},
 		Invalid: []adaptertest.IngressCase{
 			{Name: "path traversal encoded dot dot", Op: OpGet, Path: "/rest/suite-model/%2e%2e/secret"},
