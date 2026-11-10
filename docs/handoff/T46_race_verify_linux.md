@@ -207,7 +207,7 @@ git push origin task/t46-race-verify
 |:--|:--|:--|:--|:--|:--|:--|:--|
 | r2 | T43 响应转换重构 | `6efea9e` | `git log --oneline \| grep -E "合并 T43 响应转换经过 IR"` | `~/t46-logs-r2/` | `T46_race_verify_report_r2.md` | `task/t46-race-verify-r2` | 已通过（`8566a4b` 合入） |
 | r3 | T49 管理 Web UI（管理面新增路由、Host 检查、health 取数函数） | `911454d` | `git log --oneline \| grep -E "合并 T49 管理 Web UI"` | `~/t46-logs-r3/` | `T46_race_verify_report_r3.md` | `task/t46-race-verify-r3` | 已通过（`10f0346` 合入） |
-| **r4** | **T47 Gemini 适配器 + T48 Gemini 转译**（新增 `internal/adapter/gemini`；T48 改动 `internal/translate` 注册方式） | `c51ff83` | `git log --oneline | grep -E "合并 T48 Gemini 与其他协议互相转译"` |\| grep -E "合并 T48"` | `~/t46-logs-r4/` | `T46_race_verify_report_r4.md` | `task/t46-race-verify-r4` | **待执行** |
+| **r4** | **T47 Gemini 适配器 + T48 Gemini 转译**（新增 `internal/adapter/gemini`；T48 改动 `internal/translate` 注册方式） | `c51ff83` | `git log --oneline \| grep -E "合并 T48 Gemini 与其他协议互相转译"` | `~/t46-logs-r4/` | `T46_race_verify_report_r4.md` | `task/t46-race-verify-r4` | **待执行** |
 
 每一轮的步骤：
 
