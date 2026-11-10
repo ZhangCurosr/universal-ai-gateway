@@ -166,7 +166,7 @@ func (Ingress) WriteError(w http.ResponseWriter, requestID string, err *apperr.E
 // StreamError 实现 spec/08 §10.2 的 Gemini SSE 错误事件。
 func (Ingress) StreamError(err *apperr.Error) sse.Event {
 	status := ErrorStatus(err.Code)
-	data, _ := json.Marshal(map[string]any{"error": map[string]any{
+	data, _ := json.Marshal(map[string]any{"error": map[string]any{ // 只含字符串与整数的 map，序列化不会失败
 		"code":    err.Code.HTTPStatus(),
 		"message": err.Message,
 		"status":  status,
@@ -199,5 +199,5 @@ func (Ingress) WriteCatalog(w http.ResponseWriter, models []protocol.ModelInfo) 
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(b)
+	_, _ = w.Write(b) // 写客户端失败无法补救
 }
