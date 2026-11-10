@@ -210,7 +210,7 @@ type StreamEvent struct { Kind StreamEventKind; ID, Text string; IsRefusal bool;
 
 ### 6.4 必测用例
 
-§7 的 10 个用例全部适用，另加：服务端工具 → 400；`top_k` → 400；`thinking` 被丢弃；`tool_result` 带 `is_error`；
+§7 的 10 个用例全部适用，另加：服务端工具 → 400；`top_k` 被丢弃；`thinking` 被丢弃；`tool_result` 带 `is_error`；
 `stop_sequences` 超过 4 个 → 400；流式 usage chunk 映射到 `message_delta.usage`；`content_filter` → `refusal`。
 
 ### 6.5 待定项（起草时的取舍，审批时请确认）
@@ -218,7 +218,7 @@ type StreamEvent struct { Kind StreamEventKind; ID, Text string; IsRefusal bool;
 1. `max_tokens` 而非 `max_completion_tokens`：前者兼容 DeepSeek / Qwen 等，后者是 OpenAI 官方 o 系列推理模型的要求。若需要直连 OpenAI 官方推理模型，应改为可按池配置。
 2. `reasoning_content` → Anthropic 一律丢弃：保守做法；代价是 Claude Code 看不到 DeepSeek 的思考过程。
 3. `thinking` 参数丢弃而不是 400：否则 Claude Code（默认开启 thinking）无法使用 Chat 上游。
-4. `top_k`、`disable_parallel_tool_use` 选择 400 而不是丢弃：按 §1 第 2 条「改变采样/调用语义的不默默丢弃」。
+4. `disable_parallel_tool_use` 选择 400 而不是丢弃：按 §1 第 2 条「改变调用语义的不默默丢弃」。`top_k` 起草时也是 400，T42 根据 T41 实测报告（客户端配置了 `top_k` 时，400 会中断会话）改为丢弃，见 §6.1。
 
 ## 7. 必测用例（每个方向至少）
 

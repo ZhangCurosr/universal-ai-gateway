@@ -26,6 +26,11 @@ T47 之后，Gemini 只能和 Gemini 互通。本卡补上和现有三种协议�
 新写 4 个组件：`gemini_lower.go`、`gemini_synth.go`、`decode_gemini.go`、`encode_gemini.go`。其余全部复用。
 **不改 `internal/core`、`internal/protocol`，也不改 `internal/ir` 的导出类型**（见 §2）。
 
+本卡另外包含两项维护性改动（来自 2026-11-09 的架构评估），都要在接入 Gemini **之前**完成：
+
+1. **转换器改为表驱动注册**（§2.4）：现在每个「入站 → 上游」组合都手写一个转换器类型，接入 Gemini 后会从 4 个变成 9 个，而且几乎一模一样。先改成「每个协议登记一次组件，由通用类型组合」，再加 Gemini。
+2. **计费用量与客户端可见用量的一致性测试**（§2.5）：同一份上游用量现在被解析两遍，出站适配器的 Meter 算账单，转译层的 Decoder 算客户端看到的数字，两者没有测试互相核对。
+
 ## 2. 关键设计
 
 ### 2.1 工具调用 ID
@@ -55,6 +60,71 @@ Gemini 的流里，一个 `functionCall` 总是**完整地**出现在一个 chun
 
 - **Decoder**（Gemini 上游）：每个 `functionCall` 输出 `EventToolStart` → 一个 `EventToolArgs`（`args` 的紧凑 JSON 原样输出）→ `EventToolEnd`。
 - **Encoder**（Gemini 客户端）：把同一个工具调用的 `EventToolArgs` 拼起来，在 `EventToolEnd`（或下一个 `EventToolStart`、`EventStop`、`EventEnd`）时输出一个只含该 `functionCall` 的 chunk。拼出来的不是 JSON 对象 → 流错误。拼接缓冲上限 1 MiB，超过 → 流错误（禁止无界缓冲）。
+
+### 2.4 转换器表驱动注册（先做，单独提交）
+
+现状：[`register.go`](../../internal/translate/register.go) 里 `ChatToAnthropic`、`ResponsesToAnthropic`、`AnthropicToChat`、`ResponsesToChat` 四个类型各自写一遍「检查 `env.Op` → Lower → 设置模型 → Synth → 组装 `Call`」和「按 `resp.Kind` 选 Decoder + Encoder」。
+
+目标：每个协议**登记一次**自己能提供的组件；转换器由一个通用的组合类型生成。草案（执行者可以调整命名，但结构要等价）：
+
+```go
+// 一个协议作为「客户端协议」时提供的组件。
+type clientSide struct {
+	proto   protocol.Protocol
+	accepts func(env *protocol.Envelope) error // 检查 Op / Params，不支持时返回 CodeInvalidRequest
+	lower   func(env *protocol.Envelope, opts Options, from, to string) (*ir.Request, error)
+	encoder func(now func() time.Time, newID idGen) encoder
+}
+
+// 一个协议作为「上游协议」时提供的组件。
+type upstreamSide struct {
+	proto   protocol.Protocol
+	op      string // Call.Op
+	synth   func(req *ir.Request, opts Options) ([]byte, error)
+	decoder decoder
+}
+
+// composed 实现 protocol.Translator：Request = accepts → lower → synth；Response = decoder + encoder。
+type composed struct { client clientSide; up upstreamSide; opts Options; now func() time.Time; newID idGen }
+```
+
+`Registrar` 按一张**显式的组合表**注册（不是所有组合的笛卡尔积，哪些方向开放仍然由表决定）：
+
+```go
+var pairs = [][2]protocol.Protocol{
+	{protoOpenAIChat, protoAnthropic}, {protoOpenAIResponses, protoAnthropic},
+	{protoAnthropic, protoOpenAIChat}, {protoOpenAIResponses, protoOpenAIChat},
+	// T48 新增 5 行
+}
+```
+
+要求：
+
+- 这是**纯重构**：4 个现有方向的行为逐字节不变；现有测试的**断言一律不改**，现有黄金文件一律不改。
+- 现有的 4 个导出类型只在本包的测试里用到。可以保留为包装 `composed` 的薄类型，也可以删除，只把测试里的构造调用改成新的写法（与 T43 的 `body_helpers_test.go` 做法相同）。两种做法都要在交付说明里写明。
+- `Now` / `NewID` 的测试注入能力保留。
+- 新增 `TestRegistrarPairs`：注册后的转换器集合与 `pairs` 表完全一致；每个组合的 `Request` 对不支持的 `Op` 返回 `CodeInvalidRequest`。
+- 写进 spec/10 §9.1（阶段 A 的规格里一起提交审批）：「新增协议时登记组件，并在组合表中加行；不再为每个方向手写转换器类型」。
+
+接入 Gemini 后，`register.go` 只需要多出 Gemini 的两个 side 和组合表里的 5 行。
+
+### 2.5 计费用量与客户端可见用量一致（新增测试）
+
+同一份上游用量现在有两个独立的解析器：
+
+| 用途 | 解析器 | 位置 |
+|:--|:--|:--|
+| 计费（写进 `usage_events`） | 出站适配器的 `meter` | `internal/adapter/<name>/egress.go` |
+| 客户端看到的 `usage` | 转译层的 Decoder | `internal/translate/decode_*.go` |
+
+分层规则不允许两者互相导入，所以不合并代码，改为用测试锁住两者一致：
+
+- 新增 `cmd/gateway/usage_consistency_test.go`（`cmd/gateway` 是唯一可以同时导入具体适配器和 `translate` 的包）。
+- 对每个已注册的转换器方向，取该方向**上游协议**的黄金输入（`internal/translate/testdata` 中的上游响应体与流，含带缓存用量的用例），分别：
+  1. 交给该上游协议的 Egress（用假上游返回这份数据），读出 `Meter.Usage()`；
+  2. 经转换器的 `Response` 转成客户端协议，按**客户端协议**的口径解析出 `usage`，再换算成计量单位（例如 Chat 客户端：`input_tokens = prompt_tokens − cached_tokens`）。
+- 断言两者的每个单位都相等。客户端协议本来就不能表达的单位（例如 Chat 客户端没有缓存写入）在断言里明确列出，并加注释说明原因。
+- Gemini 方向在 T48 的组件完成后加入同一个测试；以后每新增一个协议，这个测试都要覆盖它的所有方向。
 
 ## 3. 规格草案（阶段 A：写进 spec 后提交审批）
 
@@ -88,7 +158,8 @@ Gemini 的流里，一个 `functionCall` 总是**完整地**出现在一个 chun
 | `generationConfig.temperature`、`topP` | 同名 | |
 | `generationConfig.stopSequences` | `StopSequences` | |
 | `generationConfig.candidateCount` > 1 | — | 400 |
-| `generationConfig.topK`、`seed`、`presencePenalty`、`frequencyPenalty`、`responseLogprobs`、`logprobs` | — | 400（改变采样语义，与 §6.5 第 4 条一致） |
+| `generationConfig.topK` | 丢弃 | 与 §6.1 `top_k` 一致（T42 根据 T41 实测改为丢弃，见 §6.5 第 4 条） |
+| `generationConfig.seed`、`presencePenalty`、`frequencyPenalty`、`responseLogprobs`、`logprobs` | — | 400（改变采样语义或输出形状，按 §1 第 2 条不默默丢弃）。*执行者用 T41 的方法检查 Gemini CLI 与 genai SDK 默认会不会发送其中某个字段；会发送的，在审批请求里提出改为丢弃* |
 | `generationConfig.responseMimeType` 不是 `text/plain`、`responseSchema`、`responseJsonSchema`、`responseModalities` 含非文本 | — | 400（IR 不能表达结构化输出与多模态输出） |
 | `generationConfig.thinkingConfig` | 丢弃 | 与 §6.1 `thinking` 同理 |
 | `safetySettings` | 丢弃 | 只对 Gemini 有意义 |
@@ -181,7 +252,7 @@ Gemini 的流里，一个 `functionCall` 总是**完整地**出现在一个 chun
 
 ### 3.5 注册
 
-`protocols.go` 增加 `protoGemini = "gemini"`、`opGeminiCall = "models.call"`；`Registrar` 注册 §1 表中的 5 个转换器。`cmd/gateway/adapters.go` 不需要改（转换器已经由 `translate.Registrar` 统一注册）。
+`protocols.go` 增加 `protoGemini = "gemini"`、`opGeminiCall = "models.call"`；按 §2.4 登记 Gemini 的 `clientSide` 与 `upstreamSide`，在组合表中加入 §1 表中的 5 行。`cmd/gateway/adapters.go` 不需要改（转换器已经由 `translate.Registrar` 统一注册）。
 
 ### 3.6 待定项汇总
 
@@ -199,9 +270,9 @@ Gemini 的流里，一个 `functionCall` 总是**完整地**出现在一个 chun
 
 ## 5. 涉及文件
 
-- spec：`spec/10_ir_translation.md`（新增 §10）、`spec/11_tasks.md`（登记本卡与状态）
-- 新增：`internal/translate/gemini_lower.go`、`gemini_synth.go`、`decode_gemini.go`、`encode_gemini.go` 及各自的测试；`internal/translate/testdata/` 下的上述新目录
-- 修改：`internal/translate/protocols.go`、`register.go`、`register_test.go`、`matrix_test.go`、`doc.go`
+- spec：`spec/10_ir_translation.md`（新增 §10；§9.1 补充表驱动注册的约定）、`spec/11_tasks.md`（登记本卡与状态）
+- 新增：`internal/translate/gemini_lower.go`、`gemini_synth.go`、`decode_gemini.go`、`encode_gemini.go` 及各自的测试；`internal/translate/testdata/` 下的上述新目录；`cmd/gateway/usage_consistency_test.go`（§2.5）
+- 修改：`internal/translate/protocols.go`、`register.go`、`register_test.go`、`matrix_test.go`、`doc.go`；§2.4 重构时现有测试文件中转换器的**构造调用**（只改调用写法，不改断言）
 - 可选：`cmd/gateway/e2e_test.go` 新增独立的 Gemini 转译端到端用例（不改现有用例）
 
 ## 6. 测试要求
@@ -214,20 +285,26 @@ Gemini 的流里，一个 `functionCall` 总是**完整地**出现在一个 chun
 4. **停止原因**：§3.3 表中每一类 `finishReason` 至少一个用例，包括 `MALFORMED_FUNCTION_CALL` 的非流式 502 与流式流错误，以及 `promptFeedback.blockReason`。
 5. **用量**：`cachedContentTokenCount`、`thoughtsTokenCount`、`toolUsePromptTokenCount` 映射正确；Gemini Encoder 的 `promptTokenCount` 含缓存。
 6. **流式**：EOF 前没有 `finishReason` → 流错误；Gemini Encoder 缓冲工具参数，拼出非对象 → 流错误；超过 1 MiB → 流错误。
-7. **拒绝**：内置工具、`fileData`、非图片 `inlineData`、`candidateCount > 1`、`responseSchema`、`cachedContent`、`topK`、`countTokens` 都返回 400，消息指出字段。
+7. **拒绝与丢弃**：内置工具、`fileData`、非图片 `inlineData`、`candidateCount > 1`、`responseSchema`、`cachedContent`、`seed`、`countTokens` 都返回 400，消息指出字段；`topK`、`thinkingConfig`、`safetySettings` 被丢弃，请求正常转发。
 8. **矩阵**：`TestStreamMatrix` 全部组合通过。
+9. **表驱动注册**（§2.4）：重构提交本身让 `go run ./tools/check` 全绿，现有测试断言与黄金文件零改动；`TestRegistrarPairs` 通过。
+10. **用量一致**（§2.5）：现有 4 个方向和 Gemini 的 5 个方向，计费用量与客户端可见用量逐单位相等。
 
 ## 7. 验收标准
 
 - [ ] 阶段 A 的规格已获用户批准，3 个待定项都有答案。
 - [ ] §6 的测试全部通过；`go run ./tools/check` 全绿；现有黄金文件逐字节不变。
 - [ ] 没有修改 `internal/core`、`internal/protocol`、`internal/ir` 的导出类型；没有新增依赖。
+- [ ] §2.4 的重构是一个独立提交，`git diff` 中现有测试文件只有构造调用的改动。
+- [ ] §2.5 的一致性测试覆盖全部 9 个方向；如果发现现有方向本来就不一致，**停下报告**，不要自行修改计费或转译逻辑。
 - [ ] 真实客户端验证（每项没做就写明原因）：Claude Code → Gemini 上游跑通一次带工具调用的多轮对话；Gemini CLI 或 genai SDK → Anthropic 或 Chat 上游跑通一次流式对话。交付说明里**不贴出任何 Key 或 Token**。
 - [ ] 改完后在 Linux 上按 [T46](T46_race_verify_linux.md) 的流程复跑 `-race`（可以由审查方安排）。
 
 ## 8. 建议提交拆分
 
 1. 阶段 A：`docs(spec): T48 新增 spec/10 §10 Gemini 转译（待审批）`
-2. `feat(translate): T48 Gemini 请求 Lower 与 Synth`
-3. `feat(translate): T48 Gemini Decoder 与 Encoder`
-4. `feat(translate): T48 注册 Gemini 转换器并扩展流式矩阵`
+2. `refactor(translate): T48 转换器改为表驱动注册`（§2.4，纯重构）
+3. `test(gateway): T48 计费用量与转译用量一致性测试`（§2.5，先覆盖现有 4 个方向）
+4. `feat(translate): T48 Gemini 请求 Lower 与 Synth`
+5. `feat(translate): T48 Gemini Decoder 与 Encoder`
+6. `feat(translate): T48 注册 Gemini 转换器，扩展流式矩阵与用量一致性测试`
