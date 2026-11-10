@@ -324,7 +324,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T48 | Gemini 与其他协议互相转译，M3（[说明](../docs/handoff/T48_gemini_translate.md)） | T47 阶段 A | 是（阶段 A 已批准） | `DOING` |
 | T49 | 管理 Web UI，M3（[说明](../docs/handoff/T49_admin_web_ui.md)） | — | 是 | `DONE` |
 | T50 | 性能基线与发布工程，M3（[说明](../docs/handoff/T50_perf_and_release.md)） | — | 是 | `TODO` |
-| T51 | 通用 REST 转发适配器，M3（[说明](../docs/handoff/T51_rest_forwarder.md)） | — | 是 | `DOING` |
+| T51 | 通用 REST 转发适配器，M3（[说明](../docs/handoff/T51_rest_forwarder.md)） | — | 是 | `DONE` |
 
 ---
 
@@ -384,7 +384,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 
 ---
 
-## T51 通用 REST 转发适配器（M3） — 状态：`DOING`（阶段 A 已批准）
+## T51 通用 REST 转发适配器（M3） — 状态：`DONE`
 
 - **前置**：无
 - **必读规格**：08 §2.1、§3.1、§5、§6、§7、§8.3；13 CORE-07、§4；07 §6；05 AUTH-01；`internal/protocol/`；`internal/adapter/tavily/`；`internal/adapter/mineru/`；`docs/handoff/T51_rest_forwarder.md`
