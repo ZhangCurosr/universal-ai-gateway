@@ -390,16 +390,17 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 - **必读规格**：08 §2.1、§3.1、§5、§6、§7、§8.3；13 CORE-07、§4；07 §6；05 AUTH-01；`internal/protocol/`；`internal/adapter/tavily/`；`internal/adapter/mineru/`；`docs/handoff/T51_rest_forwarder.md`
 - **涉及文件**：`spec/08_adapters.md`、`spec/11_tasks.md`、`internal/adapter/rest/`（新建）、`cmd/gateway/adapters.go`、`internal/archtest/archtest_test.go`、`docs/DEPLOYMENT.md`、`gateway.example.yaml`、`cmd/gateway/e2e_rest_test.go`（新建）
 - **要做的事**：
-  1. 规格：修改 `spec/08_adapters.md` §8，改写 §8.3 为正式的 RS-01 ~ RS-21 规则；
-  2. 实现：新建 `internal/adapter/rest/`（`register.go`、`ingress.go`、`egress.go`、`secret.go`），实现通用 REST 转发（支持 5 种 HTTP 方法、4 种 Key 注入方式、`X-UAIG-Forward-*` 自定义头机制、403 改写为客户端错误、URL query 脱敏、按次计费）；
+  1. 规格：修改 `spec/08_adapters.md` §8，改写 §8.3 为正式的 RS-01 ~ RS-21、RS-30 ~ RS-31 规则；
+  2. 实现：新建 `internal/adapter/rest/`（`register.go`、`ingress.go`、`egress.go`、`secret.go`），实现通用 REST 转发（支持 7 条路由包括 `/rest-idem/` 可重试路由、5 种 HTTP 方法、Key 放置方式、`X-UAIG-Forward-*` 自定义头机制、403 改写为客户端错误并不隔离 Key + 限频 Warn、响应头白名单包含限流与分页头、URL query 脱敏、按次计费）；
   3. 装配与分层：在 `cmd/gateway/adapters.go` 注册适配器，在 `internal/archtest` 中登记为第 2 层；
-  4. 文档与配置：更新 `docs/DEPLOYMENT.md` 与 `gateway.example.yaml`；
+  4. 文档与配置：更新 `docs/DEPLOYMENT.md` 新增接入 REST API 章节与安全提示框，更新 `gateway.example.yaml`；
   5. 测试：通过 `adaptertest.RunIngress` 与 `adaptertest.RunEgress`，编写单元测试与端到端测试。
 - **测试**：
   - 一致性套件通过；
-  - 路由解析、HEAD 处理、路径防穿越（RS-05）；
-  - 5 种 Key 格式解析、无效格式拒绝与脱敏（RS-20）；
+  - 路由解析（7 条路由命中正确 Op 与 BodyMode）、HEAD 处理、路径防穿越（RS-05）；
+  - Key 格式解析、无效格式拒绝与脱敏（RS-20）；
   - 请求头白名单过滤与自定义头转发（RS-12）；
+  - 响应头白名单（包含分页与限流头）；
   - 网络错误 query 脱敏（RS-17）；
-  - 端到端验证按次计费、POST/PATCH 不重试、403 不隔离 Key、401 隔离 Key。
+  - 端到端验证按次计费、/rest/ 下 POST/PATCH 不重试、/rest-idem/ 下 POST/PATCH 换 Key 重试、403 不隔离 Key 且产生限频 Warn、401 隔离 Key。
 
