@@ -3,6 +3,8 @@
 - **类型**：规格 + 实现
 - **前置**：T47 的阶段 A 已获批准（本卡要用到它定下的协议名 `gemini`、操作名 `models.call` 和 `Params["method"]`）。T47 的实现最好也已合入，这样才能做端到端测试。
 - **需要用户审批**：**是**（§3 规格草案）。
+- **当前状态（2026-11-10）**：前置已满足。T47 已合入 main（`d52db25`），它的 3 个待定项按默认方案确认：只支持 `/v1beta`；`streamGenerateContent` 必须带 `alt=sse`；流以 EOF 视为正常结束。规格见 `spec/08` §10，实现在 `internal/adapter/gemini/`。
+- **审批门再强调一次**：阶段 A 只提交 spec 修改，提交信息写「待审批」，然后**停下等用户回复**，不要接着写实现。T47 曾在阶段 A 未获批准时直接完成了实现，这次再这样做，整张卡退回。
 - **不要与其他改 `internal/translate` 的卡同时进行。**
 - **必读**：
   - [`spec/10_ir_translation.md`](../../spec/10_ir_translation.md) 全章，尤其是 §1 原则、§6、§8.1、§9（Decoder / Encoder 分工和流式 IR 的不变量）

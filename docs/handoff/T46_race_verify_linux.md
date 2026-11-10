@@ -206,12 +206,13 @@ git push origin task/t46-race-verify
 | 轮次 | 原因 | 合并提交 | 版本检查（§4 改为这条） | 日志目录 | 报告 | 分支 | 状态 |
 |:--|:--|:--|:--|:--|:--|:--|:--|
 | r2 | T43 响应转换重构 | `6efea9e` | `git log --oneline \| grep -E "合并 T43 响应转换经过 IR"` | `~/t46-logs-r2/` | `T46_race_verify_report_r2.md` | `task/t46-race-verify-r2` | 已通过（`8566a4b` 合入） |
-| **r3** | **T49 管理 Web UI**（管理面新增路由、Host 检查、health 取数函数） | `911454d` | `git log --oneline \| grep -E "合并 T49 管理 Web UI"` | `~/t46-logs-r3/` | `T46_race_verify_report_r3.md` | `task/t46-race-verify-r3` | **待执行** |
+| r3 | T49 管理 Web UI（管理面新增路由、Host 检查、health 取数函数） | `911454d` | `git log --oneline \| grep -E "合并 T49 管理 Web UI"` | `~/t46-logs-r3/` | `T46_race_verify_report_r3.md` | `task/t46-race-verify-r3` | 已通过（`10f0346` 合入） |
+| **r4** | **T47 Gemini 适配器 + T48 Gemini 转译**（新增 `internal/adapter/gemini`；T48 改动 `internal/translate` 注册方式） | T48 的合并提交（合入后由审查方填写） | `git log --oneline \| grep -E "合并 T48"` | `~/t46-logs-r4/` | `T46_race_verify_report_r4.md` | `task/t46-race-verify-r4` | **等 T48 合入后执行** |
 
 每一轮的步骤：
 
 1. 按 §3、§4 准备环境、拉取最新 main。§4 的版本检查换成上表那一行的命令，能看到对应的 `merge: ...` 提交才继续。
-2. 按 §5 全部重跑，日志放到上表的新目录（把 §5 命令里的 `~/t46-logs/` 都换成它）。r3 的改动在 `internal/admin` 和 `cmd/gateway`，§5.2 已经包含这两个包，不需要增加命令。
+2. 按 §5 全部重跑，日志放到上表的新目录（把 §5 命令里的 `~/t46-logs/` 都换成它）。r3 的改动在 `internal/admin` 和 `cmd/gateway`，§5.2 已经包含这两个包。r4 新增的 `internal/adapter/gemini` 已被 §5.3 的 `./internal/adapter/...` 覆盖，`internal/translate` 在 §5.2 里，都不需要增加命令；只需在报告的 5.3 输出里确认能看到 `internal/adapter/gemini` 一行。
 3. 报告写到 `docs/handoff/reports/` 下上表的文件，格式同 §7，标题写「T46 Linux 竞态检测报告（复跑：<原因中的任务号>）」。
 4. 用上表的分支，其余提交与推送规则同 §7、§2。
 5. 验收标准同 §8，另加一条：HEAD 包含上表的合并提交。
