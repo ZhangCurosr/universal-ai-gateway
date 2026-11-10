@@ -372,13 +372,13 @@ Gemini 的 `functionCall.id` 可选，多数响应不带；IR 与另外三种协
 | 编号 | 规则 |
 |:--|:--|
 | GSIG-01 | 来自 Gemini 客户端的 `thoughtSignature` 只能回传给 Gemini；本章的方向都是跨厂商，因此 Lower 读到的签名只进入 `ThinkingPart.Signature`，Synth 到其他厂商时丢弃（§1 第 3 条） |
-| GSIG-02 | Synth（IR → Gemini）在每条 model 消息的**第一个** `functionCall` part 上加 `"thoughtSignature": "skip_thought_signature_validator"`（Google 文档给出的占位值，用于历史不是由该模型生成的情况）。*待定 1：是否注入、对哪些模型注入，见 §10.8* |
+| GSIG-02 | Synth（IR → Gemini）在每条 model 消息的**第一个** `functionCall` part 上加 `"thoughtSignature": "skip_thought_signature_validator"`（Google 文档给出的占位值，用于历史不是由该模型生成的情况）。上游模型名以 `gemini-1.` 或 `gemini-2.` 开头时**不**注入（旧模型不要求签名）；其余一律注入（§10.8 第 1 条） |
 
 ### 10.3 Gemini 请求 → IR（Lower）
 
 | 编号 | 规则 |
 |:--|:--|
-| GL-01 | 只接受 `Params["method"]` 为 `generateContent` / `streamGenerateContent`。`countTokens` → 400 `countTokens is not supported for model "<name>"`（*待定 2*） |
+| GL-01 | 只接受 `Params["method"]` 为 `generateContent` / `streamGenerateContent`。`countTokens` → 400 `countTokens is not supported for model "<name>"`（§10.8 第 2 条） |
 | GL-02 | `Stream` 取 `Envelope.Stream`；`Model` 取 `Envelope.Model`（Gemini 请求体中没有模型名） |
 
 | Gemini 字段 | IR | 说明 |
@@ -429,7 +429,7 @@ Gemini 的 `functionCall.id` 可选，多数响应不带；IR 与另外三种协
 | `ToolCallPart` | `{"functionCall":{"name","args"}}` | 不发送 `id`；GSIG-02 |
 | `ToolResultPart` | `{"functionResponse":{"name":<GID-02 查到的函数名>,"response":{"output":<文本拼接>}}}`；`IsError` 时键名为 `error` | 结果含 `ImagePart` → 400 |
 | `ThinkingPart` | 丢弃 | 来源都不是 Gemini（§1 第 3 条） |
-| `Tools` | `tools: [{"functionDeclarations": [{"name","description","parametersJsonSchema": InputSchema}]}]` | *待定 3：`parametersJsonSchema` 还是转换成 `parameters`* |
+| `Tools` | `tools: [{"functionDeclarations": [{"name","description","parametersJsonSchema": InputSchema}]}]` | 用 `parametersJsonSchema` 而不是 `parameters`，InputSchema 原样透传，不做转换（§10.8 第 3 条） |
 | `ToolChoice` `auto` / `any` / `none` / `tool` | `toolConfig.functionCallingConfig.mode` `AUTO` / `ANY` / `NONE` / `ANY` + `allowedFunctionNames: [Name]` | |
 | `MaxTokens` | `generationConfig.maxOutputTokens` | 0 时不发送 |
 | `Temperature`、`TopP` | `generationConfig.temperature`、`topP` | |
@@ -515,17 +515,17 @@ Gemini 的 `functionCall.id` 可选，多数响应不带；IR 与另外三种协
 
 除 §7 的通用用例外，每个 Gemini 方向还要覆盖：工具 ID（GID-01 ~ GID-04，含并行两个同名调用）；占位签名（GSIG-02）；Schema 转换（GL-03）；§10.5 每一类 `finishReason` 与 `promptFeedback.blockReason`；用量的三个特殊字段；流式 EOF 前无 `finishReason`；GE-02 的非对象与超限；§10.3 中每个标为 400 与丢弃的字段；`TestStreamMatrix` 全部组合；REG-04 的用量一致性。
 
-### 10.8 待定项（审批时请确认）
+### 10.8 决策记录（2026-11-10 用户确认）
 
 1. **占位思考签名（GSIG-02）**。Google 文档要求 Gemini 3 在当前轮的工具调用历史中回传签名，缺失时 400；占位值 `skip_thought_signature_validator` 可以绕过校验，但官方说明它会降低模型表现，只应作为最后手段。Vercel AI SDK、LiteLLM 都在跨模型时自动注入它。
-   - a.（建议）注入，但上游模型名以 `gemini-1.` 或 `gemini-2.` 开头时不注入。旧模型不要求签名，这样可避开它们拒绝未知字段的风险，以后的 `gemini-3.x`、`gemini-4` 等自动覆盖。
+   - **采用 a**：注入，但上游模型名以 `gemini-1.` 或 `gemini-2.` 开头时不注入。旧模型不要求签名，这样可避开它们拒绝未知字段的风险，以后的 `gemini-3.x`、`gemini-4` 等自动覆盖。
    - b. 对所有模型都注入（阶段 B 需要用真实上游验证 Gemini 2.5 接受它）。
    - c. 不注入：Claude Code / Codex CLI 用 Gemini 3 做多轮工具调用会直接 400。
 2. **`countTokens` 在转译路径上（GL-01）**。
-   - a.（建议）400。Translator 只能生成上游调用，不能本地作答。
+   - **采用 a**：400。Translator 只能生成上游调用，不能本地作答。
    - b. 修改内核让 Translator 本地返回估算结果：要改冻结的 `internal/core` / `internal/protocol`，不建议。
    - 阶段 B 的真实客户端验证要确认 Gemini CLI 在 `countTokens` 失败时能否继续对话；不能的话，部署文档写明「Gemini CLI 只能使用 Gemini 上游」。
 3. **工具 Schema 字段（§10.4）**。
-   - a.（建议）`parametersJsonSchema`：标准 JSON Schema 原样透传，`const`、`additionalProperties` 等关键字不丢失，也不用写转换。
+   - **采用 a**：`parametersJsonSchema`：标准 JSON Schema 原样透传，`const`、`additionalProperties` 等关键字不丢失，也不用写转换。
    - b. 转换成 OpenAPI 风格的 `parameters`：兼容更旧的模型，但要写反向转换并删除 Gemini 不支持的关键字。
    - 阶段 B 用真实上游确认目标模型接受 `parametersJsonSchema`；不接受时改为 b，并作为 SPEC-GAP 报告。
