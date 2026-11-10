@@ -36,7 +36,7 @@ OpenAI 入站 → Anthropic 上游、Anthropic 入站 → OpenAI 上游（请求
 
 ### M3：运维增强
 
-Prometheus 指标端点（`GET /admin/metrics`，详见 `15_metrics.md`）、Gemini 协议、WASM 插件、管理 Web UI。除 `15_metrics.md` 规定的指标端点外，其余 M3 的规格在 M2 完成后补充。
+Prometheus 指标端点（`GET /admin/metrics`，详见 `15_metrics.md`）、Gemini 协议、WASM 插件、管理 Web UI（`GET /admin/ui/`，详见 `09_http_api.md` §6）。除指标端点与管理 Web UI 外，其余 M3 的规格在 M2 完成后补充。
 
 ### 明确不做（任何里程碑都不做）
 

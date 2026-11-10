@@ -322,7 +322,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T45 | Prometheus 指标端点，M3 第一项（[说明](../docs/handoff/T45_metrics.md)） | T40 | 是 | `DONE` |
 | T47 | Gemini 协议适配器（同协议透传），M3（[说明](../docs/handoff/T47_gemini_adapter.md)） | — | 是 | `TODO` |
 | T48 | Gemini 与其他协议互相转译，M3（[说明](../docs/handoff/T48_gemini_translate.md)） | T47 阶段 A | 是 | `TODO` |
-| T49 | 管理 Web UI，M3（[说明](../docs/handoff/T49_admin_web_ui.md)） | — | 是 | `TODO` |
+| T49 | 管理 Web UI，M3（[说明](../docs/handoff/T49_admin_web_ui.md)） | — | 是 | `DONE` |
 
 ---
 

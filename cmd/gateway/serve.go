@@ -278,6 +278,11 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		Version:   version,
 		StartedAt: startedAt,
 		Metrics:   metricsCollector.Handler(metricsGauges),
+		// spec/09 §6：管理 Web UI 的 Host 检查与概览数据
+		HostCheck:    true,
+		AdminHosts:   cfg.Server.AdminHosts,
+		LedgerQueue:  metricsGauges.LedgerQueue,
+		AuditDropped: metricsGauges.AuditDropped,
 	})
 
 	// 12. 两个 http.Server（SRV-01 ~ SRV-03：先 Listen 再 Serve）
@@ -297,6 +302,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 	go func() { serveErr <- serve(dataSrv, dataLn) }()
 	go func() { serveErr <- serve(adminSrv, adminLn) }()
 	logger.Info("gateway listening", "data", dataLn.Addr().String(), "admin", adminLn.Addr().String(), "version", version)
+	logger.Info("admin ui", "url", "http://"+adminLn.Addr().String()+"/admin/ui/") // spec/09 §6
 	if opts.OnListening != nil {
 		opts.OnListening(dataLn.Addr(), adminLn.Addr())
 	}

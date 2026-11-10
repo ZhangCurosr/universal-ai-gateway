@@ -19,11 +19,20 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if !s.d.StartedAt.IsZero() && now.After(s.d.StartedAt) {
 		uptime = int64(now.Sub(s.d.StartedAt).Seconds())
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"status":         "ok",
 		"version":        s.d.Version,
 		"uptime_seconds": uptime,
-	})
+	}
+	// spec/09 §6.4：附加字段只在注入了取数函数时输出
+	if s.d.LedgerQueue != nil {
+		length, capacity := s.d.LedgerQueue()
+		out["ledger_queue"] = map[string]int{"length": length, "capacity": capacity}
+	}
+	if s.d.AuditDropped != nil {
+		out["audit_dropped"] = s.d.AuditDropped()
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *server) handleCreateClient(w http.ResponseWriter, r *http.Request) {

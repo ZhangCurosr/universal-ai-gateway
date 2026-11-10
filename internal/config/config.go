@@ -31,6 +31,9 @@ type ServerConfig struct {
 
 	// TrustedProxies 是可信反向代理的 CIDR 列表（spec/03 §7）。空 = 不信任任何 X-Forwarded-For。
 	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	// AdminHosts 是管理面除本机地址之外额外允许的 Host 主机名（spec/09 UI-20，CFG-16）。
+	AdminHosts []string `yaml:"admin_hosts"`
 }
 
 type LimitsConfig struct {

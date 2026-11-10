@@ -12,6 +12,9 @@ server:
   max_header_bytes: 65536
   # 通过 Caddy / nginx 等反向代理对外时，填写代理所在地址，网关才会信任 X-Forwarded-For
   trusted_proxies: []        # 例如 ["127.0.0.1/32", "::1/128"]
+  # 管理面（含 /admin/ui/ 管理页面）除 127.0.0.1、::1、localhost 之外额外允许的 Host 主机名（spec/09 UI-20）。
+  # 用 SSH 端口转发访问时不需要填写。
+  admin_hosts: []
 
 limits:
   max_request_body_bytes: 33554432     # 缓冲请求体上限（JSON 请求）
