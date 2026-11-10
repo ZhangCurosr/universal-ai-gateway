@@ -11,6 +11,7 @@
   - [`internal/admin/`](../../internal/admin/) 全部文件，尤其是 `server.go` 的 `NewServer` 与 `wrap`
   - [`cmd/gateway/serve.go`](../../cmd/gateway/serve.go) 中管理面的装配
   - [`docs/DEPLOYMENT.md`](../DEPLOYMENT.md)
+- **视觉参考**：[设计稿：网关管理控制台](https://claude.ai/artifact/53seA84EFwPgNjnKHn1GkY)（见 §1.1）
 
 ## 1. 背景与目标
 
@@ -22,6 +23,22 @@
 2. **不改数据面，不改内核**。只改 `internal/admin` 和文档。
 3. **页面能做的事 = 管理 API 能做的事**。需要新增 API 的地方都列在 §3.4 的待定项里，由用户决定。
 4. **页面本身不是安全边界**。所有权限检查仍然在管理 API 里（ADM-01 ~ ADM-04）。页面只是 API 的客户端。
+
+### 1.1 视觉参考
+
+[设计稿](https://claude.ai/artifact/53seA84EFwPgNjnKHn1GkY)画了 6 个页面：登录、概览、客户端、新 Token 只显示一次、上游 Key、用量。实现时**布局、信息结构、文案和状态表达以设计稿为准**，以下几点除外：
+
+| 设计稿里的做法 | 实现时 | 原因 |
+|:--|:--|:--|
+| 从 Google Fonts 加载 Inter、Noto Sans SC、JetBrains Mono | 用系统字体栈：`system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif`；等宽用 `ui-monospace, "SFMono-Regular", Consolas, monospace` | UI-03 的 CSP 禁止外部资源，约束 1 不许从外部加载任何东西 |
+| 样式都写在元素的 `style` 属性里 | 全部放进 `style.css`，用类名 | UI-05 禁止内联样式 |
+| 所有数据都是示例 | 全部来自管理 API | 约束 3 |
+| 概览页的「计费队列」「审计丢弃」 | 只有待定 4 补了相应的只读 API 才显示，否则去掉 | 现有管理 API 不提供这两项；页面不能去抓 `/admin/metrics` 再自己解析（它是给 Prometheus 用的） |
+| 只有中文 | 按待定 2 的决定 | |
+
+设计稿里的颜色可以直接用：背景 `#F5F6F8`、卡片 `#FFFFFF`、边框 `#E5E7EB`、正文 `#111827`、次要文字 `#4B5563`、强调色 `#1D4ED8`。状态的配色是浅色底加深色字：可用为绿、冷却中为橙、已隔离为红、已停用为灰。这些组合都满足 4.5:1 的对比度。状态一律用「圆点 + 文字」表达，不能只靠颜色区分。
+
+> 设计稿默认只有项目负责人能打开。开发者打不开时，向用户要共享权限，或者请用户导出截图放进交付分支的 `docs/handoff/assets/`。
 
 ## 2. 关键设计：用 Bearer Token，不用 Cookie
 
@@ -84,6 +101,7 @@
 3. **DNS 重绑定防护**（UI-21）：建议做。
 4. **要不要补管理 API**？页面要做好下面两件事，需要新增只读端点：
    - `GET /admin/api/config`：返回配置中的池（名称、协议）与模型（名称、所在池），**不含** `base_url` 以外的任何敏感字段。新建 Key 时的「池」下拉框、编辑客户端时的「允许的模型」多选框都需要它。没有这个端点，就只能让用户手填，填错了由 API 返回 400。建议补。
+   - `GET /admin/api/health` 增加两个字段：`ledger_queue: {length, capacity}`、`audit_dropped`，数据源与 spec/15 的对应仪表相同。只**增加**字段，不改已有字段。设计稿概览页的「计费队列」和审计丢弃提示需要它。建议补。
    - `GET /admin/api/audit?...`：查询审计日志。建议**本卡不做**，另开卡。
 
 ## 4. 实现要求（阶段 B：用户批准后）
@@ -115,7 +133,7 @@ internal/admin/ui_test.go
 
 - `NewServer` 中挂载 `/admin/ui` 与 `/admin/ui/`；`wrap` 中对这两个前缀和 `/admin/metrics` 一样提前放行（UI-02）。
 - 待定 3 选「做」时：`wrap` 的最前面加 `Host` 检查；配置项 `server.admin_hosts` 加进 `internal/config`（spec/03 同步）。
-- 待定 4 选「补」时：新增 `GET /admin/api/config`，走正常的管理员鉴权，数据结构写进 `types.go`。
+- 待定 4 选「补」时：新增 `GET /admin/api/config`，走正常的管理员鉴权，数据结构写进 `types.go`；`health` 的新字段通过 `admin.Deps` 注入取数函数（与 T45 的 `metrics.Gauges` 同样的做法），由 `cmd/gateway/serve.go` 装配。`health` 已有的测试断言不改，只新增用例。
 - 管理面的 `/` 兜底路由不变，`GET /` 仍然返回 JSON 404。启动日志加一行：`admin ui: http://<admin_listen>/admin/ui/`。
 
 ### 4.3 文档
@@ -126,7 +144,7 @@ internal/admin/ui_test.go
 
 - spec：`spec/09_http_api.md`（新增 §6）、`spec/01_scope_and_architecture.md`（M3 小节）、`spec/11_tasks.md`（登记本卡与状态）；待定 3 选「做」时还有 `spec/03_config.md`
 - 新增：`internal/admin/ui/**`、`internal/admin/ui.go`、`internal/admin/ui_test.go`
-- 修改：`internal/admin/server.go`、`internal/admin/types.go`（待定 4）、`internal/admin/server_test.go`（只新增用例）、`docs/DEPLOYMENT.md`；待定 3 选「做」时还有 `internal/config/*.go`、`gateway.example.yaml`
+- 修改：`internal/admin/server.go`、`internal/admin/types.go`（待定 4）、`cmd/gateway/serve.go`（待定 4 的取数函数装配）、`internal/admin/server_test.go`（只新增用例）、`docs/DEPLOYMENT.md`；待定 3 选「做」时还有 `internal/config/*.go`、`gateway.example.yaml`
 
 ## 6. 测试要求
 
