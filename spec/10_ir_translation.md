@@ -51,7 +51,9 @@ type ThinkingPart struct { Vendor ir.Vendor; Text string; Signature string; Reda
 type Tool struct { Name, Description string; InputSchema json.RawMessage; CacheControl *CacheControl }
 type ToolChoice struct { Mode string; Name string }    // auto | any | none | tool
 type CacheControl struct { Type string; TTL string }
-type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Usage pricing.Usage }
+type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Usage TokenUsage }
+type TokenUsage struct { Input, CacheRead, CacheWrite, Output int64 }
+type StreamEvent struct { Kind StreamEventKind; ID, Text string; ToolIndex int; ToolID, ToolName string; Usage TokenUsage; Stop StopReason }
 ```
 
 ## 3. OpenAI Chat → IR（T20）
@@ -301,3 +303,25 @@ type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Us
 ### 8.4 必测用例
 
 §7 的 10 个用例全部适用，另加：`previous_response_id` → 400；内置工具 → 400；`input` 字符串与数组两种形式；`function_call_output` 回填后的多轮；达到输出上限 → `incomplete`。
+
+## 9. 响应的 IR 与流式 IR（T43）
+
+### 9.1 架构分工：Decoder 与 Encoder
+
+响应转译统一采用两阶段管道架构，将原有 $N \times M$ 的双向响应绑定转换器解耦为 $N + M$ 架构：
+
+```
+上游响应/流 ──Decoder（每个上游协议一个）──▶ IR 事件 / ir.Response ──Encoder（每个客户端协议一个）──▶ 客户端响应/流
+```
+
+1. **Decoder（未导出）**：只做「上游协议 → 规范化事件 / ir.Response」，不读取 `protocol.Envelope`，不知道目标客户端协议。
+2. **Encoder（未导出）**：只做「规范化事件 / ir.Response → 客户端协议」，不知道来源上游协议。所有因客户端而异的选择（如 ID 签发策略、思考内容是否过滤、Responses 的消息与工具项切分、Chat 的 usage chunk 输出条件）均由 Encoder 决定。
+
+### 9.2 流式 IR 规范与不变量
+
+1. **Token 用量口径**：`TokenUsage.Input` 统一按规范化不含缓存的输入 token 数记录（Anthropic 口径）。含缓存的 Chat 上游 Decoder 用 `prompt_tokens - cached` 计算；计费与计量仍以入站 Meter 为准，IR 中的 Usage 仅用于客户端展现。
+2. **文本规范**：Decoder 不产生空的文本增量事件（`EventText`），也不在 `ir.Response` 中产生空的 `TextPart`。上游返回空文本时统一不输出。
+3. **停止原因映射**：无法识别的上游停止原因统一映射为 `StopEndTurn`。
+4. **工具调用生命周期**：Decoder 产出的 `EventToolStart`、`EventToolArgs`、`EventToolEnd` 带规范化的 `ToolIndex`（从 0 开始自增），Encoder 可按需进行流式项状态管理。
+5. **流异常处理**：上游流异常（error 事件、提前截断、无停止原因断流等）由 Decoder 统一包装为 `*protocol.AttemptError`，其 Outcome 分类与原转译层完全一致。
+
