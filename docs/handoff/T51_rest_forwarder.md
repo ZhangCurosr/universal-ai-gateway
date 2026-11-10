@@ -58,13 +58,24 @@ curl -H "Authorization: Bearer <网关 Token>" \
 
 内核遇到 5xx、超时、网络错误会换 Key 重试（spec/07 §6）。对 `GET` 这是好事，但对 `POST` 可能造成重复下单、重复发短信。内核没有「按方法禁止重试」的开关，但有一条现成规则：**流式请求体（`BodyStream`）的请求只尝试一次**（CORE-07）。因此 `POST` / `PATCH` 路由声明为 `BodyStream`，自然只尝试一次；`GET` / `HEAD` / `PUT` / `DELETE` 是幂等的，可以重试。见待定 2。
 
+但很多 API 的 `POST` 其实没有副作用（例如 Bivia 的 `/boolean`、`/score` 全是 `POST` 查询）。对它们只尝试一次，等于放弃了 Key 池的价值：某把 Key 遇到 429 / 5xx，客户端直接看到错误。所以另设前缀 **`/rest-idem/{service}/...`**：`POST` / `PATCH` 走它时声明为 `BodyBuffered`，按 spec/07 §6 正常换 Key 重试。是否可以安全重试只有调用方知道，所以由**客户端选择前缀**；`/rest/` 的默认行为仍是只尝试一次。见 RS-02、RS-19。
+
 ### 2.3 403 不能当作 Key 失效
 
 `protocol.ClassifyHTTP` 把 401 归为 `OutcomeAuthFailed`、403 归为 `OutcomePermissionDenied`，两者都会让调度器隔离这个 Key。对大模型 API 这是对的；但通用 REST API 常用 403 表示「这个资源你没权限」（例如访问别人的私有仓库），隔离 Key 会误伤所有客户端。本适配器在 `Do` 里把上游 403 改写为 `OutcomeClientError`，让内核把上游错误体原样转给客户端；401 保持不变（Key 确实失效）。见待定 3。
 
+代价是：有些 API（Google、AWS 一类）在 Key 失效或额度用完时也返回 403，这样的 Key 不会被隔离，每次轮到它都会失败。适配器拿不到 Key 的 ID，也不能改调度器状态，所以本卡只做到**让管理员看得见**：每次改写 403 时记 Warn 日志（带 Key 的掩码，同一 Key 限频），见 RS-16；DEPLOYMENT.md 写明这一风险和处理办法（看到某个掩码反复出现时，在管理 API 中把该 Key 设为 disabled）。按「同一 Key 连续 N 次 403 即隔离」自动处理，需要调度器的契约支持，留给之后的架构决策卡。
+
 ### 2.4 查询参数里的 Key 不能出现在日志里
 
 Go 的 `*url.Error` 会把完整 URL 写进错误信息。Key 放在查询参数里时，网络错误的日志就会带出明文 Key（AGENTS.md §3 第 1 条）。适配器必须在把错误交给内核之前，把 `*url.Error.URL` 中的查询串替换掉。
+
+### 2.5 Key 的权限就是客户端的权限
+
+本卡不做路径与方法白名单（§1「明确不做」）。被允许访问某个服务的客户端，可以用池里的 Key 调用上游的**任何**路径与方法，包括删除、管理类接口。在有按池配置之前，只能靠部署方式控制风险，DEPLOYMENT.md 必须醒目写明（见 §3.5）：
+
+1. 只给 `rest` 池放**最小权限**的 Key（只读 Token、限定作用域的 Token）。
+2. 读写需要分开时，对同一个上游配**两个池、两个服务名**（例如 `github-ro` 放只读 Key、`github-rw` 放读写 Key），再用客户端的 `allowed_models` 决定谁能访问哪一个。
 
 ## 3. 规格草案（阶段 A：改写 spec/08 §8.3 为正式规则，提交审批）
 
@@ -76,9 +87,9 @@ Go 的 `*url.Error` 会把完整 URL 写进错误信息。Key 放在查询参数
 | 编号 | 规则 |
 |:--|:--|
 | RS-01 | 包 `internal/adapter/rest`；`const Protocol protocol.Protocol = "rest"`；注册优先级与 `tavily` 相同，不是 Fallback；`Claims` 恒为 false |
-| RS-02 | 路由（都是 `RouteCall`，无目录路由），路径一律为 `/rest/{service}/{path...}`：`GET` → Op `rest.get`，`BodyNone`（`http.ServeMux` 的 `GET` 模式同时匹配 `HEAD`，HEAD 请求也走这条路由，不单独声明）；`DELETE` → `rest.delete`，`BodyNone`；`PUT` → `rest.put`，`BodyBuffered`；`POST` → `rest.post`，`BodyStream`；`PATCH` → `rest.patch`，`BodyStream`。注册表要求 Op 在协议内唯一（REG-02），所以每个方法只有这一条路由；访问上游根路径用 `/rest/{service}/`（`{path...}` 可以为空）。*待定 2：POST / PATCH 是否只尝试一次* |
-| RS-03 | `Envelope.Model` = `{service}`，即配置 `models[].name`；`X-UAIG-Model` 不适用（服务名已在路径里）。`{service}` 为空 → `CodeInvalidRequest` |
-| RS-04 | `Params`：`method`（`r.Method` 原样，因此 HEAD 以 HEAD 转发）、`path`（`{path...}` 的**转义形式**，取自 `r.URL.EscapedPath()`，不含 `/rest/{service}` 前缀）、`query`（`r.URL.RawQuery` 原样） |
+| RS-02 | 路由（都是 `RouteCall`，无目录路由），路径一律为 `/rest/{service}/{path...}`：`GET` → Op `rest.get`，`BodyNone`（`http.ServeMux` 的 `GET` 模式同时匹配 `HEAD`，HEAD 请求也走这条路由，不单独声明）；`DELETE` → `rest.delete`，`BodyNone`；`PUT` → `rest.put`，`BodyBuffered`；`POST` → `rest.post`，`BodyStream`；`PATCH` → `rest.patch`，`BodyStream`。注册表要求 Op 在协议内唯一（REG-02），所以每个方法只有这一条路由；访问上游根路径用 `/rest/{service}/`（`{path...}` 可以为空）。另有两条可重试的路由，路径为 `/rest-idem/{service}/{path...}`：`POST` → `rest.post_idem`，`BodyBuffered`；`PATCH` → `rest.patch_idem`，`BodyBuffered`（`/rest-idem/` 下的其他方法不声明，落到数据面兜底路由，按 RTE-04 返回 404）。共 7 条路由。*待定 2：POST / PATCH 是否只尝试一次* |
+| RS-03 | `Envelope.Model` = `{service}`，即配置 `models[].name`（`/rest/` 与 `/rest-idem/` 相同，`allowed_models` 对两者同样生效）；`X-UAIG-Model` 不适用（服务名已在路径里）。`{service}` 为空 → `CodeInvalidRequest` |
+| RS-04 | `Params`：`method`（`r.Method` 原样，因此 HEAD 以 HEAD 转发）、`path`（`{path...}` 的**转义形式**，取自 `r.URL.EscapedPath()`，不含 `/rest/{service}` 或 `/rest-idem/{service}` 前缀）、`query`（`r.URL.RawQuery` 原样） |
 | RS-05 | 路径安全：`path` 按 `/` 拆段后，任一段在百分号解码后等于 `.` 或 `..`，或含 `\`、NUL → `CodeInvalidRequest`，消息 `path must not contain dot segments` |
 | RS-06 | `Estimate = {requests: 1}`；无亲和线索 |
 
@@ -87,14 +98,15 @@ Go 的 `*url.Error` 会把完整 URL 写进错误信息。Key 放在查询参数
 | 编号 | 规则 |
 |:--|:--|
 | RS-10 | 上游 URL = `protocol.JoinURL(base_url, path)`，有 `query` 时追加 `?` + `query`。`Call.Model`（`upstream_model`）不参与 URL |
-| RS-11 | 方法取 `Params["method"]`，只允许 `GET`、`HEAD`、`DELETE`、`PUT`、`POST`、`PATCH`，其他值 → `CodeInvalidRequest`；`PUT` 的请求体用 `Call.Body`，`POST` / `PATCH` 用 `Call.BodyStream`，其他方法无请求体 |
+| RS-11 | 方法取 `Params["method"]`，只允许 `GET`、`HEAD`、`DELETE`、`PUT`、`POST`、`PATCH`，其他值 → `CodeInvalidRequest`；`PUT`、`rest.post_idem`、`rest.patch_idem` 的请求体用 `Call.Body`，`rest.post` / `rest.patch` 用 `Call.BodyStream`，其他方法无请求体 |
 | RS-12 | 请求头白名单（HDR-02）：`Content-Type`、`Accept`、`Accept-Language`、`If-Match`、`If-None-Match`、`If-Modified-Since`、`If-Unmodified-Since`、`Range`。另外，客户端请求头 `X-UAIG-Forward-<Name>: <value>` 以 `<Name>: <value>` 转发，用于上游要求的自定义头（如 `X-Api-Version`）；`<Name>` 是下列之一时**丢弃**并记一次 Warn：`Authorization`、`Proxy-Authorization`、`Cookie`、`Host`、`Content-Length`、`Transfer-Encoding`、`Connection`、`Upgrade`、`TE`、`Trailer`、`Keep-Alive`、`X-Api-Key`、`X-Goog-Api-Key`、任何 `X-Forwarded-*` 与 `X-UAIG-*`。*待定 4：是否提供 `X-UAIG-Forward-*` 机制* |
 | RS-13 | `User-Agent` 同 HDR-05 |
 | RS-14 | 上游 Key 按 §3.3 放置；Key 放置在头里时，同名的客户端转发头被覆盖；放置在查询参数里时，客户端查询串中的同名参数被删除 |
-| RS-15 | 2xx 响应一律 `ResponseRaw`，`Status` = 上游状态码；响应头白名单：`Content-Type`、`Content-Length`、`Content-Disposition`、`Content-Range`、`Accept-Ranges`、`Cache-Control`、`ETag`、`Last-Modified`、`Location`。上游是 `text/event-stream` 时同样按字节流转发，不解析 |
-| RS-16 | 非 2xx：用 `protocol.Send` 的分类，但上游 **403** 改写为 `OutcomeClientError`（Status 保持 403），使内核原样转发错误体而不隔离 Key。*待定 3* 。错误体超过 8 KiB（`MaxErrorBodyBytes`）时被截断，这是已知限制，写进部署文档 |
+| RS-15 | 2xx 响应一律 `ResponseRaw`，`Status` = 上游状态码；响应头白名单：`Content-Type`、`Content-Length`、`Content-Disposition`、`Content-Range`、`Accept-Ranges`、`Cache-Control`、`ETag`、`Last-Modified`、`Location`、`Link`（分页）、`Retry-After`、`RateLimit`、`RateLimit-Policy`，以及名字以 `X-RateLimit-` 或 `RateLimit-` 开头的头（剩余额度）。上游是 `text/event-stream` 时同样按字节流转发，不解析 |
+| RS-16 | 非 2xx：用 `protocol.Send` 的分类，但上游 **403** 改写为 `OutcomeClientError`（Status 保持 403），使内核原样转发错误体而不隔离 Key。*待定 3* 。每次改写都记一条 Warn：`rest upstream returned 403; key not quarantined`，字段为上游主机、去掉查询串的路径、`obs.MaskSecret(Key 明文)`；同一掩码每分钟至多一条（内存表以掩码为键，上限 1024 项，满了整体清空；有锁，无 goroutine）。错误体超过 8 KiB（`MaxErrorBodyBytes`）时被截断，这是已知限制，写进部署文档 |
 | RS-17 | 网络错误：交给内核前，把 `*url.Error` 的 `URL` 字段替换为去掉查询串的 URL（无论 Key 放在哪里，一律去掉），避免日志泄露凭据或客户端参数 |
 | RS-18 | `Units() = ["requests"]`；Meter 在 2xx 时报告 `{requests: 1}`（`UsageUpstream`），`Fault()` 恒为无 |
+| RS-19 | `rest.post_idem` / `rest.patch_idem` 与 `PUT` 一样按 spec/07 §6 重试（429、5xx、超时、网络错误换 Key），同一请求体可能被上游收到多次。只应用于没有副作用的接口，由客户端负责选择；DEPLOYMENT.md 写明。计费仍是每个成功请求 `requests: 1`（失败的尝试不计费） |
 
 ### 3.3 Key 的放置方式（`Secret` 的格式）
 
@@ -118,11 +130,18 @@ Go 的 `*url.Error` 会把完整 URL 写进错误信息。Key 放在查询参数
 | # | 问题 | 选项 | 建议 | 决议 |
 |:--|:--|:--|:--|:--|
 | 1 | Key 放在哪里由谁决定 | a. 编码在 Key 明文中（§3.3）；b. 注册 `rest_bearer`、`rest_header` 等多个协议名（`header` 方式仍无法指定头名）；c. 等按池配置的架构决策后再做 | **a**：不改契约，不同 Key 甚至可以用不同方式 | **a** |
-| 2 | `POST` / `PATCH` 是否只尝试一次 | a. 是（`BodyStream`，CORE-07）；b. 否（`BodyBuffered`，失败可换 Key 重试，有重复副作用的风险） | **a**：通用转发不知道接口是否幂等，按最保守处理 | **a** |
-| 3 | 上游 403 | a. 当作客户端错误原样转发，不隔离 Key；b. 与其他协议一致，隔离 Key | **a**：通用 API 的 403 多是资源级权限 | **a** |
+| 2 | `POST` / `PATCH` 是否只尝试一次 | a. 是（`BodyStream`，CORE-07）；b. 否（`BodyBuffered`，失败可换 Key 重试，有重复副作用的风险） | **a**：通用转发不知道接口是否幂等，按最保守处理 | **a**，另加 `/rest-idem/` 前缀供无副作用的 POST 重试（RS-02、RS-19） |
+| 3 | 上游 403 | a. 当作客户端错误原样转发，不隔离 Key；b. 与其他协议一致，隔离 Key | **a**：通用 API 的 403 多是资源级权限 | **a**，另加限频 Warn 日志与文档提示（RS-16、RS-31） |
 | 4 | 自定义请求头 | a. 提供 `X-UAIG-Forward-<Name>`（RS-12）；b. 只转发白名单 | **a**：很多 API 要求版本头，没有它就只能写专用适配器 | **a** |
 
-> 2026-11-10 用户批准：全部采用 a。写入 spec/08 时删去各条规则中的「*待定 N*」字样。
+> 2026-11-10 用户批准：全部采用 a。同日审查后补充（用户同意）：`/rest-idem/` 可重试前缀、403 的 Warn 日志、Key 权限提示（§2.5、§3.5）、响应头白名单增加分页与限流头。写入 spec/08 时删去各条规则中的「*待定 N*」字样。
+
+### 3.5 部署文档必须写明的安全提示
+
+| 编号 | 规则 |
+|:--|:--|
+| RS-30 | DEPLOYMENT.md「接入任意 REST API」一节开头用醒目的提示框写明 §2.5：Key 的全部权限都暴露给被允许访问该服务的客户端，只放最小权限的 Key；读写分离用两个服务名 + `allowed_models` |
+| RS-31 | 写明 RS-16 的风险：上游用 403 表示 Key 失效时，Key 不会被自动隔离；看到同一掩码的 Warn 反复出现，就用 `PATCH /admin/api/keys/{id}`、请求体 `{"state":"disabled"}` 停用该 Key（ADM-15） |
 
 ## 4. 实现要求（阶段 B：用户批准后）
 
@@ -131,8 +150,8 @@ Go 的 `*url.Error` 会把完整 URL 写进错误信息。Key 放在查询参数
 ```
 internal/adapter/rest/
   register.go      Protocol、Register
-  ingress.go       Routes、Parse（RS-02 ~ RS-06）、WriteError、StreamError、WriteCatalog（404）
-  egress.go        Prepare、Do（RS-10 ~ RS-18）、meter
+  ingress.go       Routes（7 条）、Parse（RS-02 ~ RS-06）、WriteError、StreamError、WriteCatalog（404）
+  egress.go        Prepare、Do（RS-10 ~ RS-19）、meter、403 Warn 限频表（RS-16）
   secret.go        Key 格式解析（§3.3、RS-20），返回「如何修改 *http.Request」的结构，不返回明文片段的错误
   *_test.go
   conformance_test.go   adaptertest.RunIngress / RunEgress
@@ -151,7 +170,7 @@ internal/adapter/rest/
 ### 4.3 文档
 
 - `spec/08_adapters.md` §8：标题改正，§8.3 改写为 §3 的正式规则。
-- `docs/DEPLOYMENT.md` 新增一节「接入任意 REST API」：配置示例、Key 的四种写法、`X-UAIG-Forward-*` 用法、已知限制（只能按次计费；POST / PATCH 不重试；错误体超过 8 KiB 会截断；没有会话亲和）。
+- `docs/DEPLOYMENT.md` 新增一节「接入任意 REST API」：开头是 RS-30 的安全提示框；然后是配置示例、Key 的四种写法、`X-UAIG-Forward-*` 用法、`/rest/` 与 `/rest-idem/` 的区别（附「什么样的接口可以用 `/rest-idem/`」）、RS-31 的 403 风险与处理办法、已知限制（只能按次计费；`/rest/` 下 POST / PATCH 不重试；错误体超过 8 KiB 会截断；没有会话亲和；没有路径白名单）。
 - `gateway.example.yaml` 加一个注释掉的 `rest` 池示例。
 
 ## 5. 涉及文件
@@ -166,14 +185,14 @@ internal/adapter/rest/
 ## 6. 测试要求
 
 1. **一致性套件**：`adaptertest.RunIngress`、`adaptertest.RunEgress` 全部通过。
-2. **路由**：5 条路由各自命中正确的 Op 与 `BodyMode`；HEAD 走 `rest.get` 且以 HEAD 转发、上游不返回响应体；`/rest/{service}/`（空子路径）转发到上游根路径；`Seal()` 通过（Op 唯一、无重复路由）；`Params` 中 `path` 保留百分号编码（如 `a%2Fb` 不被解码成两段）、`query` 原样。
+2. **路由**：7 条路由各自命中正确的 Op 与 `BodyMode`；`/rest-idem/` 下的 `GET` 按 RTE-04 返回 404；`/rest-idem/{service}/x` 的 `Params.path` 为 `x`；HEAD 走 `rest.get` 且以 HEAD 转发、上游不返回响应体；`/rest/{service}/`（空子路径）转发到上游根路径；`Seal()` 通过（Op 唯一、无重复路由）；`Params` 中 `path` 保留百分号编码（如 `a%2Fb` 不被解码成两段）、`query` 原样。
 3. **路径安全**（RS-05）：`..`、`.`、`%2e%2e`、`%2E.`、含 `\` 的段都返回 400；正常的 `v1/items/42` 通过。
 4. **Key 格式**（§3.3）：五种写法各一个用例（检查上游实际收到的头或查询参数）；`basic` 密码含 `:`；`query` 方式覆盖客户端同名参数；`header` 方式覆盖同名转发头；格式非法时 `OutcomeAuthFailed`，且错误信息与日志中不含明文的任何片段。
 5. **请求头**（RS-12）：白名单头被转发；客户端的 `Authorization`、`Cookie`、`X-Api-Key` 不被转发；`X-UAIG-Forward-X-Api-Version` 被转发为 `X-Api-Version`；`X-UAIG-Forward-Authorization`、`X-UAIG-Forward-Host`、`X-UAIG-Forward-X-Forwarded-For` 被丢弃。
-6. **错误**：上游 404 / 400 / 422 原样转发状态码与错误体；403 原样转发且 Key **未被隔离**（端到端用例中检查 `GET /admin/api/keys` 的状态）；401 隔离 Key；429 / 5xx 对 `GET` 换 Key 重试，对 `POST` 只尝试一次（假上游计数）。
+6. **错误**：上游 404 / 400 / 422 原样转发状态码与错误体；403 原样转发且 Key **未被隔离**（端到端用例中检查 `GET /admin/api/keys` 的状态）；401 隔离 Key；429 / 5xx 对 `GET` 与 `/rest-idem/` 的 `POST` 换 Key 重试（两把 Key 的假上游，第二次请求体与第一次逐字节相同），对 `/rest/` 的 `POST` 只尝试一次（假上游计数）。403 时有一条 Warn，含 Key 掩码而不含明文；同一 Key 连续 3 次 403 只有 1 条 Warn；限频表满 1024 项后清空不报错。
 7. **凭据不泄露**（RS-17）：Key 放在查询参数里，让假上游在读到请求后直接断开连接，检查返回的错误与网关日志里都没有 Key 明文。
-8. **响应**：二进制响应体逐字节一致；`Content-Disposition`、`ETag` 被转发，上游的 `Set-Cookie` 不被转发；上游 `text/event-stream` 按字节流转发。
-9. **计费**：成功请求记 `requests: 1`；失败请求不计费（端到端用例中查 `usage_events`）。
+8. **响应**：二进制响应体逐字节一致；`Content-Disposition`、`ETag`、`Link`、`Retry-After`、`X-RateLimit-Remaining`、`RateLimit-Reset` 被转发，上游的 `Set-Cookie` 不被转发；上游 `text/event-stream` 按字节流转发。
+9. **计费**：成功请求记 `requests: 1`；失败请求不计费；`/rest-idem/` 重试一次后成功只记 1 次（端到端用例中查 `usage_events`）。
 
 ## 7. 验收标准
 
@@ -181,7 +200,7 @@ internal/adapter/rest/
 - [ ] §6 的测试全部通过；`go run ./tools/check` 全绿。
 - [ ] 没有修改 `internal/core`、`internal/protocol`、`internal/adapter/adaptertest`；`internal/archtest` 只在 `layers` 表加了一行；没有新增依赖。
 - [ ] 日志、错误信息、响应中没有任何上游 Key 的明文或片段（AGENTS.md §3 第 1 条）。
-- [ ] DEPLOYMENT.md 的新章节写明了 Key 格式与全部已知限制。
+- [ ] DEPLOYMENT.md 的新章节写明了 Key 格式、RS-30 / RS-31 的安全提示与全部已知限制。
 - [ ] 改完后在 Linux 上按 [T46](T46_race_verify_linux.md) 的流程复跑 `-race`（可以由审查方安排）。
 
 ## 8. 建议提交拆分
