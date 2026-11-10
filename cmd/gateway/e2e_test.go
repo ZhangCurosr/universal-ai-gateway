@@ -61,7 +61,7 @@ const chatStream = `data: {"id":"chatcmpl-8","choices":[{"index":0,"delta":{"rol
 	"data: [DONE]\n\n"
 
 // fakeUpstream 同时模拟 Anthropic Messages、OpenAI Chat 与 OpenAI Responses。
-func fakeUpstream(t *testing.T) *httptest.Server {
+func fakeUpstream(t testing.TB) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 测试桩：读失败时下面的断言会失败
@@ -111,7 +111,7 @@ type gateway struct {
 }
 
 // startGateway 在临时目录中写配置并启动 run；mutate 可以在 Load 之后改配置。
-func startGateway(t *testing.T, upstreamURL string, mutate func(*config.Config)) *gateway {
+func startGateway(t testing.TB, upstreamURL string, mutate func(*config.Config)) *gateway {
 	t.Helper()
 	dir := t.TempDir()
 	yaml := fmt.Sprintf(`server:
@@ -198,7 +198,7 @@ models:
 }
 
 // doJSON 发请求并把 JSON 响应解码到 out（out 可为 nil）。返回状态码。
-func doJSON(t *testing.T, method, url, token string, body any, out any) int {
+func doJSON(t testing.TB, method, url, token string, body any, out any) int {
 	t.Helper()
 	var rd io.Reader
 	if body != nil {
