@@ -94,7 +94,9 @@ func newBenchUpstream(t testing.TB) *httptest.Server {
 
 func setupBenchGateway(b *testing.B, upstreamURL string) (*gateway, string) {
 	b.Helper()
-	g := startGateway(b, upstreamURL, nil)
+	g := startGateway(b, upstreamURL, func(c *config.Config) {
+		c.Limits.PreAuthIPRPM = 0 // 禁用鉴权前 IP 限流，防止基准被 429
+	})
 	adminURL := "http://" + g.admin + "/admin/api"
 
 	var created struct {
@@ -332,7 +334,12 @@ func TestMemoryUnderLoad(t *testing.T) {
 			}))
 			defer slowUpstream.Close()
 
-			g := startGateway(t, slowUpstream.URL, mutate)
+			g := startGateway(t, slowUpstream.URL, func(c *config.Config) {
+				c.Limits.PreAuthIPRPM = 0 // 禁用前置 IP 限流
+				if mutate != nil {
+					mutate(c)
+				}
+			})
 			adminURL := "http://" + g.admin + "/admin/api"
 
 			var created struct {

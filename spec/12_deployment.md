@@ -113,7 +113,10 @@ server {
 
 峰值内存估算见 spec/09 §5.1：约 `3 × max_buffered_body_bytes` + 每个非流式请求最多 64 MiB + 运行时基础约 40 MiB。
 
-实测值（T50）：在默认档（≥ 4 GiB）与 1 GiB 档两种配置下，用 256 路 / 64 路并发流式测量 `HeapInuse`、`Sys` 峰值，结果写在 `docs/handoff/reports/T50_perf_baseline.md`，测完后由 T50 补到本段。
+实测值（T50）：在 Linux x86_64 环境下以并发长流式压测（每路 10ms/chunk 持续 5s），实测结果对照如下：
+- **默认档（≥ 4 GiB，256 路并发）**：Heap 峰值 **84.03 MiB**，系统内存 Sys 峰值 **116.56 MiB**，协程峰值 2322，结束后无泄漏回落至 17。
+- **1 GiB 档（64 路并发）**：Heap 峰值 **97.48 MiB**，系统内存 Sys 峰值 **120.56 MiB**，协程峰值 594，结束后无泄漏回落至 17。
+实测值远低于理论峰值上限，证实流式管道无内存积压。完整测量数据见 `docs/handoff/reports/T50_perf_baseline.md`。
 
 ## 5. 开机自启与崩溃自动重启
 
