@@ -320,7 +320,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T43 | 响应转换经过 IR（流式 IR）（[说明](../docs/handoff/T43_stream_ir.md)） | 建议 T42 之后 | 是 | `DONE` |
 | T44 | SPEC-GAP 决策与落地（[说明](../docs/handoff/T44_spec_gap_decisions.md)） | — | 是（用户填决策表） | `DONE` |
 | T45 | Prometheus 指标端点，M3 第一项（[说明](../docs/handoff/T45_metrics.md)） | T40 | 是 | `DONE` |
-| T47 | Gemini 协议适配器（同协议透传），M3（[说明](../docs/handoff/T47_gemini_adapter.md)） | — | 是 | `TODO` |
+| T47 | Gemini 协议适配器（同协议透传），M3（[说明](../docs/handoff/T47_gemini_adapter.md)） | — | 是 | `DOING` |
 | T48 | Gemini 与其他协议互相转译，M3（[说明](../docs/handoff/T48_gemini_translate.md)） | T47 阶段 A | 是 | `TODO` |
 | T49 | 管理 Web UI，M3（[说明](../docs/handoff/T49_admin_web_ui.md)） | — | 是 | `TODO` |
 
@@ -362,3 +362,21 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
   - 标签转义、桶累积边界、+Inf 与 _count 一致性；
   - 并发收集准确性与抓取无锁/细粒度锁安全性；
   - 严禁出现客户端 ID、Token、请求 ID 等高基数或敏感信息。
+
+---
+
+## T47 Gemini 协议适配器（同协议透传，M3） — 状态：`DOING`
+
+- **前置**：无
+- **必读规格**：08 §2.1、§3.1、§6、§10；05 AUTH-01 ~ AUTH-04；`internal/protocol/`；`internal/adapter/openai/`；`internal/adapter/adaptertest/`；`docs/handoff/T47_gemini_adapter.md`
+- **涉及文件**：`spec/08_adapters.md`、`spec/01_scope_and_architecture.md`、`spec/11_tasks.md`、`internal/adapter/gemini/`（新建）、`cmd/gateway/adapters.go`、`internal/archtest/archtest_test.go`、`gateway.example.yaml`、`docs/DEPLOYMENT.md`
+- **要做的事**：
+  1. 规格：在 `spec/08_adapters.md` 中增加 §10 定义 Gemini API 适配器规则与错误、用量提取；
+  2. 实现：新建 `internal/adapter/gemini/` 包（`register.go`、`ingress.go`、`egress.go`），实现 `models.call`（支持 `generateContent`、`streamGenerateContent`、`countTokens`）与 `GET /v1beta/models`；
+  3. 出站：`x-goog-api-key` 鉴权、流式 `?alt=sse`、错误体重试时间提取与用量累加；
+  4. 装配与分层：在 `cmd/gateway/adapters.go` 注册适配器，在 `internal/archtest` 中登记为第 2 层。
+- **测试**：
+  - 一致性套件：`adaptertest.RunIngress` 与 `adaptertest.RunEgress` 全部通过；
+  - 路径拆分：多 `:` 与 `-` 符号模型名解析准确；
+  - 出站请求与用量：各方法 URL 拼接无误、用量项累加准确、流式中断估算生效、不泄露密钥明文。
+
