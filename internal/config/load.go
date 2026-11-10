@@ -78,6 +78,12 @@ func (c *Config) Validate() error {
 			return fieldErr(fmt.Sprintf("server.trusted_proxies[%d]", i), "invalid CIDR %q", cidr)
 		}
 	}
+	// CFG-16
+	for i, h := range s.AdminHosts {
+		if !validAdminHost(h) {
+			return fieldErr(fmt.Sprintf("server.admin_hosts[%d]", i), "must be a host name or IP address without port, got %q", h)
+		}
+	}
 	// CFG-12
 	if c.Limits.MaxInFlightRequests <= 0 || c.Limits.PreAuthIPRPM < 0 {
 		return fieldErr("limits", "max_in_flight_requests must be > 0 and preauth_ip_rpm >= 0")
@@ -196,6 +202,18 @@ func (c *Config) Validate() error {
 }
 
 var protocolName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// adminHostName 是 server.admin_hosts 的合法取值（CFG-16）：主机名或 IP，不带端口与通配符。
+var adminHostName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]*$`)
+
+// validAdminHost：含 ":" 的只能是 IPv6 地址（去掉方括号），否则必须匹配 adminHostName。
+func validAdminHost(h string) bool {
+	if strings.Contains(h, ":") {
+		addr, err := netip.ParseAddr(strings.Trim(h, "[]"))
+		return err == nil && addr.Is6()
+	}
+	return adminHostName.MatchString(h)
+}
 
 func fieldErr(path, format string, args ...any) error {
 	return fmt.Errorf("config: %s: %s", path, fmt.Sprintf(format, args...))

@@ -86,6 +86,10 @@ func TestValidate(t *testing.T) {
 		{"CFG-14 retention_days negative", func(c *Config) { c.Audit.RetentionDays = -1 }, "audit.retention_days"},
 		{"CFG-15 unknown_fields invalid", func(c *Config) { c.Translation.UnknownFields = "ignore" }, "translation.unknown_fields"},
 		{"CFG-15 unknown_fields empty", func(c *Config) { c.Translation.UnknownFields = "" }, "translation.unknown_fields"},
+		{"CFG-16 admin host with port", func(c *Config) { c.Server.AdminHosts = []string{"gw.local:8081"} }, "admin_hosts[0]"},
+		{"CFG-16 admin host wildcard", func(c *Config) { c.Server.AdminHosts = []string{"ok.local", "*.local"} }, "admin_hosts[1]"},
+		{"CFG-16 admin host empty", func(c *Config) { c.Server.AdminHosts = []string{""} }, "admin_hosts[0]"},
+		{"CFG-16 admin host bad ipv6", func(c *Config) { c.Server.AdminHosts = []string{"fe80::zz"} }, "admin_hosts[0]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,5 +124,16 @@ func TestExampleConfigIsValid(t *testing.T) {
 	}
 	if _, err := Parse(data); err != nil {
 		t.Fatalf("gateway.example.yaml is invalid: %v", err)
+	}
+}
+
+func TestAdminHostsValid(t *testing.T) {
+	cfg, err := Parse([]byte(minimalYAML))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	cfg.Server.AdminHosts = []string{"gw.local", "Admin-1.example.com", "10.0.0.5", "::1", "[fe80::1]"}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }

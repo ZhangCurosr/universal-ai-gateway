@@ -30,6 +30,7 @@ server:
   idle_timeout: 120s               # §6：keep-alive 空闲连接保留时间
   max_header_bytes: 65536          # §6：请求头总大小上限
   trusted_proxies: []              # §7：可信反向代理 CIDR，例如 ["127.0.0.1/32", "::1/128"]
+  admin_hosts: []                  # spec/09 UI-20：管理面额外允许的 Host 主机名（本机地址总是允许）
 
 limits:
   max_request_body_bytes: 33554432 # 32 MiB，缓冲请求体（BodyBuffered，JSON 等）上限
@@ -115,6 +116,7 @@ models:                           # 客户端可见的「服务」：大模型�
 | `server.read_header_timeout` / `read_timeout` / `idle_timeout` | `10s` / `60s` / `120s` |
 | `server.max_header_bytes` | `65536` |
 | `server.trusted_proxies` | `[]` |
+| `server.admin_hosts` | `[]` |
 | `limits.max_request_body_bytes` | `33554432` |
 | `limits.max_stream_body_bytes` | `536870912` |
 | `limits.max_in_flight_requests` | `256` |
@@ -154,6 +156,7 @@ models:                           # 客户端可见的「服务」：大模型�
 | CFG-12 | `max_in_flight_requests > 0`、`preauth_ip_rpm >= 0`、`max_buffered_body_bytes >= max_request_body_bytes`、`max_stream_body_bytes > 0` |
 | CFG-14 | `audit.retention_days >= 1`，否则网关拒绝启动（配置校验 fail-fast） |
 | CFG-15 | `translation.unknown_fields` 只能是 `reject` 或 `drop` |
+| CFG-16 | `server.admin_hosts` 每一项都必须是不带端口的主机名或 IP 地址：非空；IPv6 地址可带或不带方括号，其他取值只含字母、数字、`.`、`-`，不含通配符；比较时不区分大小写（spec/09 UI-20） |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 

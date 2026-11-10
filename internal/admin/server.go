@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,12 +37,21 @@ type Deps struct {
 	StartedAt time.Time
 	Now       func() time.Time // 为 nil 时用 time.Now
 	Metrics   http.Handler     // Prometheus 指标端点（/admin/metrics）
+
+	// HostCheck 为 true 时按 spec/09 UI-20 检查 Host 头（本机地址 + AdminHosts）；零值不检查（UI-21）。
+	HostCheck  bool
+	AdminHosts []string
+
+	// health 的附加字段（spec/09 §6.4）；为 nil 时不输出对应字段。
+	LedgerQueue  func() (length, capacity int)
+	AuditDropped func() int64
 }
 
 type server struct {
 	d         Deps
 	trusted   clientip.Trusted
 	ipTracker *ipFailureTracker
+	hosts     map[string]bool // UI-20 允许的 Host 主机名（小写）；只在 d.HostCheck 时使用
 
 	// writeMu 串行化所有写操作（创建/修改/轮换）。管理面写入频率很低，串行化后
 	// 「读-改-写」不会互相覆盖（例如 rotate-token 把刚禁用的客户端写回启用），
@@ -131,6 +141,7 @@ func NewServer(d Deps) http.Handler {
 		d:         d,
 		trusted:   trusted,
 		ipTracker: newIPFailureTracker(),
+		hosts:     allowedHostSet(d.AdminHosts),
 	}
 
 	mux := http.NewServeMux()
@@ -152,6 +163,13 @@ func NewServer(d Deps) http.Handler {
 
 	// Usage
 	mux.HandleFunc("GET /admin/api/usage", s.handleQueryUsage)
+
+	// 管理 Web UI 用的只读配置（spec/09 §6.4）
+	mux.HandleFunc("GET /admin/api/config", s.handleConfig)
+
+	// 管理 Web UI 静态资源（UI-01）
+	mux.HandleFunc(uiRoot, serveUI)
+	mux.HandleFunc(uiPrefix, serveUI)
 
 	// Metrics (MTR-01 ~ MTR-03)
 	mux.HandleFunc("/admin/metrics", func(w http.ResponseWriter, r *http.Request) {
@@ -185,8 +203,17 @@ func (s *server) wrap(next http.Handler) http.Handler {
 		ctx := obs.WithRequestID(r.Context(), reqID)
 		r = r.WithContext(ctx)
 
-		// /admin/metrics 端点无需鉴权与 IP 锁定（回环地址，MTR-01, MTR-02）
-		if r.URL.Path == "/admin/metrics" {
+		// DNS 重绑定防护（UI-20）：在 IP 锁定计数之前，对所有路径生效
+		if s.d.HostCheck && !s.hostAllowed(r.Host) {
+			// 421 不在 apperr 的状态码表里（新增错误码需要改第 0 层），这里直接写同样格式的错误体
+			writeJSON(w, http.StatusMisdirectedRequest, map[string]any{"error": map[string]any{
+				"code": string(apperr.CodeInvalidRequest), "message": "host not allowed",
+			}})
+			return
+		}
+
+		// /admin/metrics 端点与管理页面静态资源无需鉴权与 IP 锁定（MTR-01, MTR-02, UI-02）
+		if r.URL.Path == "/admin/metrics" || r.URL.Path == uiRoot || strings.HasPrefix(r.URL.Path, uiPrefix) {
 			next.ServeHTTP(w, r)
 			return
 		}

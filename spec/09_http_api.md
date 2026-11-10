@@ -200,3 +200,54 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 ### 5.1 内存估算（写进部署文档，供用户调参）
 
 一个在途请求在网关中大约持有 3 份请求体（原文、解析出的顶层字段、改写后的请求体），因此最坏情况下请求体相关内存约为 `3 × max_buffered_body_bytes`。默认 512 MiB 预算对应约 1.5 GiB 峰值；内存较小的机器应调小 `max_buffered_body_bytes` 与 `max_request_body_bytes`。缓冲响应另外最多缓冲 64 MiB / 请求（spec/13 §6）。流式上传（`BodyStream`）与字节流下载（`ResponseRaw`）边读边写，每个请求只占 32 KiB 级别的缓冲。
+
+## 6. 管理 Web UI（T49）
+
+管理页面内嵌在网关二进制中（`go:embed`），挂在管理面监听上，只是管理 API 的一个客户端：权限检查全部仍在 §4 的 API 中完成（ADM-01 ~ ADM-04）。页面是手写的 HTML、CSS 与原生 JavaScript（ES 模块）：不引入依赖，没有构建步骤，不从外部网络加载任何资源。
+
+### 6.1 路由与响应头
+
+| 编号 | 规则 |
+|:--|:--|
+| UI-01 | `GET /admin/ui/` 返回 `index.html`；`GET /admin/ui/<文件>` 返回内嵌的静态文件；`GET /admin/ui` 以 `301` 重定向到 `/admin/ui/`；内嵌文件中没有的路径返回 `404`；`GET` / `HEAD` 以外的方法返回 `405` 并带 `Allow: GET, HEAD` |
+| UI-02 | 静态资源不经过 ADM-01 鉴权，也不计入 ADM-04 的失败次数。静态资源中没有任何数据或凭据 |
+| UI-03 | 每个静态响应都带：`Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`、`X-Content-Type-Options: nosniff`、`Referrer-Policy: no-referrer`、`X-Frame-Options: DENY`。`index.html` 加 `Cache-Control: no-store`，其他文件加 `Cache-Control: no-cache` |
+| UI-04 | `Content-Type` 按扩展名显式设置（`.html`、`.js`、`.css`、`.svg`），不依赖内容嗅探 |
+| UI-05 | 页面中不得有内联脚本、内联样式（`style` 属性）、内联事件属性（`on*=`）、`eval`、`new Function` |
+| UI-06 | 内嵌资源总大小不超过 300 KiB |
+
+### 6.2 页面行为
+
+页面包括：登录、概览、客户端、上游 Key、用量。
+
+| 编号 | 规则 |
+|:--|:--|
+| UI-09 | 管理员 Token 只保存在 `sessionStorage`（关闭标签页即失效），不写 `localStorage`、Cookie 或 URL。每次调用 API 都放在 `Authorization: Bearer` 头中；页面不使用 Cookie，因此不需要 CSRF Token |
+| UI-10 | 新 Token（创建客户端、轮换 Token 的响应）只在一个对话框中显示一次，提供复制按钮并提示「关闭后无法再次查看」；不写入任何存储、URL 或控制台 |
+| UI-11 | 上游 Key 的 `secret` 只出现在新建表单中，使用 `type="password"`；提交后立即清空，不回显 |
+| UI-12 | 来自 API 的字符串一律用 `textContent` / `setAttribute` 写入页面，禁止用 `innerHTML` 拼接数据 |
+| UI-13 | 金额：显示时 nano-USD 换算为美元并保留 6 位小数；输入时美元小数用字符串运算转为 nano-USD 整数，不经过浮点数，超过 6 位小数时拒绝提交。绝对值超过 `Number.MAX_SAFE_INTEGER` 的值标注「精度可能丢失」 |
+| UI-14 | 时间按浏览器本地时区显示，悬停显示原始 UTC 值；用量查询的时间输入换算为 UTC 后发出 |
+| UI-15 | 禁用客户端、轮换 Token、停用 Key 前要求二次确认；API 的错误消息（如 ADM-03 的 409）原样展示 |
+| UI-16 | API 返回 401 时清除 `sessionStorage` 中的 Token 并回到登录页；其他错误显示 `error.code`、`error.message` 与响应头 `X-Request-Id` |
+| UI-17 | 上游 Key 页每 10 秒自动刷新一次运行时状态；页面不可见（`document.hidden`）时暂停 |
+| UI-18 | 界面提供中文与英文，按 `navigator.language` 选择（以 `zh` 开头用中文，否则英文），可在页面中手动切换；手动选择保存在 `sessionStorage` 的 `uaig.lang` 键。页面不使用 `localStorage` |
+| UI-19 | 每个 `fetch` 都有 15 秒超时（`AbortController`） |
+
+### 6.3 DNS 重绑定防护
+
+| 编号 | 规则 |
+|:--|:--|
+| UI-20 | 管理面对**所有**请求（含 `/admin/api/*`、`/admin/metrics`、`/admin/ui/*`）检查 `Host` 头：去掉端口与 IPv6 方括号后，主机名（不区分大小写）必须是 `127.0.0.1`、`::1`、`localhost`，或 `server.admin_hosts`（spec/03）中列出的值，否则返回 `421`，错误码 `invalid_request`，消息 `host not allowed`。该检查在 ADM-04 的 IP 计数之前进行，不计入失败次数 |
+| UI-21 | `admin.Deps.HostCheck` 为 false 时不做 UI-20 的检查（库的零值，供单元测试使用）；`cmd/gateway` 总是设为 true，并把 `server.admin_hosts` 传入 `admin.Deps.AdminHosts` |
+
+管理面仍然只监听回环地址（CFG-02）。远程使用时用 SSH 端口转发（`ssh -L 8081:127.0.0.1:8081 <host>`），不要通过反向代理把管理面暴露到公网。
+
+### 6.4 为页面补充的只读 API
+
+| 方法 | 路径 | 成功响应 |
+|:--|:--|:--|
+| `GET` | `/admin/api/config` | `200 {"pools":[{"name","protocol"}],"models":[{"name","pool"}]}`：均按名称升序。**不含** `base_url`、价格以及任何其他配置字段 |
+| `GET` | `/admin/api/health` | 在 §4.1 的字段之外**增加**：`ledger_queue: {"length","capacity"}`、`audit_dropped`（与 spec/15 的对应仪表同源）。取数函数未注入时这两个字段不输出 |
+
+两个端点都按 ADM-01 ~ ADM-04 鉴权。
