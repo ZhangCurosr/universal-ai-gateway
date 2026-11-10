@@ -94,27 +94,45 @@ func (t ResponsesToAnthropic) Request(env *protocol.Envelope, upstreamModel stri
 	return &protocol.Call{Op: opAnthropicCreate, Model: upstreamModel, Stream: req.Stream, Body: body, Header: env.Header}, nil
 }
 
+func translateBuffered(dec decoder, enc encoder, env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
+	irResp, err := dec.Body(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	body, err := enc.Body(irResp, env)
+	if err != nil {
+		return nil, err
+	}
+	return &protocol.Response{
+		Kind:   protocol.ResponseBuffered,
+		Status: resp.Status,
+		Header: http.Header{"Content-Type": {"application/json"}},
+		Body:   body,
+		Meter:  resp.Meter,
+	}, nil
+}
+
+func translateEvents(dec decoder, enc encoder, env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
+	irSt := dec.Stream(resp.Events)
+	outSt := enc.Stream(irSt, env)
+	return &protocol.Response{
+		Kind:   protocol.ResponseEvents,
+		Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
+		Events: outSt,
+		Meter:  resp.Meter,
+	}, nil
+}
+
 // Response：Anthropic 响应/流 → Responses 响应/流（T26，§8.3）。model 写客户端请求的服务名。
 func (t ResponsesToAnthropic) Response(env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
 	now, newID := clockOr(t.Now), idsOr(t.NewID)
+	dec := anthropicDecoder{}
+	enc := newResponsesEncoder(now, newID)
 	switch resp.Kind {
 	case protocol.ResponseBuffered:
-		body, err := anthropicToResponsesBody(resp.Body, env.Model, now, newID)
-		if err != nil {
-			return nil, err
-		}
-		return &protocol.Response{
-			Kind: protocol.ResponseBuffered, Status: resp.Status,
-			Header: http.Header{"Content-Type": {"application/json"}},
-			Body:   body, Meter: resp.Meter,
-		}, nil
+		return translateBuffered(dec, enc, env, resp)
 	case protocol.ResponseEvents:
-		return &protocol.Response{
-			Kind:   protocol.ResponseEvents,
-			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
-			Events: newResponsesStream(resp.Events, env.Model, now, newID),
-			Meter:  resp.Meter,
-		}, nil
+		return translateEvents(dec, enc, env, resp)
 	default:
 		return resp, nil // 字节流没有协议结构，原样返回
 	}
@@ -152,24 +170,13 @@ func (t ChatToAnthropic) Request(env *protocol.Envelope, upstreamModel string) (
 // Response：Anthropic 响应/流 → Chat 响应/流（T22，§5）。model 写客户端请求的服务名。
 func (t ChatToAnthropic) Response(env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
 	now, newID := clockOr(t.Now), idsOr(t.NewID)
+	dec := anthropicDecoder{}
+	enc := newChatEncoder(now, newID)
 	switch resp.Kind {
 	case protocol.ResponseBuffered:
-		body, err := anthropicToChatBody(resp.Body, env.Model, now, newID)
-		if err != nil {
-			return nil, err
-		}
-		return &protocol.Response{
-			Kind: protocol.ResponseBuffered, Status: resp.Status,
-			Header: http.Header{"Content-Type": {"application/json"}},
-			Body:   body, Meter: resp.Meter,
-		}, nil
+		return translateBuffered(dec, enc, env, resp)
 	case protocol.ResponseEvents:
-		return &protocol.Response{
-			Kind:   protocol.ResponseEvents,
-			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
-			Events: newChatStream(resp.Events, env.Model, now, newID, includeUsage(env.Body)),
-			Meter:  resp.Meter,
-		}, nil
+		return translateEvents(dec, enc, env, resp)
 	default:
 		return resp, nil // 字节流没有协议结构，原样返回
 	}
@@ -206,24 +213,13 @@ func (t AnthropicToChat) Request(env *protocol.Envelope, upstreamModel string) (
 // Response：Chat 响应/流 → Anthropic 响应/流（T24，§6.3）。model 写客户端请求的模型名。
 func (t AnthropicToChat) Response(env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
 	newID := idsOr(t.NewID)
+	dec := chatDecoder{}
+	enc := newAnthropicEncoder(newID)
 	switch resp.Kind {
 	case protocol.ResponseBuffered:
-		body, err := chatToAnthropicBody(resp.Body, env.Model, newID)
-		if err != nil {
-			return nil, err
-		}
-		return &protocol.Response{
-			Kind: protocol.ResponseBuffered, Status: resp.Status,
-			Header: http.Header{"Content-Type": {"application/json"}},
-			Body:   body, Meter: resp.Meter,
-		}, nil
+		return translateBuffered(dec, enc, env, resp)
 	case protocol.ResponseEvents:
-		return &protocol.Response{
-			Kind:   protocol.ResponseEvents,
-			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
-			Events: newAnthropicStream(resp.Events, env.Model, newID),
-			Meter:  resp.Meter,
-		}, nil
+		return translateEvents(dec, enc, env, resp)
 	default:
 		return resp, nil // 字节流没有协议结构，原样返回
 	}
@@ -261,24 +257,13 @@ func (t ResponsesToChat) Request(env *protocol.Envelope, upstreamModel string) (
 // Response：Chat 响应/流 → Responses 响应/流（T27，§8.3）。model 写客户端请求的服务名。
 func (t ResponsesToChat) Response(env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
 	now, newID := clockOr(t.Now), idsOr(t.NewID)
+	dec := chatDecoder{}
+	enc := newResponsesEncoder(now, newID)
 	switch resp.Kind {
 	case protocol.ResponseBuffered:
-		body, err := chatToResponsesBody(resp.Body, env.Model, now, newID)
-		if err != nil {
-			return nil, err
-		}
-		return &protocol.Response{
-			Kind: protocol.ResponseBuffered, Status: resp.Status,
-			Header: http.Header{"Content-Type": {"application/json"}},
-			Body:   body, Meter: resp.Meter,
-		}, nil
+		return translateBuffered(dec, enc, env, resp)
 	case protocol.ResponseEvents:
-		return &protocol.Response{
-			Kind:   protocol.ResponseEvents,
-			Header: http.Header{"Content-Type": {"text/event-stream; charset=utf-8"}, "Cache-Control": {"no-cache"}},
-			Events: newChatResponsesStream(resp.Events, env.Model, now, newID),
-			Meter:  resp.Meter,
-		}, nil
+		return translateEvents(dec, enc, env, resp)
 	default:
 		return resp, nil // 字节流没有协议结构，原样返回
 	}
