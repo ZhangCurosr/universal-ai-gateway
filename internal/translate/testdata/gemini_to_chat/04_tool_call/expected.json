@@ -1,0 +1,35 @@
+{
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "logprobs": null,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "arguments": "{\"city\":\"Paris\"}"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "created": 1700000000,
+  "id": "chatcmpl-gemresp04",
+  "model": "claude-for-chat",
+  "object": "chat.completion",
+  "usage": {
+    "prompt_tokens": 34,
+    "completion_tokens": 7,
+    "total_tokens": 41,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  }
+}

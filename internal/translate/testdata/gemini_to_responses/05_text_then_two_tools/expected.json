@@ -1,0 +1,48 @@
+{
+  "id": "resp_1",
+  "object": "response",
+  "created_at": 1700000000,
+  "status": "completed",
+  "model": "claude-for-codex",
+  "output": [
+    {
+      "type": "message",
+      "id": "msg_1",
+      "status": "completed",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "Checking both.",
+          "annotations": []
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "id": "fc_1",
+      "status": "completed",
+      "call_id": "fc_a",
+      "name": "get_weather",
+      "arguments": "{\"city\":\"Paris\"}"
+    },
+    {
+      "type": "function_call",
+      "id": "fc_2",
+      "status": "completed",
+      "call_id": "call_1",
+      "name": "get_time",
+      "arguments": "{\"tz\":\"CET\"}"
+    }
+  ],
+  "usage": {
+    "input_tokens": 40,
+    "input_tokens_details": {
+      "cached_tokens": 0
+    },
+    "output_tokens": 12,
+    "total_tokens": 52
+  },
+  "incomplete_details": null,
+  "store": false
+}

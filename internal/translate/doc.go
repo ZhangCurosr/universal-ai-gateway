@@ -14,7 +14,7 @@
 //   - Encode（ir.Response / ir.StreamEvent 流 → 客户端响应/流）：每个客户端协议一个 encoder 实现，
 //     根据客户端协议特征将规范化 IR 编码为客户端非流式 JSON 或 SSE 事件流。
 //
-// 新协议扩展机制（例如 M3 新增 Gemini 协议）：
+// 新协议扩展机制（T48 接入 Gemini 时即按此进行）：
 //
 // 若新增协议兼具客户端与上游能力，只需补充 4 个单向组件，无需为每对协议编写成对状态机：
 //
@@ -23,7 +23,9 @@
 //	Decode:       decode_<name>.go      (上游响应/流 -> 响应 IR)
 //	Encode:       encode_<name>.go      (响应 IR -> 客户端响应/流)
 //
-// 并在 register.go 中将 decoder 与 encoder 组合注册到统一的 Translator 实例中。
+// 然后在 register.go 中登记一次该协议的 clientSide / upstreamSide，并在组合表 pairs 中为每个开放的
+// 方向加一行（spec/10 §9.4）；不再为每个方向手写转换器类型。新方向还要加入
+// cmd/gateway/usage_consistency_test.go 的覆盖（REG-04）与 TestStreamMatrix。
 //
 // 架构底线约束：
 //

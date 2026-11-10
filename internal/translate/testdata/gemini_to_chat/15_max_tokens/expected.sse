@@ -1,0 +1,65 @@
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "content": "",
+data:         "role": "assistant"
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp15",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {
+data:         "content": "Once upon"
+data:       },
+data:       "finish_reason": null,
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp15",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [
+data:     {
+data:       "delta": {},
+data:       "finish_reason": "length",
+data:       "index": 0
+data:     }
+data:   ],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp15",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk"
+data: }
+
+data: {
+data:   "choices": [],
+data:   "created": 1700000000,
+data:   "id": "chatcmpl-gemresp15",
+data:   "model": "claude-for-chat",
+data:   "object": "chat.completion.chunk",
+data:   "usage": {
+data:     "prompt_tokens": 9,
+data:     "completion_tokens": 2,
+data:     "total_tokens": 11,
+data:     "prompt_tokens_details": {
+data:       "cached_tokens": 0
+data:     }
+data:   }
+data: }
+
+data: [DONE]
+

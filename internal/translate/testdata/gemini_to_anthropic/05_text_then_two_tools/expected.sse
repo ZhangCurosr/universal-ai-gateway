@@ -1,0 +1,122 @@
+event: message_start
+data: {
+data:   "message": {
+data:     "id": "msg_gemresp05",
+data:     "type": "message",
+data:     "role": "assistant",
+data:     "model": "deepseek-for-claude",
+data:     "content": [],
+data:     "stop_reason": null,
+data:     "stop_sequence": null,
+data:     "usage": {
+data:       "input_tokens": 0,
+data:       "cache_creation_input_tokens": 0,
+data:       "cache_read_input_tokens": 0,
+data:       "output_tokens": 0
+data:     }
+data:   },
+data:   "type": "message_start"
+data: }
+
+event: content_block_start
+data: {
+data:   "content_block": {
+data:     "text": "",
+data:     "type": "text"
+data:   },
+data:   "index": 0,
+data:   "type": "content_block_start"
+data: }
+
+event: content_block_delta
+data: {
+data:   "delta": {
+data:     "text": "Checking both.",
+data:     "type": "text_delta"
+data:   },
+data:   "index": 0,
+data:   "type": "content_block_delta"
+data: }
+
+event: content_block_stop
+data: {
+data:   "index": 0,
+data:   "type": "content_block_stop"
+data: }
+
+event: content_block_start
+data: {
+data:   "content_block": {
+data:     "id": "fc_a",
+data:     "input": {},
+data:     "name": "get_weather",
+data:     "type": "tool_use"
+data:   },
+data:   "index": 1,
+data:   "type": "content_block_start"
+data: }
+
+event: content_block_delta
+data: {
+data:   "delta": {
+data:     "partial_json": "{\"city\":\"Paris\"}",
+data:     "type": "input_json_delta"
+data:   },
+data:   "index": 1,
+data:   "type": "content_block_delta"
+data: }
+
+event: content_block_stop
+data: {
+data:   "index": 1,
+data:   "type": "content_block_stop"
+data: }
+
+event: content_block_start
+data: {
+data:   "content_block": {
+data:     "id": "call_1",
+data:     "input": {},
+data:     "name": "get_time",
+data:     "type": "tool_use"
+data:   },
+data:   "index": 2,
+data:   "type": "content_block_start"
+data: }
+
+event: content_block_delta
+data: {
+data:   "delta": {
+data:     "partial_json": "{\"tz\":\"CET\"}",
+data:     "type": "input_json_delta"
+data:   },
+data:   "index": 2,
+data:   "type": "content_block_delta"
+data: }
+
+event: content_block_stop
+data: {
+data:   "index": 2,
+data:   "type": "content_block_stop"
+data: }
+
+event: message_delta
+data: {
+data:   "delta": {
+data:     "stop_reason": "tool_use",
+data:     "stop_sequence": null
+data:   },
+data:   "type": "message_delta",
+data:   "usage": {
+data:     "input_tokens": 40,
+data:     "cache_creation_input_tokens": 0,
+data:     "cache_read_input_tokens": 0,
+data:     "output_tokens": 12
+data:   }
+data: }
+
+event: message_stop
+data: {
+data:   "type": "message_stop"
+data: }
+

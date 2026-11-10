@@ -1,0 +1,27 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "Hello"
+          },
+          {
+            "text": " world"
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 16,
+    "candidatesTokenCount": 5,
+    "totalTokenCount": 21,
+    "cachedContentTokenCount": 4
+  },
+  "modelVersion": "claude-for-gemini",
+  "responseId": "up1"
+}

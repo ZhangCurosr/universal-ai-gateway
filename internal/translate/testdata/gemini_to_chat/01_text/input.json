@@ -1,0 +1,1 @@
+{"candidates":[{"content":{"role":"model","parts":[{"text":"Hello"},{"text":" world"}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":20,"candidatesTokenCount":5,"totalTokenCount":36,"cachedContentTokenCount":8,"thoughtsTokenCount":3,"toolUsePromptTokenCount":0},"modelVersion":"gemini-3-pro","responseId":"gemresp01"}

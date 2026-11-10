@@ -56,7 +56,7 @@ type upstreamSide struct {
 	op      string                                  // Call.Op
 	synth   func(req *ir.Request) ([]byte, error)   // IR → 上游请求体
 	params  func(req *ir.Request) map[string]string // 可选：Call.Params
-	decoder func() decoder                          // 上游响应/流 → IR
+	decoder func(newID idGen) decoder               // 上游响应/流 → IR；newID 供需要签发 ID 的 Decoder 使用
 }
 
 // clientSides 与 upstreamSides 是各协议登记的组件；每个协议只登记一次。
@@ -82,18 +82,35 @@ var clientSides = map[protocol.Protocol]clientSide{
 		},
 		encoder: func(now time.Time, newID idGen) encoder { return newResponsesEncoder(now, newID) },
 	},
+	protoGemini: {
+		op:      opGeminiCall,
+		accepts: acceptGemini, // GL-01：countTokens 400
+		lower:   lowerGemini,
+		encoder: func(_ time.Time, newID idGen) encoder { return newGeminiEncoder(newID) },
+	},
 }
 
 var upstreamSides = map[protocol.Protocol]upstreamSide{
 	protoAnthropic: {
 		op:      opAnthropicCreate,
 		synth:   func(req *ir.Request) ([]byte, error) { return synthesizeAnthropic(req, nil) },
-		decoder: func() decoder { return anthropicDecoder{} },
+		decoder: func(idGen) decoder { return anthropicDecoder{} },
 	},
 	protoOpenAIChat: {
 		op:      opChatCompletions,
 		synth:   synthesizeOpenAIChat,
-		decoder: func() decoder { return chatDecoder{} },
+		decoder: func(idGen) decoder { return chatDecoder{} },
+	},
+	protoGemini: {
+		op:    opGeminiCall,
+		synth: synthesizeGemini,
+		params: func(req *ir.Request) map[string]string { // spec/10 §10.4：出站适配器按 Stream 选方法
+			if req.Stream {
+				return map[string]string{"method": "streamGenerateContent"}
+			}
+			return map[string]string{"method": "generateContent"}
+		},
+		decoder: func(newID idGen) decoder { return geminiDecoder{newID: newID} },
 	},
 }
 
@@ -103,6 +120,12 @@ var pairs = [][2]protocol.Protocol{
 	{protoOpenAIResponses, protoAnthropic},
 	{protoAnthropic, protoOpenAIChat},
 	{protoOpenAIResponses, protoOpenAIChat},
+	// T48：Gemini（spec/10 §10）
+	{protoGemini, protoAnthropic},
+	{protoGemini, protoOpenAIChat},
+	{protoAnthropic, protoGemini},
+	{protoOpenAIChat, protoGemini},
+	{protoOpenAIResponses, protoGemini},
 }
 
 // legacyTranslators 为 T48 之前就存在的 4 个方向保留导出类型（它们只是 composed 的薄包装），
@@ -183,7 +206,7 @@ func (c composed) Request(env *protocol.Envelope, upstreamModel string) (*protoc
 // Response 实现 REG-01 的响应方向：上游 Decoder + 客户端 Encoder。model 写客户端请求的服务名。
 func (c composed) Response(env *protocol.Envelope, resp *protocol.Response) (*protocol.Response, error) {
 	now, newID := clockOr(c.now), idsOr(c.newID)
-	dec := upstreamSides[c.to].decoder()
+	dec := upstreamSides[c.to].decoder(newID)
 	enc := clientSides[c.from].encoder(now, newID)
 	switch resp.Kind {
 	case protocol.ResponseBuffered:

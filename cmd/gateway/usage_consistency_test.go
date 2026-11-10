@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/anthropic"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/gemini"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/openai"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
@@ -40,6 +41,7 @@ var usageProtos = map[protocol.Protocol]usageProto{
 	"openai_chat":      {dir: "chat", op: "chat.completions", egress: openai.Egress{}, foldsCacheWrite: true, clientUsage: chatClientUsage},
 	"anthropic":        {dir: "anthropic", op: "messages", egress: anthropic.Egress{}, clientUsage: anthropicClientUsage},
 	"openai_responses": {dir: "responses", op: "responses.create", foldsCacheWrite: true, clientUsage: responsesClientUsage},
+	"gemini":           {dir: "gemini", op: "models.call", egress: gemini.Egress{}, foldsCacheWrite: true, clientUsage: geminiClientUsage},
 }
 
 func TestUsageConsistency(t *testing.T) {
@@ -317,5 +319,43 @@ func responsesClientUsage(body []byte, events [][]byte) (pricing.Usage, bool, er
 		pricing.UnitInputTokens:     max(last.InputTokens-cached, 0),
 		pricing.UnitCacheReadTokens: cached,
 		pricing.UnitOutputTokens:    last.OutputTokens,
+	}, true, nil
+}
+
+// geminiClientUsage：取最后一个带 usageMetadata 的响应体或 chunk。
+// promptTokenCount 含缓存，换算为 input_tokens = promptTokenCount − cachedContentTokenCount + toolUsePromptTokenCount；
+// output_tokens = candidatesTokenCount + thoughtsTokenCount（与 USE-G-02 相同）。
+func geminiClientUsage(body []byte, events [][]byte) (pricing.Usage, bool, error) {
+	type gemUsage struct {
+		PromptTokenCount        int64 `json:"promptTokenCount"`
+		CandidatesTokenCount    int64 `json:"candidatesTokenCount"`
+		CachedContentTokenCount int64 `json:"cachedContentTokenCount"`
+		ThoughtsTokenCount      int64 `json:"thoughtsTokenCount"`
+		ToolUsePromptTokenCount int64 `json:"toolUsePromptTokenCount"`
+	}
+	var last *gemUsage
+	docs := events
+	if body != nil {
+		docs = [][]byte{body}
+	}
+	for _, d := range docs {
+		var v struct {
+			UsageMetadata *gemUsage `json:"usageMetadata"`
+		}
+		if err := json.Unmarshal(d, &v); err != nil {
+			return nil, false, err
+		}
+		if v.UsageMetadata != nil {
+			last = v.UsageMetadata
+		}
+	}
+	if last == nil {
+		return nil, false, nil
+	}
+	cached := last.CachedContentTokenCount
+	return pricing.Usage{
+		pricing.UnitInputTokens:     max(last.PromptTokenCount-cached, 0) + last.ToolUsePromptTokenCount,
+		pricing.UnitCacheReadTokens: cached,
+		pricing.UnitOutputTokens:    last.CandidatesTokenCount + last.ThoughtsTokenCount,
 	}, true, nil
 }
