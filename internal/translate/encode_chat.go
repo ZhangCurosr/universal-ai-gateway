@@ -50,19 +50,6 @@ func chatID(upstream string, newID idGen) string {
 	return "chatcmpl-" + upstream
 }
 
-func finishReasonFor(stopReason string) string {
-	switch stopReason {
-	case "max_tokens":
-		return "length"
-	case "tool_use":
-		return "tool_calls"
-	case "refusal":
-		return "content_filter"
-	default:
-		return "stop"
-	}
-}
-
 func includeUsage(body []byte) bool {
 	var req struct {
 		StreamOptions *struct {
@@ -73,16 +60,6 @@ func includeUsage(body []byte) bool {
 		return false
 	}
 	return req.StreamOptions != nil && req.StreamOptions.IncludeUsage
-}
-
-func anthropicToChatBody(body []byte, model string, now time.Time, newID idGen) ([]byte, error) {
-	dec := anthropicDecoder{}
-	enc := newChatEncoder(now, newID)
-	resp, err := dec.Body(body)
-	if err != nil {
-		return nil, err
-	}
-	return enc.Body(resp, &protocol.Envelope{Model: model})
 }
 
 func mapStopReasonToChat(r ir.StopReason) string {

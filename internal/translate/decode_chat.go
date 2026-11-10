@@ -45,19 +45,21 @@ func toolInput(args string) (json.RawMessage, bool) {
 
 func upstreamInvalid(msg string) error { return apperr.New(apperr.CodeUpstreamError, msg) }
 
-func stopReasonFor(finish string) (string, error) {
-	if finish == "insufficient_system_resource" {
-		return "", upstreamInvalid(fmt.Sprintf("upstream returned finish_reason %q (output incomplete)", finish))
-	}
+// chatFinishToIR 把 Chat 的 finish_reason 映射为 IR 停止原因（spec/10 §6.3、§8.3）。
+// insufficient_system_resource 表示上游推理被中断、输出不完整，视为上游错误（T44 G3）；
+// 其他未列出的值与缺失 → StopEndTurn。
+func chatFinishToIR(finish string) (ir.StopReason, error) {
 	switch finish {
+	case "insufficient_system_resource":
+		return "", upstreamInvalid(fmt.Sprintf("upstream returned finish_reason %q (output incomplete)", finish))
 	case "length":
-		return "max_tokens", nil
+		return ir.StopMaxTokens, nil
 	case "tool_calls", "function_call":
-		return "tool_use", nil
+		return ir.StopToolUse, nil
 	case "content_filter":
-		return "refusal", nil
+		return ir.StopRefusal, nil
 	default:
-		return "end_turn", nil
+		return ir.StopEndTurn, nil
 	}
 }
 
@@ -106,20 +108,9 @@ func (d chatDecoder) Body(body []byte) (*ir.Response, error) {
 	}
 	c := in.Choices[0]
 
-	if c.FinishReason == "insufficient_system_resource" {
-		return nil, upstreamInvalid(fmt.Sprintf("upstream returned finish_reason %q (output incomplete)", c.FinishReason))
-	}
-
-	stop := ir.StopEndTurn
-	switch c.FinishReason {
-	case "length":
-		stop = ir.StopMaxTokens
-	case "tool_calls", "function_call":
-		stop = ir.StopToolUse
-	case "content_filter":
-		stop = ir.StopRefusal
-	default:
-		stop = ir.StopEndTurn
+	stop, err := chatFinishToIR(c.FinishReason)
+	if err != nil {
+		return nil, err
 	}
 
 	res := &ir.Response{
@@ -293,8 +284,9 @@ func (s *chatIRStream) handle(ev sse.Event) error {
 				s.hasOpen = false
 			}
 			s.emit(ir.StreamEvent{
-				Kind: ir.EventText,
-				Text: c.Delta.Refusal,
+				Kind:      ir.EventText,
+				Text:      c.Delta.Refusal,
+				IsRefusal: true,
 			})
 		}
 		for _, tc := range c.Delta.ToolCalls {
@@ -337,21 +329,11 @@ func (s *chatIRStream) handle(ev sse.Event) error {
 				})
 				s.hasOpen = false
 			}
-			if *c.FinishReason == "insufficient_system_resource" {
-				return streamFail(protocol.OutcomeServerError, upstreamInvalid(fmt.Sprintf("upstream returned finish_reason %q (output incomplete)", *c.FinishReason)))
+			stopReason, err := chatFinishToIR(*c.FinishReason)
+			if err != nil {
+				return streamFail(protocol.OutcomeServerError, err)
 			}
 			s.stop = *c.FinishReason
-			stopReason := ir.StopEndTurn
-			switch *c.FinishReason {
-			case "length":
-				stopReason = ir.StopMaxTokens
-			case "tool_calls", "function_call":
-				stopReason = ir.StopToolUse
-			case "content_filter":
-				stopReason = ir.StopRefusal
-			default:
-				stopReason = ir.StopEndTurn
-			}
 			s.emit(ir.StreamEvent{
 				Kind: ir.EventStop,
 				Stop: stopReason,

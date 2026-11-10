@@ -41,10 +41,10 @@ type anthropicOutTextContent struct {
 }
 
 type anthropicOutToolContent struct {
-	Type  string `json:"type"`
-	ID    string `json:"id"`
-	Name  string `json:"name"`
-	Input any    `json:"input"`
+	Type  string          `json:"type"`
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Input json.RawMessage `json:"input"`
 }
 
 type anthropicOutMessage struct {
@@ -78,47 +78,31 @@ func tokenUsageToAnthropicOut(u ir.TokenUsage) *anthropicOutUsage {
 	}
 }
 
-func chatToAnthropicBody(body []byte, model string, newID idGen) ([]byte, error) {
-	dec := chatDecoder{}
-	enc := newAnthropicEncoder(newID)
-	resp, err := dec.Body(body)
-	if err != nil {
-		return nil, err
+// hasRefusalPart 报告是否含 Chat 上游的拒绝文本（B9）。
+func hasRefusalPart(parts []ir.Part) bool {
+	for _, p := range parts {
+		if tp, ok := p.(ir.TextPart); ok && tp.IsRefusal {
+			return true
+		}
 	}
-	return enc.Body(resp, &protocol.Envelope{Model: model})
+	return false
+}
+
+// anthropicStopReason 把 IR 停止原因写成 Anthropic stop_reason；含拒绝文本时为 refusal（B9）。
+func anthropicStopReason(r ir.StopReason, refusal bool) string {
+	if refusal {
+		return string(ir.StopRefusal)
+	}
+	switch r {
+	case ir.StopMaxTokens, ir.StopToolUse, ir.StopSequence, ir.StopRefusal:
+		return string(r)
+	default:
+		return string(ir.StopEndTurn)
+	}
 }
 
 func (e anthropicEncoder) Body(resp *ir.Response, env *protocol.Envelope) ([]byte, error) {
-	var stopReason *string
-	hasRefusal := false
-	for _, p := range resp.Parts {
-		if tp, ok := p.(ir.TextPart); ok && tp.IsRefusal {
-			hasRefusal = true
-			break
-		}
-	}
-	if hasRefusal {
-		s := "refusal"
-		stopReason = &s
-	} else {
-		switch resp.StopReason {
-		case ir.StopMaxTokens:
-			s := "max_tokens"
-			stopReason = &s
-		case ir.StopToolUse:
-			s := "tool_use"
-			stopReason = &s
-		case ir.StopSequence:
-			s := "stop_sequence"
-			stopReason = &s
-		case ir.StopRefusal:
-			s := "refusal"
-			stopReason = &s
-		default:
-			s := "end_turn"
-			stopReason = &s
-		}
-	}
+	stopReason := anthropicStopReason(resp.StopReason, hasRefusalPart(resp.Parts))
 
 	content := make([]any, 0)
 	for _, p := range resp.Parts {
@@ -126,9 +110,10 @@ func (e anthropicEncoder) Body(resp *ir.Response, env *protocol.Envelope) ([]byt
 		case ir.TextPart:
 			content = append(content, anthropicOutTextContent{Type: "text", Text: part.Text})
 		case ir.ToolCallPart:
-			var input any = map[string]any{}
+			// 参数原样透传（B12：空参数输出 {}），不经 map 重新编码，避免键序改变与大整数丢精度。
+			input := json.RawMessage(`{}`)
 			if len(part.Arguments) > 0 {
-				_ = json.Unmarshal(part.Arguments, &input)
+				input = part.Arguments
 			}
 			content = append(content, anthropicOutToolContent{
 				Type:  "tool_use",
@@ -145,7 +130,7 @@ func (e anthropicEncoder) Body(resp *ir.Response, env *protocol.Envelope) ([]byt
 		Role:         "assistant",
 		Model:        env.Model,
 		Content:      content,
-		StopReason:   stopReason,
+		StopReason:   &stopReason,
 		StopSequence: nil,
 		Usage:        tokenUsageToAnthropicOut(resp.Usage),
 	}
@@ -164,6 +149,7 @@ type anthropicEncoderStream struct {
 	queue   []sse.Event
 	usage   ir.TokenUsage
 	stop    ir.StopReason
+	refusal bool // 收到过拒绝文本：stop_reason 写 refusal，与非流式一致（B9）
 	started bool
 	done    bool
 
@@ -234,6 +220,9 @@ func (s *anthropicEncoderStream) handle(ev ir.StreamEvent) {
 		s.started = true
 
 	case ir.EventText:
+		if ev.IsRefusal {
+			s.refusal = true
+		}
 		if !s.hasText {
 			s.hasText = true
 			s.textBlock = s.nextIndex
@@ -314,22 +303,7 @@ func (s *anthropicEncoderStream) handle(ev ir.StreamEvent) {
 			})
 			s.hasText = false
 		}
-		for _, b := range s.toolBlocks {
-			_ = b
-		}
-		stopReason := "end_turn"
-		switch s.stop {
-		case ir.StopMaxTokens:
-			stopReason = "max_tokens"
-		case ir.StopToolUse:
-			stopReason = "tool_use"
-		case ir.StopSequence:
-			stopReason = "stop_sequence"
-		case ir.StopRefusal:
-			stopReason = "refusal"
-		default:
-			stopReason = "end_turn"
-		}
+		stopReason := anthropicStopReason(s.stop, s.refusal)
 
 		s.emit("message_delta", map[string]any{
 			"type": "message_delta",

@@ -64,44 +64,6 @@ type respObject struct {
 	Store             bool             `json:"store"`
 }
 
-func statusFor(stopReason string) (string, *respIncomplete) {
-	switch stopReason {
-	case "max_tokens":
-		return "incomplete", &respIncomplete{Reason: "max_output_tokens"}
-	case "refusal":
-		return "incomplete", &respIncomplete{Reason: "content_filter"}
-	default:
-		return "completed", nil
-	}
-}
-
-func chatStatusFor(finish string) (string, *respIncomplete) {
-	if finish == "length" {
-		return "incomplete", &respIncomplete{Reason: "max_output_tokens"}
-	}
-	return "completed", nil
-}
-
-func anthropicToResponsesBody(body []byte, model string, now time.Time, newID idGen) ([]byte, error) {
-	dec := anthropicDecoder{}
-	enc := newResponsesEncoder(now, newID)
-	resp, err := dec.Body(body)
-	if err != nil {
-		return nil, err
-	}
-	return enc.Body(resp, &protocol.Envelope{Model: model})
-}
-
-func chatToResponsesBody(body []byte, model string, now time.Time, newID idGen) ([]byte, error) {
-	dec := chatDecoder{}
-	enc := newResponsesEncoder(now, newID)
-	resp, err := dec.Body(body)
-	if err != nil {
-		return nil, err
-	}
-	return enc.Body(resp, &protocol.Envelope{Model: model})
-}
-
 func tokenUsageToResponses(u ir.TokenUsage) *respUsage {
 	input := u.Input + u.CacheRead + u.CacheWrite
 	r := &respUsage{

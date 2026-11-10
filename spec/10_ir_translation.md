@@ -43,7 +43,7 @@ type Request struct {
 }
 type Message struct { Role Role; Parts []Part }        // Role: user | assistant
 type Part interface{ isPart() }                         // TextPart / ImagePart / ToolCallPart / ToolResultPart / ThinkingPart
-type TextPart struct { Text string; CacheControl *CacheControl }
+type TextPart struct { Text string; CacheControl *CacheControl; IsRefusal bool } // IsRefusal 仅响应方向：上游拒绝说明（§9.3）
 type ImagePart struct { MediaType string; Data []byte; URL string }
 type ToolCallPart struct { ID, Name string; Arguments json.RawMessage }
 type ToolResultPart struct { ToolCallID string; Content []Part; IsError bool }
@@ -53,7 +53,7 @@ type ToolChoice struct { Mode string; Name string }    // auto | any | none | to
 type CacheControl struct { Type string; TTL string }
 type Response struct { ID, Model string; Parts []Part; StopReason StopReason; Usage TokenUsage }
 type TokenUsage struct { Input, CacheRead, CacheWrite, Output int64 }
-type StreamEvent struct { Kind StreamEventKind; ID, Text string; ToolIndex int; ToolID, ToolName string; Usage TokenUsage; Stop StopReason }
+type StreamEvent struct { Kind StreamEventKind; ID, Text string; IsRefusal bool; ToolIndex int; ToolID, ToolName string; Usage TokenUsage; Stop StopReason }
 ```
 
 ## 3. OpenAI Chat → IR（T20）
@@ -296,7 +296,7 @@ type StreamEvent struct { Kind StreamEventKind; ID, Text string; ToolIndex int; 
 思考增量（Anthropic `thinking_delta`、Chat `reasoning_content`）不输出。`output_index` 按项出现顺序从 0 编号。
 
 自 Chat 上游（T27）时的来源映射：文本 = `delta.content` / `message.content`，Chat 上游的 `refusal` 文本亦作为 `output_text` 输出（非流式与流式均拼接为文本，不生成 `refusal` 内容部件）；工具调用 = `tool_calls[]`（按 `index` 区分，交错输出 → 流错误）；
-`finish_reason: length` → `incomplete`，其余 → `completed`；`usage.input_tokens = prompt_tokens`（已含缓存）、
+`finish_reason` 先按 §6.3 映射为 IR 停止原因，再按上一条写状态：`length` → `incomplete` + `max_output_tokens`；`content_filter` → `incomplete` + `content_filter`；`insufficient_system_resource` → 上游故障（非流式 502，流式流错误）；其余 → `completed`（见 §9.3）；`usage.input_tokens = prompt_tokens`（已含缓存）、
 `input_tokens_details.cached_tokens = prompt_tokens_details.cached_tokens`、`output_tokens = completion_tokens`；
 流式在收到 `[DONE]` 时输出 `response.completed`（用量取之前的 usage chunk；§6.2 保证合成请求带 `include_usage`）。
 
@@ -325,3 +325,10 @@ type StreamEvent struct { Kind StreamEventKind; ID, Text string; ToolIndex int; 
 4. **工具调用生命周期**：Decoder 产出的 `EventToolStart`、`EventToolArgs`、`EventToolEnd` 带规范化的 `ToolIndex`（从 0 开始自增），Encoder 可按需进行流式项状态管理。
 5. **流异常处理**：上游流异常（error 事件、提前截断、无停止原因断流等）由 Decoder 统一包装为 `*protocol.AttemptError`，其 Outcome 分类与原转译层完全一致。
 
+### 9.3 经 IR 统一后的语义（T43 验收）
+
+响应改走 Decoder → IR → Encoder 之后，同一个 IR 值对所有客户端协议含义相同，以下几条因此统一：
+
+1. **Chat 上游的停止原因**：只映射一次（§6.3 的 `finish_reason` 表）。因此发给 Responses 客户端时，`content_filter` → `incomplete` + `content_filter`，`insufficient_system_resource` → 上游故障，与发给 Anthropic 客户端的语义一致（T44 G3/G4）。
+2. **拒绝说明（B9）**：Chat 上游的 `refusal` 文本在 IR 中是 `TextPart{IsRefusal: true}`（流式为 `EventText` + `IsRefusal`）。Anthropic Encoder 把它输出为 text，并把 `stop_reason` 写为 `refusal`（非流式与流式一致）；Responses Encoder 把它与正文拼接为 `output_text`，不因此改变 `status`。
+3. **工具参数**：`ToolCallPart.Arguments` 与 `EventToolArgs` 的 JSON 原样透传给客户端，Encoder 不得解析后重新编码（会改变键序、损失大整数精度）；为空时输出 `{}`。

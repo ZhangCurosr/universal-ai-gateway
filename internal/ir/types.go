@@ -58,7 +58,7 @@ type CacheControl struct {
 type TextPart struct {
 	Text         string
 	CacheControl *CacheControl
-	IsRefusal    bool
+	IsRefusal    bool // 仅响应方向：上游的拒绝说明（Chat 的 refusal），由 Encoder 决定如何表达
 }
 
 type ImagePart struct {
@@ -147,6 +147,7 @@ type StreamEvent struct {
 	Kind      StreamEventKind
 	ID        string
 	Text      string
+	IsRefusal bool   // EventText 时有效：这段文本是上游的拒绝说明（Chat 的 refusal），由 Encoder 决定如何表达
 	ToolIndex int    // 本响应内第几个工具调用，从 0 开始
 	ToolID    string // 上游工具调用 ID
 	ToolName  string
