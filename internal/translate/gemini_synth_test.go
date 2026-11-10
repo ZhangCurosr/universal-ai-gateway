@@ -8,7 +8,6 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ir"
 )
 
-
 func TestSynthesizeGemini(t *testing.T) {
 	req := &ir.Request{
 		Model:  "gemini-3-pro",
