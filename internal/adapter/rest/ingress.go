@@ -1,0 +1,132 @@
+package rest
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
+)
+
+// Ingress 是通用 REST 入站适配器（客户端 → 网关）。零值可用。
+type Ingress struct{}
+
+var _ protocol.Ingress = Ingress{}
+
+// Protocol 返回 Protocol。
+func (Ingress) Protocol() protocol.Protocol { return Protocol }
+
+// Routes 声明通用 REST 的 5 条路由（RS-02）。无目录路由。
+// 注意：GET 路由通过 http.ServeMux 自然匹配 HEAD 请求。
+func (Ingress) Routes() []protocol.Route {
+	return []protocol.Route{
+		{Method: http.MethodGet, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpGet, Body: protocol.BodyNone},
+		{Method: http.MethodDelete, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpDelete, Body: protocol.BodyNone},
+		{Method: http.MethodPut, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPut, Body: protocol.BodyBuffered},
+		{Method: http.MethodPost, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPost, Body: protocol.BodyStream},
+		{Method: http.MethodPatch, Path: "/rest/{service}/{path...}", Kind: protocol.RouteCall, Op: OpPatch, Body: protocol.BodyStream},
+	}
+}
+
+// Claims 永远返回 false（RS-01，不是 Fallback，无冲突端点）。
+func (Ingress) Claims(*http.Request) bool { return false }
+
+// Parse 实现 RS-02 ~ RS-06。
+func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol.Envelope, error) {
+	service := strings.TrimSpace(r.PathValue("service"))
+	if service == "" {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "service is required")
+	}
+
+	// 提取 {path...} 的转义形式（RS-04）
+	subpath := extractSubpath(r.URL.EscapedPath())
+
+	// 路径安全检查（RS-05）
+	if err := validatePathSafety(subpath); err != nil {
+		return nil, err
+	}
+
+	return &protocol.Envelope{
+		Protocol: Protocol,
+		Op:       rt.Op,
+		Model:    service,
+		Stream:   false,
+		Estimate: pricing.Usage{UnitRequests: 1},
+		Params: map[string]string{
+			"method": r.Method,
+			"path":   subpath,
+			"query":  r.URL.RawQuery,
+		},
+		Body:   body,
+		Header: r.Header,
+	}, nil
+}
+
+// extractSubpath 从 EscapedPath 中提取 /rest/{service} 之后的部分。
+func extractSubpath(escaped string) string {
+	if strings.HasPrefix(escaped, "/rest/") {
+		afterRest := escaped[len("/rest/"):]
+		idx := strings.Index(afterRest, "/")
+		if idx >= 0 {
+			return afterRest[idx:]
+		}
+		return ""
+	}
+	return escaped
+}
+
+// validatePathSafety 检查路径防穿越（RS-05）。
+func validatePathSafety(subpath string) error {
+	segments := strings.Split(subpath, "/")
+	for _, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		if strings.ContainsAny(seg, "\\\x00") {
+			return apperr.New(apperr.CodeInvalidRequest, "path must not contain dot segments")
+		}
+		dec, err := url.PathUnescape(seg)
+		if err != nil {
+			return apperr.New(apperr.CodeInvalidRequest, "path must not contain dot segments")
+		}
+		if dec == "." || dec == ".." || strings.ContainsAny(dec, "\\\x00") {
+			return apperr.New(apperr.CodeInvalidRequest, "path must not contain dot segments")
+		}
+	}
+	return nil
+}
+
+// WriteError 输出 JSON 错误响应（RS-01）。
+func (Ingress) WriteError(w http.ResponseWriter, _ string, err *apperr.Error) {
+	apperr.WriteJSON(w, err, map[string]any{
+		"error": map[string]any{
+			"code":    string(err.Code),
+			"message": err.Message,
+		},
+	})
+}
+
+// StreamError 返回流式错误事件。
+func (Ingress) StreamError(err *apperr.Error) sse.Event {
+	data, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"code":    string(err.Code),
+			"message": err.Message,
+		},
+	})
+	return sse.Event{Data: data}
+}
+
+// WriteCatalog 实现没有目录路由的 404 响应。
+func (Ingress) WriteCatalog(w http.ResponseWriter, _ []protocol.ModelInfo) {
+	apperr.WriteJSON(w, apperr.New(apperr.CodeNotFound, "catalog is not supported for rest protocol"), map[string]any{
+		"error": map[string]any{
+			"code":    string(apperr.CodeNotFound),
+			"message": "catalog is not supported for rest protocol",
+		},
+	})
+}
