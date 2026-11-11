@@ -310,3 +310,15 @@ var pairs = [][2]protocol.Protocol{
 4. `feat(translate): T48 Gemini 请求 Lower 与 Synth`
 5. `feat(translate): T48 Gemini Decoder 与 Encoder`
 6. `feat(translate): T48 注册 Gemini 转换器，扩展流式矩阵与用量一致性测试`
+
+## 9. 规格缺口决议（SPEC-GAP）
+
+### 9.1 SPEC-GAP(T48)：toolConfig.functionCallingConfig.mode 缺省与 MODE_UNSPECIFIED 处理
+
+- **代码位置**：`internal/translate/gemini_lower.go:478-482`（`lowerGeminiToolConfig`）
+- **现象**：`spec/10` §10.3（以及本文件 §3.1）中原规则仅列出了 `AUTO` / `ANY` / `NONE` 三种显式模式；规格未明确定义 `mode` 字段缺省、空字符串 `""` 或枚举零值 `"MODE_UNSPECIFIED"` 时的行为。
+- **决议说明**：
+  依据 Gemini 官方 Protobuf / REST 规范（`FunctionCallingConfig.Mode` 枚举定义中 `MODE_UNSPECIFIED = 0`，官方文档明确说明其语义与默认值 `AUTO` 完全等价），当官方 SDK / CLI 或第三方客户端未显式传 `mode`（缺省、空字符串 `""`）或显式传入 `"MODE_UNSPECIFIED"` 时，客户端的预期行为均为让模型自动决定是否调用工具。
+  为保持对 Gemini 官方生态客户端的最大兼容性，网关转译层作出如下决议：
+  1. **宽松映射**：将 `"MODE_UNSPECIFIED"` 与 `""`（含 `mode` 键缺省）均映射为 `ir.ToolChoice{Mode: "auto"}`，而非直接 400 拒绝。
+  2. **严格校验约束**：若客户端在 `MODE_UNSPECIFIED`、`""` 或 `AUTO` 模式下携带了 `allowedFunctionNames`，依然严格触发既有校验逻辑返回 400（`toolConfig.functionCallingConfig.allowedFunctionNames is only supported with mode ANY`），因官方规范明确白名单限制仅在 `ANY` 模式下生效。
