@@ -13,6 +13,22 @@ cp gateway.example.yaml gateway.yaml          # 按需修改，见下文
 ./bin/gateway serve --config gateway.yaml
 ```
 
+或者使用发布工具一次性为全平台构建二进制与生成校验和（spec/12 §7）：
+
+```bash
+go run ./tools/release
+```
+
+产物输出在 `dist/` 目录（`universal-ai-gateway_<版本>_<GOOS>_<GOARCH>[.exe]`）。校验方法：
+- **Linux / macOS**：
+  ```bash
+  cd dist && sha256sum -c SHA256SUMS
+  ```
+- **Windows (PowerShell)**：
+  ```powershell
+  Get-FileHash dist\universal-ai-gateway_*.exe -Algorithm SHA256
+  ```
+
 **首次启动**时，stderr 会打印一行：
 
 ```
@@ -116,7 +132,12 @@ server:
 | 2 GiB | 128 | 256 MiB | 32 MiB |
 | ≥ 4 GiB | 256（默认） | 512 MiB（默认） | 32 MiB（默认） |
 
-峰值内存约为 `3 × max_buffered_body_bytes`，加上每个非流式请求最多 64 MiB 的响应缓冲，再加约 40 MiB 的运行时开销。调小 `max_request_body_bytes` 时，反向代理的上限要一起调小。
+峰值内存理论估算约为 `3 × max_buffered_body_bytes`，加上每个非流式请求最多 64 MiB 的响应缓冲，再加约 40 MiB 的运行时开销。调小 `max_request_body_bytes` 时，反向代理的上限要一起调小。
+
+**实测基准参考（T50 基线报告）**：
+- **默认档（≥ 4 GiB，256 路长流式并发）**：Heap 峰值约 **84 MiB**，系统内存 Sys 峰值约 **117 MiB**，首包延迟 TTFB 约 0.57 ms。
+- **最小档（1 GiB，64 路长流式并发）**：Heap 峰值约 **97 MiB**，系统内存 Sys 峰值约 **121 MiB**。
+- 流式请求由于采用边收边发的 chunk 级处理管道，日常流式并发占用远低于理论缓冲积压上限，极度节省资源。详细报告见 [docs/handoff/reports/T50_perf_baseline.md](handoff/reports/T50_perf_baseline.md)。
 
 ## 5. 开机自启与崩溃自动重启
 
@@ -385,3 +406,100 @@ server:
 ### 8.4 忘记管理员 Token
 
 页面和 API 都不能找回 Token（数据库里只存哈希）。如果还有别的管理员，用它登录后给丢失 Token 的管理员轮换一个新的。网关目前没有内置的「最后一个管理员丢失 Token」恢复命令（引导 Token 只在数据库里一个管理员都没有时才生成），所以**建议至少保留两个管理员客户端**，各自妥善保存 Token。
+
+## 9. 接入任意 REST API（通用转发适配器）
+
+> **安全警告（RS-30）**：
+> 网关的通用 REST 转发不对路径和方法设白名单。**上游 Key 的全部权限都暴露给被允许访问该服务的客户端**。
+> 1. 请务必给 `rest` 池配置**最小权限的 Key**（如只读 Token、限定细粒度作用域的 Token）。
+> 2. 当需要读写分离时，对同一个上游配置**两个独立的池与两个服务名**（例如只读服务 `github-ro` 配置只读 Key、读写服务 `github-rw` 配置读写 Key），再通过客户端的 `allowed_models` 严格控制谁能调用哪一个。
+
+通用 REST 适配器（`protocol: rest`，spec/08 §8.3）用于接入无需解析请求体的任意非大模型 API（换上游 Key、按次计费、透明转发），无需编写代码。
+
+### 9.1 配置示例
+
+在 `gateway.yaml` 中增加池与模型定义：
+
+```yaml
+pools:
+  - name: weather-pool
+    protocol: rest
+    base_url: "https://api.weather.example/v2"
+
+models:
+  - name: weather               # 客户端以 /rest/weather/... 访问
+    pool: weather-pool
+    price: { requests: "0.001" } # 按次计费：每次成功请求 0.001 美元
+    reserve: { requests: 1 }    # 预留 1 次
+```
+
+客户端调用示例：
+```bash
+curl -H "Authorization: Bearer <网关客户端Token>" \
+  "https://gw.example.com/rest/weather/forecast?city=Paris"
+# 网关自动换上池中的上游 Key，透明转发至：
+# GET https://api.weather.example/v2/forecast?city=Paris
+```
+
+### 9.2 上游 Key 放置方式
+
+通过管理 API 添加上游 Key 时，把 Key 的放置方式编码在 `secret` 字符串中（解密后生效，管理面不校验格式）：
+
+| 写法 | 上游请求行为 | 适用场景 |
+|:--|:--|:--|
+| `bearer:<token>` | `Authorization: Bearer <token>` | 大多数现代 REST API（默认方式） |
+| `header:<Name>:<val>` | 添加自定义请求头 `<Name>: <val>` | 例如 `header:X-Api-Key:my-key-val` |
+| `query:<name>:<val>` | 在 URL 查询串中注入 `<name>=<val>` | 例如 `query:api_key:my-key-val`（客户端同名参数会被自动剔除并替换） |
+| `basic:<user>:<pass>` | `Authorization: Basic base64(user:pass)` | HTTP Basic 认证，密码中可含冒号 |
+| 直接写 token（无前缀） | 自动视为 `bearer:<token>` | 兼容常见 Bearer 认证 |
+
+格式非法（如 `header:` 缺少冒号或头名非法）时，网关将返回认证失败并自动隔离该 Key（RS-20）。
+
+### 9.3 自定义请求头转发（`X-UAIG-Forward-*`）
+
+网关只转发白名单标准头（`Content-Type`、`Accept`、`Accept-Language`、`If-Match`、`If-None-Match`、`If-Modified-Since`、`If-Unmodified-Since`、`Range`）。
+
+上游要求的业务专用头（如版本头），客户端使用 `X-UAIG-Forward-<Name>: <value>` 传入，网关会去掉前缀以 `<Name>: <value>` 转发给上游：
+```bash
+curl -H "Authorization: Bearer <Token>" \
+     -H "X-UAIG-Forward-X-Api-Version: 2024-05-01" \
+     "https://gw.example.com/rest/weather/forecast"
+# 上游收到请求头：X-Api-Version: 2024-05-01
+```
+*注：安全敏感头（如 `Host`、`Authorization`、`Cookie`、`X-Forwarded-*`、`X-UAIG-*`）会被网关丢弃并记一条 Warn。*
+
+### 9.4 路径前缀与幂等重试（`/rest/` 与 `/rest-idem/`）
+
+内核遇到 5xx、429、超时、网络错误时会自动换 Key 重试（spec/07 §6）。但对于有副作用的 `POST` / `PATCH`，重复请求可能造成重复下单或产生副作用。
+
+因此，网关由客户端显式选择路径前缀（RS-02、RS-19）：
+
+| 路径前缀 | 支持方法 | 重试策略 | 适用场景 |
+|:--|:--|:--|:--|
+| `/rest/{service}/{path...}` | GET, HEAD, DELETE, PUT, POST, PATCH | GET / HEAD / PUT / DELETE 允许换 Key 重试；**POST / PATCH 流式透传，严格只尝试一次**（CORE-07） | 默认前缀。所有产生副作用的创建、修改、支付、推送接口 |
+| `/rest-idem/{service}/{path...}` | **仅限 POST, PATCH** | 缓冲请求体，**失败自动换 Key 重试**（同一请求体可能被上游多次收到） | **仅限无副作用的只读查询类 POST 接口** |
+
+**什么样的接口可以使用 `/rest-idem/`？**
+- 许多检索或复杂查询 API 虽然出于参数体积考虑采用 `POST` 方法（如 Bivia 的 `/boolean`、`/score`、Elasticsearch `_search`、向量检索），但本质是只读、幂等的查询操作。走 `/rest-idem/` 可以在遇到单把 Key 429 或故障时自动换 Key 重试，保障高可用。
+- 绝不得把转账、扣费、发送通知等有副作用的接口指向 `/rest-idem/`。
+
+### 9.5 上游 403 风险与处理办法（RS-31）
+
+- **行为规则**：通用 REST API 常使用 403 表示「资源级无权访问」（如访问未授权的组织资源），并非 Key 本身失效。网关将 403 作为客户端错误原样转发给客户端，**不会自动隔离 Key**（RS-16）。
+- **风险提示**：如果某些上游在 Key 配额耗尽或账户被封禁时也返回 403，网关不会自动隔离该 Key，每次轮询到它都会失败。
+- **排查与处理**：每次上游返回 403 时，网关会记录一条限频 Warn 日志（格式形如 `rest upstream returned 403; key not quarantined key_mask=bear****1234`）。如果观察到某个 Key 掩码反复出现 403 告警，请在管理面停用该 Key：
+  ```bash
+  # 通过管理 API 禁用该 Key
+  curl -s -X PATCH http://127.0.0.1:8081/admin/api/keys/<KEY_ID> \
+    -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" \
+    -d '{"state":"disabled"}'
+  ```
+
+### 9.6 已知限制
+
+1. **仅按次计费**：`rest` 协议仅支持计量单位 `requests`（每次成功请求 1 次），不支持按 token、按请求体字段或按路径计费。
+2. **`/rest/` 下 POST / PATCH 不重试**：依据 CORE-07 规则，流式请求体严格只尝试一次。
+3. **错误体截断**：上游返回的非 2xx 错误响应正文超过 8 KiB（`MaxErrorBodyBytes`）时会被截断。
+4. **无会话亲和**：通用 REST 转发不做状态维持和会话亲和。
+5. **无路径白名单**：网关不做请求路径与方法的内容过滤，安全控制依赖上游 Key 最小权限与模型访问列表（`allowed_models`）。
+

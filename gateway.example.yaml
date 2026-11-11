@@ -115,6 +115,11 @@ models:
 #     base_url: "https://mineru.net"
 #     pin_ttl: 48h                      # 任务 ID 固定到创建它的 Key 的时长
 #     timeouts: { response_header_base: 10m }
+#   - name: rest-weather                # 通用 REST 转发适配器（spec/08 §8.3，任务卡 T51）
+#     protocol: rest
+#     base_url: "https://api.weather.example.com/v1"
+#     strategy: least_inflight
+#     max_attempts: 3
 #
 # models:
 #   - name: "tavily-search"
@@ -125,3 +130,8 @@ models:
 #     pool: mineru
 #     price: { pages: "0.01", requests: "0" }
 #     reserve: { pages: 600 }           # 单文件页数上限
+#   - name: "weather"                   # 客户端访问 /rest/weather/...
+#     pool: rest-weather
+#     price: { requests: "0.001" }      # 通用 REST 统一按次计费（每请求 0.001 美元）
+#     reserve: { requests: 1 }          # 单次请求预留 1 requests
+

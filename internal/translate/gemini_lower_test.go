@@ -135,7 +135,13 @@ func TestLowerGeminiTools(t *testing.T) {
 		t.Errorf("tool choice = %+v", req.ToolChoice)
 	}
 
-	for _, tt := range []struct{ mode, want string }{{"AUTO", "auto"}, {"NONE", "none"}, {"ANY", "any"}} {
+	for _, tt := range []struct{ mode, want string }{
+		{"AUTO", "auto"},
+		{"MODE_UNSPECIFIED", "auto"},
+		{"", "auto"},
+		{"NONE", "none"},
+		{"ANY", "any"},
+	} {
 		req := mustLowerGemini(t, `{"contents": [{"parts": [{"text": "x"}]}], "toolConfig": {"functionCallingConfig": {"mode": "`+tt.mode+`"}}}`)
 		if req.ToolChoice.Mode != tt.want {
 			t.Errorf("mode %s -> %q, want %q", tt.mode, req.ToolChoice.Mode, tt.want)
@@ -166,6 +172,8 @@ func TestLowerGeminiRejects(t *testing.T) {
 		{"bad role", `{"contents":[{"role":"system","parts":[{"text":"x"}]}]}`, `role "system"`},
 		{"args not object", `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"f","args":[1]}}]}]}`, "args must be an object"},
 		{"VALIDATED mode", base(`,"toolConfig":{"functionCallingConfig":{"mode":"VALIDATED"}}`), `mode "VALIDATED"`},
+		{"allowed names with MODE_UNSPECIFIED", base(`,"toolConfig":{"functionCallingConfig":{"mode":"MODE_UNSPECIFIED","allowedFunctionNames":["a"]}}`), "allowedFunctionNames is only supported with mode ANY"},
+		{"allowed names with empty mode", base(`,"toolConfig":{"functionCallingConfig":{"mode":"","allowedFunctionNames":["a"]}}`), "allowedFunctionNames is only supported with mode ANY"},
 		{"two allowed names", base(`,"toolConfig":{"functionCallingConfig":{"mode":"ANY","allowedFunctionNames":["a","b"]}}`), "more than one name"},
 		{"response parts", `{"contents":[{"role":"model","parts":[{"functionCall":{"name":"f"}}]},{"role":"user","parts":[{"functionResponse":{"name":"f","response":{},"parts":[{"inlineData":{}}]}}]}]}`, "functionResponse.parts"},
 		{"system non-text", base(`,"systemInstruction":{"parts":[{"inlineData":{}}]}`), "only text parts"},
@@ -208,6 +216,39 @@ func TestAcceptGemini(t *testing.T) {
 	}
 	env.Params["method"] = "countTokens"
 	wantInvalid(t, acceptGemini(env), `countTokens is not supported for model "gemini-client-model"`)
+}
+
+func TestGeminiLowerToolConfig(t *testing.T) {
+	t.Run("MODE_UNSPECIFIED maps to auto", func(t *testing.T) {
+		req := mustLowerGemini(t, `{"contents": [{"parts": [{"text": "x"}]}], "toolConfig": {"functionCallingConfig": {"mode": "MODE_UNSPECIFIED"}}}`)
+		if req.ToolChoice == nil || req.ToolChoice.Mode != "auto" {
+			t.Fatalf("tool choice = %+v, want Mode: auto", req.ToolChoice)
+		}
+	})
+
+	t.Run("empty mode string maps to auto", func(t *testing.T) {
+		req := mustLowerGemini(t, `{"contents": [{"parts": [{"text": "x"}]}], "toolConfig": {"functionCallingConfig": {"mode": ""}}}`)
+		if req.ToolChoice == nil || req.ToolChoice.Mode != "auto" {
+			t.Fatalf("tool choice = %+v, want Mode: auto", req.ToolChoice)
+		}
+	})
+
+	t.Run("omitted mode maps to auto", func(t *testing.T) {
+		req := mustLowerGemini(t, `{"contents": [{"parts": [{"text": "x"}]}], "toolConfig": {"functionCallingConfig": {}}}`)
+		if req.ToolChoice == nil || req.ToolChoice.Mode != "auto" {
+			t.Fatalf("tool choice = %+v, want Mode: auto", req.ToolChoice)
+		}
+	})
+
+	t.Run("MODE_UNSPECIFIED with allowedFunctionNames triggers validation", func(t *testing.T) {
+		_, err := lowerGemini(geminiEnv(`{"contents": [{"parts": [{"text": "x"}]}], "toolConfig": {"functionCallingConfig": {"mode": "MODE_UNSPECIFIED", "allowedFunctionNames": ["f1"]}}}`), Options{}, "gemini", "anthropic")
+		wantInvalid(t, err, "toolConfig.functionCallingConfig.allowedFunctionNames is only supported with mode ANY")
+	})
+
+	t.Run("empty mode with allowedFunctionNames triggers validation", func(t *testing.T) {
+		_, err := lowerGemini(geminiEnv(`{"contents": [{"parts": [{"text": "x"}]}], "toolConfig": {"functionCallingConfig": {"mode": "", "allowedFunctionNames": ["f1"]}}}`), Options{}, "gemini", "anthropic")
+		wantInvalid(t, err, "toolConfig.functionCallingConfig.allowedFunctionNames is only supported with mode ANY")
+	})
 }
 
 func wantInvalid(t *testing.T, err error, contains string) {

@@ -113,6 +113,11 @@ server {
 
 峰值内存估算见 spec/09 §5.1：约 `3 × max_buffered_body_bytes` + 每个非流式请求最多 64 MiB + 运行时基础约 40 MiB。
 
+实测值（T50）：在 Linux x86_64 环境下以并发长流式压测（每路 10ms/chunk 持续 5s），实测结果对照如下：
+- **默认档（≥ 4 GiB，256 路并发）**：Heap 峰值 **84.03 MiB**，系统内存 Sys 峰值 **116.56 MiB**，协程峰值 2322，结束后无泄漏回落至 17。
+- **1 GiB 档（64 路并发）**：Heap 峰值 **97.48 MiB**，系统内存 Sys 峰值 **120.56 MiB**，协程峰值 594，结束后无泄漏回落至 17。
+实测值远低于理论峰值上限，证实流式管道无内存积压。完整测量数据见 `docs/handoff/reports/T50_perf_baseline.md`。
+
 ## 5. 开机自启与崩溃自动重启
 
 网关是单进程；进程退出时服务中断，必须交给系统服务管理器自动拉起。
@@ -165,3 +170,16 @@ Register-ScheduledTask -TaskName "UniversalAIGateway" -Action $action -Trigger $
 | `deploy/systemd/universal-ai-gateway.service` | §5.1 |
 | `deploy/windows/install-task.ps1` | §5.2，带参数 `-InstallDir`，脚本开头检查管理员权限 |
 | `docs/DEPLOYMENT.md` | 面向用户的中文部署指南：§1 ~ §5 的精简版；客户端接入示例照搬 spec/14 §4（Claude Code、Codex CLI、OpenAI SDK 作为模型后端；MCP 远程与 stdio；`gateway call` 命令行） |
+
+## 7. 版本与发布（T50）
+
+| 编号 | 规则 |
+|:--|:--|
+| REL-01 | 版本号用语义化版本 `vMAJOR.MINOR.PATCH`，以 git 标签记录。M3 的首个版本为 `v0.3.0`（M1 = 0.1、M2 = 0.2、M3 = 0.3） |
+| REL-02 | 发布构建一律 `CGO_ENABLED=0`、`-trimpath`、`-ldflags "-s -w -X main.version=<版本>"`。`<版本>` 取 `git describe --tags --always --dirty`；仓库没有任何标签时为 `v0.0.0-<短提交号>`（工作树不干净时再加 `-dirty`） |
+| REL-03 | 目标平台：`linux/amd64`、`linux/arm64`、`windows/amd64`、`darwin/arm64` |
+| REL-04 | 产物文件名 `universal-ai-gateway_<版本>_<GOOS>_<GOARCH>`，Windows 加 `.exe`；放在 `dist/`（已加入 `.gitignore`）；同目录生成 `SHA256SUMS`，每行 `<64 位小写十六进制>  <文件名>`（两个空格，与 `sha256sum` 一致），按文件名排序 |
+| REL-05 | 发布工具 `go run ./tools/release` 在构建前检查：工作树干净（`git status --porcelain` 为空）、`go run ./tools/check` 通过。任何一项不满足就以非零码退出，不产出任何文件。`-allow-dirty` 跳过工作树检查，仅供本地试验 |
+| REL-06 | 发布工具不创建标签、不推送、不上传。打标签与发布由用户手动完成 |
+| REL-07 | 构建完成后，对与当前机器 `GOOS/GOARCH` 相同的产物执行 `<产物> version`，输出必须等于 REL-02 的版本号，否则失败；当前平台不在 REL-03 清单内时跳过并打印说明 |
+| REL-08 | 发布工具调用的每个外部命令都有超时：`tools/check` 最长 15 分钟，单个平台构建最长 5 分钟 |
