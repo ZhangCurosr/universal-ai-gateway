@@ -13,6 +13,22 @@ cp gateway.example.yaml gateway.yaml          # 按需修改，见下文
 ./bin/gateway serve --config gateway.yaml
 ```
 
+或者使用发布工具一次性为全平台构建二进制与生成校验和（spec/12 §7）：
+
+```bash
+go run ./tools/release
+```
+
+产物输出在 `dist/` 目录（`universal-ai-gateway_<版本>_<GOOS>_<GOARCH>[.exe]`）。校验方法：
+- **Linux / macOS**：
+  ```bash
+  cd dist && sha256sum -c SHA256SUMS
+  ```
+- **Windows (PowerShell)**：
+  ```powershell
+  Get-FileHash dist\universal-ai-gateway_*.exe -Algorithm SHA256
+  ```
+
 **首次启动**时，stderr 会打印一行：
 
 ```
@@ -116,7 +132,12 @@ server:
 | 2 GiB | 128 | 256 MiB | 32 MiB |
 | ≥ 4 GiB | 256（默认） | 512 MiB（默认） | 32 MiB（默认） |
 
-峰值内存约为 `3 × max_buffered_body_bytes`，加上每个非流式请求最多 64 MiB 的响应缓冲，再加约 40 MiB 的运行时开销。调小 `max_request_body_bytes` 时，反向代理的上限要一起调小。
+峰值内存理论估算约为 `3 × max_buffered_body_bytes`，加上每个非流式请求最多 64 MiB 的响应缓冲，再加约 40 MiB 的运行时开销。调小 `max_request_body_bytes` 时，反向代理的上限要一起调小。
+
+**实测基准参考（T50 基线报告）**：
+- **默认档（≥ 4 GiB，256 路长流式并发）**：Heap 峰值约 **84 MiB**，系统内存 Sys 峰值约 **117 MiB**，首包延迟 TTFB 约 0.57 ms。
+- **最小档（1 GiB，64 路长流式并发）**：Heap 峰值约 **97 MiB**，系统内存 Sys 峰值约 **121 MiB**。
+- 流式请求由于采用边收边发的 chunk 级处理管道，日常流式并发占用远低于理论缓冲积压上限，极度节省资源。详细报告见 [docs/handoff/reports/T50_perf_baseline.md](handoff/reports/T50_perf_baseline.md)。
 
 ## 5. 开机自启与崩溃自动重启
 
