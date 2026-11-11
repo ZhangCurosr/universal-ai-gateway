@@ -384,6 +384,22 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 
 ---
 
+## T52 架构审阅问题修复 — 状态：`DONE`
+
+- **前置**：T05、T06、T10、T11、T14、T31（均为 `DONE`）
+- **授权**：用户在架构审阅后要求执行修复，范围为审阅列出的六项问题及协议知识边界的规则冲突。
+- **必读规格**：02；03 §3、§6；05 §1；06；08 §3、§8.2；09 §5；13；`docs/DEPLOYMENT.md`。
+- **涉及文件**：`AGENTS.md`；`spec/06_billing_ledger.md`、`spec/08_adapters.md`、`spec/09_http_api.md`、`spec/12_deployment.md`、`spec/13_core.md`、`spec/11_tasks.md`；`docs/DEPLOYMENT.md`；`internal/ledger/memory.go`、`internal/ledger/hardening_test.go`（新增）；`internal/core/core.go`、`internal/core/forward.go`、`internal/core/hardening_test.go`（新增）；`internal/protocol/egress.go`（仅注释）、`internal/protocol/httpx.go`、`internal/protocol/hardening_test.go`（新增）；`internal/adapter/mineru/egress.go`、`internal/adapter/mineru/hardening_test.go`（新增）；`internal/httpapi/middleware.go`、`internal/httpapi/hardening_test.go`（新增）；`cmd/gateway/serve.go`、`cmd/gateway/response_budget.go`（新增）、`cmd/gateway/hardening_test.go`（新增）。
+- **验收标准**：
+  1. 上游重定向默认拒绝；同域、跨域及 HTTPS 降级均不自动跟随，不泄露凭据。
+  2. 账户整体快照 CAS，预留、结算、释放、额度更新共用原子边界；混合并发不得突破额度（实际费用超过预留的正常透支除外）。
+  3. 多步调用已产生费用后失败：保留 Meter，通过现有 `Response + error` 返回组合结算一次；不转发部分结果，不重试；原有接口签名不变。
+  4. 写客户端有可续期的超时；缓冲、SSE、字节流均覆盖，Flush 错误可见，不遗留租约与预留。
+  5. 缓冲响应共享负载预算，大小复用 `max_buffered_body_bytes`，与请求体预算分别计数；容量在本次尝试结束后释放，流式响应不累计占用。
+  6. 崩溃语义准确描述全部未持久化事件的丢失风险；明确协议知识可存在于适配器和转译层。
+  7. 不改现有导出签名、不加依赖、不改架构检查或一致性套件；针对性回归测试及 `go run ./tools/check` 全绿。
+- **验收结果**：1–7 均满足；新增 14 个测试函数（含表驱动子用例），最终完整检查包含 race、零 CGO 构建、分层检查，全部通过。旧账本实现经临时 overlay 运行快照回归测试可复现混合版本，新实现通过；overlay 仅在 `/tmp`，未改旧测试或仓库文件。
+
 ## T51 通用 REST 转发适配器（M3） — 状态：`DONE`
 
 - **前置**：无

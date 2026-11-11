@@ -413,7 +413,13 @@ func newUpstreamClient(cfg *config.Config) *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
-	return &http.Client{Transport: t, Timeout: 0}
+	return &http.Client{
+		Transport: &responseBudgetTransport{base: t, budget: &responseBudget{limit: cfg.Limits.MaxBufferedBodyBytes}},
+		Timeout:   0,
+		// HDR-06：自定义鉴权头不在 net/http 的敏感头清单里；即使同域也不跟随，
+		// 避免凭据泄露、HTTPS 降级以及 POST 被自动改写为 GET。
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
 
 // newHTTPServer 按 spec/03 §6 创建服务端；WriteTimeout 必须为 0（流式响应可能持续数分钟）。

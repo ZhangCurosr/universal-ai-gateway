@@ -155,6 +155,7 @@ type Egress interface {
 |:--|:--|
 | 得到可转发的响应 | `*Response`（`Kind` 决定转发形态；`Meter` 必填） |
 | 尚未得到可转发的响应就失败（网络错误、上游非 2xx、轮询超时……） | `*AttemptError{Outcome, Body, Header}`：内核按 `Outcome.Kind.Retryable()` 决定是否换 Key |
+| 已产生费用但后续步骤失败，无法交付完整结果 | 同时返回非 nil `*Response` 与 error；`Response.Meter` 必填，只用于结算，不转发 Body/流、不重试。仍使用现有 `Do` 签名（CORE-12） |
 | 本地错误（不支持的操作、构造请求失败） | `*apperr.Error` 或其他 error：不重试，不惩罚 Key |
 | 流式响应开始后上游出错 | `EventStream.Next` / `Raw.Read` 返回错误，并在 `Meter.Fault` 中报告 Outcome |
 
@@ -166,7 +167,7 @@ type Egress interface {
 | EG-02 | 只使用 `up.Client` 发送请求，`ctx` 必须传给每个请求（`http.NewRequestWithContext`）；不得自建 `http.Client`、不得 `time.Sleep`（轮询等待用 `select { case <-ctx.Done(): case <-time.After(d): }`） |
 | EG-03 | 发送用 `protocol.Send`（自动分类非 2xx、截断错误体、关闭连接）；缓冲读取用 `protocol.ReadBody`（受 `up.MaxBufferedBytes` 限制）；SSE 用 `protocol.NewSSEStream` |
 | EG-04 | `Response.Header` 只放白名单头（至少 `Content-Type`；文件下载可加 `Content-Length`、`Content-Disposition`）。**禁止**转发 `Set-Cookie` 与任何限流、账号相关的头（会泄露上游 Key 信息） |
-| EG-05 | 一次尝试内的多次上游调用（如提交后轮询）全部用同一个 `up.Secret`；任何一步失败都返回 `*AttemptError` |
+| EG-05 | 一次尝试内的多次上游调用（如提交后轮询）全部用同一个 `up.Secret`；任何一步失败都返回 `*AttemptError`。已产生费用时还必须返回带 Meter 的非 nil Response（CORE-12），避免丢失计量结果 |
 | EG-06 | 创建异步任务的操作把任务 ID 放进 `Response.Pins`；查询该任务的请求由内核固定到同一个 Key（spec/07 §7.1） |
 | EG-07 | `Call.BodyStream` 非 nil 时直接作为上游请求体（不得读入内存）；内核对这类请求只尝试一次（CORE-07） |
 | EG-08 | `Meter.Usage` 的来源：上游明确报告 → `UsageUpstream`；部分报告 + 本地估算 → `UsageEstimated`；什么都没有 → `UsageNone`（内核按**预留用量**结算）。**确定不计费**的响应（如查询任务状态）返回 `(nil, UsageUpstream)`，不要返回 `UsageNone` |
@@ -196,6 +197,7 @@ type Egress interface {
 | HDR-03 | anthropic | 鉴权头 `x-api-key: <secret>`；复制 `anthropic-version`（缺省设为 `2023-06-01`）与 `anthropic-beta`（全部值） |
 | HDR-04 | openai_chat | 鉴权头 `Authorization: Bearer <secret>`；不复制其他头 |
 | HDR-05 | 全部 | `User-Agent` 取适配器的 `UserAgent` 字段，为空时用 `universal-ai-gateway` |
+| HDR-06 | 全部 | 共享上游客户端禁止自动跟随任何重定向（包括同来源、跨来源及 HTTPS 降级），使用 `CheckRedirect = http.ErrUseLastResponse`。需要新地址时由管理员修改池的 base_url；不得把鉴权头交给默认重定向规则处理 |
 
 `Do` 的骨架（两个大模型适配器中已实现，只需实现其中调用的未完成函数）：`newRequest` → `protocol.Send` → 响应 `Content-Type` 以 `text/event-stream` 开头时返回 `ResponseEvents`（`NewSSEStream`，每个事件先交给 meter，再按 §3.5 决定是否转发），否则 `ReadBody` 返回 `ResponseBuffered`。
 
@@ -352,7 +354,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | 计费时点 | 同步封装：完成时按上游报告的实际页数结算（`UsageUpstream`）。异步透传：同一任务会被查询多次，而适配器无状态、无法判断「第一次看到完成」，所以**提交时按估计页数结算**（`UsageEstimated`）；查询与下载的 `Estimate` 写 `{pages: 0, requests: 0}`，Meter 返回 `(nil, UsageUpstream)`，不计费。需要精确按页计费的部署应使用同步封装 |
 | 任务固定 | 任务只存在于创建它的上游账号下；`pin_ttl` 应不短于结果在上游的保存时长。网关重启会丢失固定记录（内存），此时查询返回 404 `not_found`，客户端需重新提交 |
 | 上传 | 文件请求体直接流式转发给上游（EG-07），不进内存，不重试 |
-| 任务提交后重试 | 任务一旦创建，上游按页计费。提交之后的轮询或下载失败**不可重试**（防止创建重复的付费任务），错误消息中附带任务 ID，便于运维找回结果 |
+| 任务提交后重试与结算 | 提交返回 2xx 后即进入付费阶段。后续读取、轮询、下载失败或客户端取消都**不可重试**；同时返回 Meter 与错误（CORE-12），页数已知时按上游实际页数结算，否则按提交估计与预留补齐。任务 ID 已知时保留在内部错误原因中；网关对外只输出安全的协议错误，不转发部分结果 |
 
 配置：`price: { pages: "0.01", requests: "0" }`，`reserve: { pages: 600 }`；池：`pin_ttl: 48h`、`timeouts: { response_header_base: 10m }`。
 

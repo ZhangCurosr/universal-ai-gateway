@@ -88,7 +88,7 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	}
 }
 
-func (e Egress) doTaskCreate(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
+func (e Egress) doTaskCreate(ctx context.Context, up protocol.Upstream, call *protocol.Call) (result *protocol.Response, err error) {
 	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks")
 	bodyReader := makeBodyReader(call)
 
@@ -103,6 +103,11 @@ func (e Egress) doTaskCreate(ctx context.Context, up protocol.Upstream, call *pr
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if err != nil {
+			result = paidSubmission(call, 0)
+		}
+	}()
 
 	body, err := protocol.ReadBody(up, resp)
 	if err != nil {
@@ -216,7 +221,7 @@ func (e Egress) doTaskResult(ctx context.Context, up protocol.Upstream, call *pr
 	}, nil
 }
 
-func (e Egress) doParse(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
+func (e Egress) doParse(ctx context.Context, up protocol.Upstream, call *protocol.Call) (result *protocol.Response, err error) {
 	// 1. 提交任务到上游 POST /v1/tasks
 	submitURL := protocol.JoinURL(up.BaseURL, "/v1/tasks")
 	submitReq, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, makeBodyReader(call))
@@ -229,6 +234,13 @@ func (e Egress) doParse(ctx context.Context, up protocol.Upstream, call *protoco
 	if err != nil {
 		return nil, err
 	}
+	var actualPages int64
+	// CORE-12：提交成功即可能计费；后续读取、轮询、下载失败或取消也保留计量结果。
+	defer func() {
+		if err != nil {
+			result = paidSubmission(call, actualPages)
+		}
+	}()
 	submitBody, err := protocol.ReadBody(up, submitResp)
 	if err != nil {
 		return nil, err
@@ -246,7 +258,6 @@ func (e Egress) doParse(ctx context.Context, up protocol.Upstream, call *protoco
 	// 2. 轮询任务状态 GET /v1/tasks/{id} 直到完成（EG-02: 1s 起翻倍到 10s，select 等待）
 	interval := e.initialPollInterval()
 	maxInterval := e.maxPollInterval()
-	var actualPages int64
 
 pollLoop:
 	for {
@@ -343,6 +354,21 @@ pollLoop:
 		Body:   resultBody,
 		Meter:  m,
 	}, nil
+}
+
+// paidSubmission 不包含可转发的部分结果。页数已知时按实际计费，否则按预留估算。
+func paidSubmission(call *protocol.Call, pages int64) *protocol.Response {
+	u := pricing.Usage{UnitRequests: 1}
+	src := protocol.UsageEstimated
+	if pages > 0 {
+		u[UnitPages] = pages
+		src = protocol.UsageUpstream
+	} else if est, ok := call.State.(pricing.Usage); ok {
+		if n := est.Get(UnitPages); n > 0 {
+			u[UnitPages] = n
+		}
+	}
+	return &protocol.Response{Meter: &meter{usage: u, src: src}}
 }
 
 // afterSubmit 把任务提交成功之后的失败改写成不可重试。

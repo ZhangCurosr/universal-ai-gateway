@@ -169,7 +169,9 @@ func (c *Core) Models(p *auth.Principal) []protocol.ModelInfo {
 // 所有错误响应都用 in.WriteError（首字节前）或 in.StreamError（事件流首字节后）。
 func (c *Core) Handler(in protocol.Ingress, rt protocol.Route) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		x := &exchange{c: c, in: in, rt: rt, r: r, w: &trackingWriter{ResponseWriter: w}}
+		tw := &trackingWriter{ResponseWriter: w, writeTimeout: c.d.Config.Server.ReadTimeout}
+		defer tw.clearWriteDeadline()
+		x := &exchange{c: c, in: in, rt: rt, r: r, w: tw}
 		x.serve()
 		if x.abort {
 			panic(http.ErrAbortHandler) // 字节流中途失败：中止连接，让客户端看到不完整的响应（STR-02）。收尾已在 serve 中完成
@@ -261,6 +263,7 @@ func (x *exchange) serve() {
 		return
 	}
 	x.route = route
+	x.w.writeTimeout = route.Pool.Timeouts.StreamIdle
 	x.audit.Model, x.audit.UpstreamProtocol = route.Model.Name, string(route.Upstream)
 
 	// 4. 生成上游调用（CORE-03）
@@ -357,16 +360,24 @@ func (x *exchange) attempt(lease *scheduler.Lease, call *protocol.Call, tr proto
 	doTimeout time.Duration, upload *watchedBody) (done bool, err error) {
 	ctx, cancel := context.WithCancel(x.r.Context())
 	defer cancel()
+	client := &attemptClient{client: x.c.d.HTTPClient}
+	defer client.releaseBuffers()
 	var timedOut atomic.Bool
 	timer := time.AfterFunc(doTimeout, func() { timedOut.Store(true); cancel() })
 	resp, err := x.route.Egress.Do(ctx, protocol.Upstream{
-		BaseURL: x.route.Pool.BaseURL, Secret: lease.Key.Secret, Client: x.c.d.HTTPClient,
+		BaseURL: x.route.Pool.BaseURL, Secret: lease.Key.Secret, Client: client,
 		MaxBufferedBytes: maxBufferedResponseBytes}, call)
 	timer.Stop()
 	if err != nil {
 		o := x.attemptOutcome(err, &timedOut)
 		lease.Finish(o)
 		x.audit.Outcome = o.Kind.String()
+		if resp != nil { // CORE-12：已有计费结果的失败终止尝试，绝不能 Release 或换 Key。
+			defer closeResponse(resp)
+			x.settle(resp, lease.Key.ID)
+			x.failAttempts(err)
+			return true, nil
+		}
 		return false, err
 	}
 	defer closeResponse(resp)
@@ -443,6 +454,27 @@ func (x *exchange) attempt(lease *scheduler.Lease, call *protocol.Call, tr proto
 	}
 	x.completeAttempt(lease, resp, result)
 	return true, nil
+}
+
+// attemptClient 只包装共享客户端，不创建 HTTP 连接池。缓冲所有权必须覆盖整个
+// 尝试；父 context 取消可能早于转译/客户端写入退出，不能用它提前释放响应预算。
+type attemptClient struct {
+	client   *http.Client
+	releases []func()
+}
+
+func (c *attemptClient) Do(r *http.Request) (*http.Response, error) { return c.client.Do(r) }
+
+// RetainResponseBuffer 是 protocol.ReadBody 使用的内部可选能力；适配器仍只依赖 Doer。
+func (c *attemptClient) RetainResponseBuffer(release func()) {
+	c.releases = append(c.releases, release)
+}
+
+func (c *attemptClient) releaseBuffers() {
+	for _, release := range c.releases {
+		release()
+	}
+	c.releases = nil
 }
 
 // completeAttempt 在响应转发后：记录 Pins（CORE-08）、结束租约、结算。

@@ -196,10 +196,11 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | OVL-03 | 拒绝时返回 503 `overloaded`、`Retry-After: 1`，错误格式用传入的 `ew`，并且**不读取请求体**；放行时在 `next` 返回后（`defer`）归还全部占用。流式响应的占用持续到流结束 |
 | OVL-04 | `IPRateLimit`：`rpm <= 0` 直接放行；否则以 `"ip:" + clientip.FromContext(ctx).String()` 为键调用 `Limiter.Allow`，拒绝时 429 `rate_limited` 并带 `Retry-After` |
 | OVL-05 | 客户端 IP 为零值（无法解析）时以键 `"ip:unknown"` 计数，不放行也不报错 |
+| OVL-06 | 装配层的共享上游 transport 为 `protocol.ReadBody` 提供内部可选的 `ReadBuffered(limit, retain)` 响应体能力，在读取前按本次读缓冲大小申请共享预算、读完归还未使用部分；耗尽返回 503 `overloaded`，不重试、不惩罚 Key。预算值复用 `max_buffered_body_bytes`，但与请求体预算**分别计数**。内核为每次尝试包装共享客户端，通过内部可选能力 `RetainResponseBuffer(release)` 保存释放回调；在尝试收尾时一并释放多步骤调用的所有缓冲结果。Body.Close 或父 context 取消都不能提前归还仍被转译/写入持有的预算。独立使用客户端、没有尝试所有者时以请求 ctx 取消作为回收边界。直接流式 Read 不使用此能力，不按累计传输量占用预算 |
 
 ### 5.1 内存估算（写进部署文档，供用户调参）
 
-一个在途请求在网关中大约持有 3 份请求体（原文、解析出的顶层字段、改写后的请求体），因此最坏情况下请求体相关内存约为 `3 × max_buffered_body_bytes`。默认 512 MiB 预算对应约 1.5 GiB 峰值；内存较小的机器应调小 `max_buffered_body_bytes` 与 `max_request_body_bytes`。缓冲响应另外最多缓冲 64 MiB / 请求（spec/13 §6）。流式上传（`BodyStream`）与字节流下载（`ResponseRaw`）边读边写，每个请求只占 32 KiB 级别的缓冲。
+一个在途请求在网关中大约持有 3 份请求体（原文、解析出的顶层字段、改写后的请求体），因此请求体相关内存约为 `3 × max_buffered_body_bytes`。缓冲响应每份最多 64 MiB，所有尝试持有的原始响应负载另外共享一份 `max_buffered_body_bytes` 预算（默认 512 MiB），不再按并发数乘以 64 MiB。两份预算分别计数，均不等同于精确的堆上限：读取时的切片扩容、JSON 解析、转译后的输出与 MCP 结果会产生额外内存，部署时必须留出空间。流式上传（`BodyStream`）与字节流下载（`ResponseRaw`）边读边写，不按累计传输量扣除缓冲预算。
 
 ## 6. 管理 Web UI（T49）
 

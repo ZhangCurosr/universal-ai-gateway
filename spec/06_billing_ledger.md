@@ -62,14 +62,17 @@ func (m *Memory) Events() <-chan store.UsageEvent       // 供 Flusher 消费
 
 ### 3.1 内存账户状态
 
-每个客户端一个账户：
+每个客户端一个账户，以 `atomic.Pointer` 发布不可变的整体快照：
 
 ```
+unlimited  bool         // 与额度一起原子更新
 quota      int64        // 额度上限（unlimited 时忽略）
-spent      atomic.Int64 // 已结算成本（启动时 = SUM(usage_events.cost)）
-reserved   atomic.Int64 // 在途预留合计
+spent      int64        // 已结算成本（启动时 = SUM(usage_events.cost)）
+reserved   int64        // 在途预留合计
 available  = quota - spent - reserved
 ```
+
+预留、结算、释放、管理更新都以整体快照 CAS 为原子边界；已发布的快照永不修改、不复用为后续版本。只对 `reserved` 做 CAS 无法排除结算与再预留造成的 ABA。`Snapshot` 一次读取整个版本。
 
 ### 3.2 行为规格
 
@@ -79,11 +82,11 @@ available  = quota - spent - reserved
 | LED-02 | `Reserve` | 账户不存在 → `apperr.CodeUnauthenticated`（客户端刚被删除） |
 | LED-03 | `Reserve` | 非 unlimited 且 `spent + reserved + amount > quota` → `apperr.CodeInsufficientQuota`，**不修改任何状态** |
 | LED-04 | `Reserve` | 事件队列长度 ≥ `capacity × admission_high_watermark` → `apperr.CodeOverloaded`（计费持久化跟不上时拒绝新请求，而不是丢事件） |
-| LED-05 | `Reserve` | 成功时用 **CAS 循环**增加 `reserved`（读 spent/reserved → 检查 → `CompareAndSwap`），并发 1000 个 Reserve 时不得超额 |
+| LED-05 | `Reserve` | 成功时用**整体快照 CAS 循环**增加 `reserved`；检查与提交之间 quota/unlimited/spent/reserved 任意变化都必须重新检查。与 Settle/Release/Upsert 混合并发时不得超额准入。预留合计将超过 int64 时返回 `CodeOverloaded`；已消费累计溢出时饱和为 `MaxInt64`，原始费用仍完整进入事件 |
 | LED-06 | `Settle` | `reserved -= r.Amount`；`spent += ev.CostNanoUSD`；把 `ev` 发送到事件队列。**允许**实际成本大于预留（透支），这是预期行为：上游已经计费，不能拒绝 |
 | LED-07 | `Settle` | 事件队列满时**阻塞发送**（不丢弃）。理由：此时客户端响应已结束，阻塞只影响该请求 goroutine 的退出；LED-04 已在准入处限流 |
 | LED-08 | `Settle` / `Release` | 同一个 `Reservation` 只能结束一次：第二次调用 `Settle` 返回 `ErrAlreadyFinished`，第二次 `Release` 什么也不做。用 `atomic.Bool` 实现 |
-| LED-09 | `Release` | `reserved -= r.Amount`，不产生事件。**只在确定上游没有产生费用时调用**：上游请求从未发出、或每次尝试都在得到可转发响应之前失败（`Egress.Do` 返回错误） |
+| LED-09 | `Release` | `reserved -= r.Amount`，不产生事件。只在尚未得到任何计费结果时调用。`Egress.Do` 同时返回非 nil Response 和 error 表示已产生费用但交付失败（CORE-12），此时必须结算，不能因 error 释放预留 |
 | LED-10 | `UpsertAccount` | 更新 quota/unlimited；`spent` 与 `reserved` 保持不变；账户不存在则新建（`spent` 取参数值） |
 | LED-11 | `Settle` | `ev.CostNanoUSD < 0` 视为编程错误，返回 `apperr.CodeInternal` 且不修改状态 |
 
@@ -95,6 +98,7 @@ available  = quota - spent - reserved
 | 同上，来源 `UsageEstimated`（如流中断，适配器按已转发文本估算了输出） | `Settle` | 适配器给出的单位 + 其余单位取预留用量 / `estimated` |
 | 同上，来源 `UsageNone`（适配器拿不到任何用量） | `Settle` | 预留用量 / `estimated` |
 | 所有尝试都在得到 `*Response` 之前失败 | `Release` | — |
+| `Egress.Do` 同时返回 `*Response` 与 error（已产生费用但无法交付） | `Settle`，不重试，不转发部分结果 | 同上，按 Meter 来源结算；客户端取消也必须结算 |
 | 鉴权、限流、服务校验等在 Reserve 之前失败 | 不需要（还没有预留） | — |
 
 ## 4. 计费事件刷盘（`ledger.Flusher`，任务 T06）
@@ -115,6 +119,6 @@ func (f *Flusher) Run(ctx context.Context) error
 
 ## 5. 崩溃语义（写进用户文档，不要宣称更强保证）
 
-- 进程被强制杀死时：内存中已结算但尚未刷盘的事件（最多 `flush_interval` 时长内的量）会丢失，这些请求不会被计费。
+- 进程被强制杀死时：事件 channel、Flusher 批次与重试缓冲中**全部尚未持久化的事件**都会丢失，这些请求重启后不会被计费。`flush_interval` 是正常运行时的刷盘触发间隔，不是丢失时间窗口的上界；数据库故障、慢写与重试可能令事件跨多个周期积压，积压时长没有保证。
 - 在途请求的预留随进程消失，不计费。
 - 重启后 `spent` 由 `SUM(usage_events.cost_nano_usd)` 重建，因此**不会**出现重复扣费。

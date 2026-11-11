@@ -28,6 +28,8 @@ type Egress interface {
 	//
 	// 在得到可转发的响应之前失败时返回 *AttemptError（内核据此决定是否换 Key 重试）；
 	// 返回 *Response 之后的错误通过 EventStream.Next / Raw.Read 的错误与 Meter.Fault 报告。
+	// 已产生费用但无法返回完整结果时，可同时返回非 nil Response 与 error：Response.Meter
+	// 只用于结算，内核不转发其 Body、不重试（CORE-12）。现有返回签名不变。
 	Do(ctx context.Context, up Upstream, call *Call) (*Response, error)
 }
 
@@ -67,7 +69,7 @@ const (
 	ResponseRaw                          // 原样字节流：Response.Raw，内核边读边写（文件下载、NDJSON 等）
 )
 
-// Response 是一次成功尝试的结果（上游已接受请求）。
+// Response 是上游已接受请求的结果；与 error 同时返回时只提供结算信息（CORE-12）。
 type Response struct {
 	Kind   ResponseKind
 	Status int         // 写给客户端的状态码；0 = 200

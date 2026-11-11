@@ -307,5 +307,10 @@ func (t *trackingWriter) Flush() {
 	}
 }
 
+// FlushError 让内核的 ResponseController 能观察到真实连接的刷写超时。
+func (t *trackingWriter) FlushError() error {
+	return http.NewResponseController(t.ResponseWriter).Flush()
+}
+
 // Unwrap 让 http.ResponseController 能找到底层 ResponseWriter。
 func (t *trackingWriter) Unwrap() http.ResponseWriter { return t.ResponseWriter }

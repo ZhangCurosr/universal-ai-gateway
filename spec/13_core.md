@@ -43,6 +43,7 @@
 | CORE-11 | `env.Model` 为空且 `env.Affinity.Strict`：`Scheduler.PinnedPool(affinityKey)` 得到池，路由取该池中名称最小的服务（`poolRoutes`，`New` 时预先计算）；不检查白名单（固定记录按 clientID 隔离，只有创建者能命中）。这类请求的 `Estimate` 应全部为 0，Meter 返回不计费 |
 | CORE-09 | `Do` 返回非 `*AttemptError` 的错误：不重试、`lease.Finish(Outcome{Kind: LocalError})`、`Release` 预留；`*apperr.Error` 原样给客户端，其他错误 → 500 `internal`（日志记录原因） |
 | CORE-10 | `*AttemptError` 的分类修正：客户端 `r.Context()` 已取消 → `Canceled`；内核的超时定时器已触发 → `Timeout`（覆盖适配器给出的分类，因为适配器分不清是谁取消了 ctx） |
+| CORE-12 | `Do` 同时返回非 nil Response 与 error：Response.Meter 是已产生费用的计量结果。结束租约、按 Meter 结算一次，关闭响应资源，使用入站协议输出错误；不转发 Response 内容、不调用转译器、不重试。客户端取消时也先结算再结束，不写客户端响应。没有 Meter 结果的错误仍按原有 Release 规则处理 |
 
 ### 2.1 结算（`settledUsage`，已实现）
 
@@ -55,6 +56,7 @@
 | 情况 | 账本调用 |
 |:--|:--|
 | 得到 `*Response`（无论之后转发是否完整） | `Settle`：`cost, _ := pricing.Cost(route.Price, 结算用量)`；`store.UsageEvent{Model, Op: env.Op, Usage: 结算用量, ...}` |
+| `Do` 同时返回 `*Response` 与 error | `Settle`（CORE-12）；error 决定客户端错误与 Key 的 Outcome，Meter 决定费用，两者互相独立 |
 | 所有尝试都在得到 `*Response` 之前失败 | `Release` |
 | 在 Reserve 之前失败 | 不需要 |
 
@@ -124,6 +126,7 @@
 | STR-02 | 读上游出错且不是客户端取消 | 事件流写 `in.StreamError(apperr.New(CodeUpstreamError, "upstream stream interrupted"))`；字节流直接中止连接（`panic(http.ErrAbortHandler)`，让客户端看到不完整的响应而不是误以为完整）；Outcome = `NetworkError` |
 | STR-03 | 客户端断开（`r.Context()` 取消） | 停止读写，关闭上游；Outcome = `Canceled` |
 | STR-04 | 写客户端失败 | 同 STR-03 |
+| STR-07 | 客户端保持连接但停止读取 | 内核在每次 WriteHeader / Write / Flush 前用 `http.ResponseController.SetWriteDeadline(now + pool.stream_idle)` 续期客户端写超时；读上游不设置整个响应的固定截止时间。超时或 Flush 错误视为 Canceled，释放租约并结算。路由解析前的错误响应使用 server.read_timeout；Handler 结束时清除写截止时间。内存 writer 不支持截止时间时允许 `http.ErrNotSupported`；其他设置错误不能忽略 |
 
 流错误事件的消息文本固定为上表两种，**不包含**上游原始错误内容。
 
@@ -162,6 +165,8 @@ headerTimeout = response_header_base + response_header_per_mib × ceil(请求体
 
 `http.Client{Transport: t, Timeout: 0}`——**不设** `Client.Timeout`（会截断长流），超时全部由 §5 控制。`connectTimeout` 取所有池 `timeouts.connect` 的最大值。内核把它作为 `protocol.Upstream.Client` 传给 `Egress.Do`，`MaxBufferedBytes` 固定为 64 MiB。
 
+实际装配使用包装上述 transport 的共享响应缓冲预算（spec/09 OVL-06），并设置 `CheckRedirect` 返回 `http.ErrUseLastResponse`（spec/08 HDR-06）。传输层不解析协议名、请求体或计费单位；`protocol.ReadBody` 通过响应体的内部可选 `ReadBuffered(limit, retain)` 能力执行有预算的读取，普通流式读取不申请预算。内核用未导出的尝试客户端包装共享 http.Client，提供内部可选 `RetainResponseBuffer(release)` 能力收集释放回调，尝试收尾时执行；父 context 取消或 Body.Close 都不能提前归还仍存活的结果预算。
+
 ## 7. 冻结接口与变更流程
 
 以下导出 API 是内核与外界的全部契约，**实现任务中不得修改**：
@@ -179,3 +184,9 @@ headerTimeout = response_header_base + response_header_per_mib × ceil(请求体
 3. 修改契约时必须同时更新：本章、spec/08、`adaptertest` 套件、全部现有适配器。
 
 判断标准：**新增协议、新增厂商、新增服务（包括非大模型 API）都不应需要变更契约。** spec/08 §8 的范例是检验标准：搜索 API（多端点、按次计费）与文档解析 API（文件上传、异步任务、结果下载）都已用临时实现跑通一致性套件。只有当一类全新能力（例如 WebSocket 双向流、非 HTTP 传输）出现时才考虑扩展契约，而且优先以「新增可选接口」的方式扩展（适配器可以选择实现，内核用类型断言检测），而不是修改已有接口。
+
+### 7.1 T52 决策记录：费用与结果交付分开处理
+
+本次架构审阅后的修复由用户要求执行，任务卡 T52 记录范围。原先把 `Do` 的所有 error 都解释为未产生费用，无法覆盖付费任务完成后下载失败的情况。处理方式是明确现有 `(*Response, error)` 的组合语义：两者均非 nil 时，Meter 用于结算，error 用于输出与 Outcome（CORE-12）。不增加导出字段、导出类型或冻结接口的方法，不修改任何现有导出签名。旧适配器原有 `(nil, error)` / `(Response, nil)` 行为保持兼容；多步骤适配器必须在付费阶段失败时保留计量结果。
+
+响应预算通过未导出的结构类型与接口断言实现，现有 `Upstream`、`Doer`、`ReadBody` 签名均不变；不修改架构检查或一致性套件来放宽约束。

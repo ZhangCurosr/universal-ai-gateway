@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
 )
 
@@ -46,8 +47,25 @@ func ReadBody(up Upstream, resp *http.Response) ([]byte, error) {
 	if limit <= 0 {
 		limit = 64 << 20
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	var body []byte
+	var err error
+	// OVL-06：装配层可以给响应体附加共享缓冲预算。普通 Doer 与测试替身
+	// 仍使用原有读取方式，既有导出接口不变；原样流式读取不申请缓冲预算。
+	if br, ok := resp.Body.(interface {
+		ReadBuffered(int64, func(func())) ([]byte, error)
+	}); ok {
+		var retain func(func())
+		if owner, ok := up.Client.(interface{ RetainResponseBuffer(func()) }); ok {
+			retain = owner.RetainResponseBuffer
+		}
+		body, err = br.ReadBuffered(limit+1, retain)
+	} else {
+		body, err = io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	}
 	if err != nil {
+		if apperr.CodeOf(err) == apperr.CodeOverloaded {
+			return nil, err // 共享预算耗尽是本机准入失败，不惩罚或重试 Key。
+		}
 		return nil, &AttemptError{Outcome: ClassifyNetError(err, nil), Err: err}
 	}
 	if int64(len(body)) > limit {

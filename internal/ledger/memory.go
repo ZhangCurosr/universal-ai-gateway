@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,10 +26,16 @@ type Memory struct {
 }
 
 type account struct {
-	unlimited atomic.Bool
-	quota     atomic.Int64
-	spent     atomic.Int64
-	reserved  atomic.Int64
+	state atomic.Pointer[accountState]
+}
+
+// accountState 发布后不可修改。LED-05：余额检查与变更必须基于同一版本，
+// 只对 reserved 做 CAS 会在结算后再次预留时产生 ABA，错误地使用旧 spent。
+type accountState struct {
+	unlimited bool
+	quota     int64
+	spent     int64
+	reserved  int64
 }
 
 var _ Ledger = (*Memory)(nil)
@@ -64,9 +71,7 @@ func (m *Memory) LoadAccounts(accts []Account) {
 
 func newAccount(a Account) *account {
 	acc := &account{}
-	acc.unlimited.Store(a.Unlimited)
-	acc.quota.Store(a.QuotaNanoUSD)
-	acc.spent.Store(a.SpentNanoUSD)
+	acc.state.Store(&accountState{unlimited: a.Unlimited, quota: a.QuotaNanoUSD, spent: a.SpentNanoUSD})
 	return acc
 }
 
@@ -76,9 +81,14 @@ func (m *Memory) UpsertAccount(a Account) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if acc, ok := m.accounts[a.ClientID]; ok {
-		acc.quota.Store(a.QuotaNanoUSD)
-		acc.unlimited.Store(a.Unlimited)
-		return
+		for {
+			old := acc.state.Load()
+			next := *old
+			next.quota, next.unlimited = a.QuotaNanoUSD, a.Unlimited
+			if acc.state.CompareAndSwap(old, &next) {
+				return
+			}
+		}
 	}
 	m.accounts[a.ClientID] = newAccount(a)
 }
@@ -96,12 +106,13 @@ func (m *Memory) Snapshot(clientID int64) (AccountSnapshot, bool) {
 	if !ok {
 		return AccountSnapshot{}, false
 	}
+	s := acc.state.Load()
 	return AccountSnapshot{
 		ClientID:        clientID,
-		Unlimited:       acc.unlimited.Load(),
-		QuotaNanoUSD:    acc.quota.Load(),
-		SpentNanoUSD:    acc.spent.Load(),
-		ReservedNanoUSD: acc.reserved.Load(),
+		Unlimited:       s.unlimited,
+		QuotaNanoUSD:    s.quota,
+		SpentNanoUSD:    s.spent,
+		ReservedNanoUSD: s.reserved,
 	}, true
 }
 
@@ -118,14 +129,19 @@ func (m *Memory) Reserve(clientID int64, requestID string, amount int64) (*Reser
 		amount = 1 // LED-01：每个请求都有预留记录
 	}
 	for {
-		reserved := acc.reserved.Load()
-		if !acc.unlimited.Load() {
-			// 用减法比较，避免 spent + reserved + amount 溢出
-			if acc.quota.Load()-acc.spent.Load()-reserved < amount {
+		old := acc.state.Load()
+		if !old.unlimited {
+			// 分步减法避免已消费与在途之和溢出。
+			if old.spent > old.quota || old.reserved > old.quota-old.spent || amount > old.quota-old.spent-old.reserved {
 				return nil, apperr.New(apperr.CodeInsufficientQuota, "insufficient quota")
 			}
 		}
-		if acc.reserved.CompareAndSwap(reserved, reserved+amount) {
+		if amount > math.MaxInt64-old.reserved {
+			return nil, apperr.New(apperr.CodeOverloaded, "too many outstanding reservations")
+		}
+		next := *old
+		next.reserved += amount
+		if acc.state.CompareAndSwap(old, &next) {
 			return &Reservation{ClientID: clientID, RequestID: requestID, Amount: amount}, nil
 		}
 	}
@@ -140,10 +156,18 @@ func (m *Memory) Settle(r *Reservation, ev store.UsageEvent) error {
 		return ErrAlreadyFinished
 	}
 	if acc, ok := m.account(r.ClientID); ok {
-		// 先加 spent 再减 reserved：两步之间并发的 Reserve 看到的是「多算」而不是「少算」，
-		// 只会保守地拒绝，不会超额放行（LED-05 的不超额保证）。
-		acc.spent.Add(ev.CostNanoUSD)
-		acc.reserved.Add(-r.Amount)
+		for {
+			old := acc.state.Load()
+			next := *old
+			next.reserved -= r.Amount
+			next.spent = math.MaxInt64
+			if ev.CostNanoUSD <= math.MaxInt64-old.spent {
+				next.spent = old.spent + ev.CostNanoUSD
+			}
+			if acc.state.CompareAndSwap(old, &next) {
+				break
+			}
+		}
 	}
 	// 账户在请求期间被删除时仍然发送事件：上游已经计费，事件不可丢（AGENTS §3 #4）。
 	m.events <- ev
@@ -156,6 +180,13 @@ func (m *Memory) Release(r *Reservation) {
 		return
 	}
 	if acc, ok := m.account(r.ClientID); ok {
-		acc.reserved.Add(-r.Amount)
+		for {
+			old := acc.state.Load()
+			next := *old
+			next.reserved -= r.Amount
+			if acc.state.CompareAndSwap(old, &next) {
+				return
+			}
+		}
 	}
 }

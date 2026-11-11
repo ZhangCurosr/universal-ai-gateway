@@ -132,7 +132,11 @@ server:
 | 2 GiB | 128 | 256 MiB | 32 MiB |
 | ≥ 4 GiB | 256（默认） | 512 MiB（默认） | 32 MiB（默认） |
 
-峰值内存理论估算约为 `3 × max_buffered_body_bytes`，加上每个非流式请求最多 64 MiB 的响应缓冲，再加约 40 MiB 的运行时开销。调小 `max_request_body_bytes` 时，反向代理的上限要一起调小。
+请求体相关内存约为 `3 × max_buffered_body_bytes`。缓冲响应每份最多 64 MiB，并另外共享一份 `max_buffered_body_bytes` 预算（默认 512 MiB），读取时预算不足返回 503 `overloaded`。请求体和响应的预算分别计数；响应关闭连接后，预算仍保留到当前调用尝试结束，避免转译与转发期间重复使用。流式传输不按累计传输量消耗这份预算。JSON 解析、切片扩容、转译和 MCP 结果还会占用额外内存，因此这些预算不是进程堆的硬上限。调小 `max_request_body_bytes` 时，反向代理的上限要一起调小。
+
+客户端每次写入的超时复用池的 `timeouts.stream_idle`，每次写入都会续期；长流持续正常收发不会因固定总时长被截断，停止读取的客户端会超时退出并释放资源。
+
+上游 HTTP 重定向不会自动跟随，包括同域重定向及 HTTPS 到 HTTP 的降级。池的 `base_url` 应指向最终 API 地址；依赖跳转到另一地址的下载接口会返回错误，不能通过重定向把网关持有的凭据传到目标站点。
 
 **实测基准参考（T50 基线报告）**：
 - **默认档（≥ 4 GiB，256 路长流式并发）**：Heap 峰值约 **84 MiB**，系统内存 Sys 峰值约 **117 MiB**，首包延迟 TTFB 约 0.57 ms。
@@ -142,6 +146,10 @@ server:
 ## 5. 开机自启与崩溃自动重启
 
 网关是单进程，进程一退出服务就中断，所以要交给系统的服务管理器自动拉起。
+
+**计费持久化边界**：强制杀进程会丢失所有尚未持久化的计费事件，包括队列、批次和重试缓冲。`ledger.flush_interval` 只是正常运行时的刷盘触发间隔，数据库故障与重试会令事件跨多个周期积压，不能把它当作崩溃丢失窗口的上界。正常关闭会尝试最终刷盘，失败时写入 `data_dir/unflushed_usage.jsonl` 并在下次启动恢复；这不等同于强杀时有持久化日志保证。
+
+多步骤付费任务在提交成功后，即使后续轮询、结果下载失败或客户端取消，也会记录已产生的费用；页数已知按实际上游用量，未知按预留估算。失败不会触发再次提交任务。
 
 **Linux（systemd）**：使用 [deploy/systemd/universal-ai-gateway.service](../deploy/systemd/universal-ai-gateway.service)，文件开头的注释里有安装步骤。`TimeoutStopSec=40s` 比 `shutdown_grace`（默认 30s）大，给关闭时排空在途请求和计费刷盘留出时间。如果调大了 `shutdown_grace`，这个值要一起调大。首次启动后，用 `journalctl -u universal-ai-gateway` 查看引导 Token。
 

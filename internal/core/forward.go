@@ -24,13 +24,17 @@ const rawChunkBytes = 32 << 10
 // trackingWriter 记录是否已写出响应头与状态码（spec/13 §4.5），并透传 Flush。
 type trackingWriter struct {
 	http.ResponseWriter
-	status   int
-	writeErr error // 第一次写客户端失败的错误
+	status       int
+	writeErr     error // 第一次写客户端失败的错误
+	writeTimeout time.Duration
 }
 
 func (t *trackingWriter) WriteHeader(code int) {
 	if t.status == 0 {
 		t.status = code
+		if err := t.refreshWriteDeadline(); err != nil {
+			return
+		}
 		t.ResponseWriter.WriteHeader(code)
 	}
 }
@@ -38,6 +42,9 @@ func (t *trackingWriter) WriteHeader(code int) {
 func (t *trackingWriter) Write(p []byte) (int, error) {
 	if t.status == 0 {
 		t.WriteHeader(http.StatusOK)
+	}
+	if err := t.refreshWriteDeadline(); err != nil {
+		return 0, err
 	}
 	n, err := t.ResponseWriter.Write(p)
 	if err != nil && t.writeErr == nil {
@@ -47,8 +54,41 @@ func (t *trackingWriter) Write(p []byte) (int, error) {
 }
 
 func (t *trackingWriter) Flush() {
-	if f, ok := t.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+	if err := t.FlushError(); err != nil && t.writeErr == nil {
+		t.writeErr = err
+	}
+}
+
+// FlushError 保留底层刷写错误；仅取消上游不能中断被慢客户端阻塞的写操作。
+func (t *trackingWriter) FlushError() error {
+	if err := t.refreshWriteDeadline(); err != nil {
+		return err
+	}
+	err := http.NewResponseController(t.ResponseWriter).Flush()
+	if err != nil && t.writeErr == nil {
+		t.writeErr = err
+	}
+	return err
+}
+
+func (t *trackingWriter) refreshWriteDeadline() error {
+	if t.writeErr != nil {
+		return t.writeErr
+	}
+	if t.writeTimeout > 0 {
+		err := http.NewResponseController(t.ResponseWriter).SetWriteDeadline(time.Now().Add(t.writeTimeout))
+		if err != nil && !errors.Is(err, http.ErrNotSupported) {
+			t.writeErr = err
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *trackingWriter) clearWriteDeadline() {
+	err := http.NewResponseController(t.ResponseWriter).SetWriteDeadline(time.Time{})
+	if err != nil && !errors.Is(err, http.ErrNotSupported) && t.writeErr == nil {
+		t.writeErr = err
 	}
 }
 
@@ -109,6 +149,10 @@ func (x *exchange) forwardBuffered(resp *protocol.Response) streamResult {
 	if _, err := x.w.Write(resp.Body); err != nil {
 		return streamResult{outcome: protocol.Outcome{Kind: protocol.OutcomeCanceled}}
 	}
+	x.w.Flush()
+	if x.w.writeErr != nil {
+		return streamResult{outcome: protocol.Outcome{Kind: protocol.OutcomeCanceled}}
+	}
 	return streamResult{outcome: faultOr(resp, protocol.Outcome{Kind: protocol.OutcomeSuccess})}
 }
 
@@ -117,11 +161,14 @@ func (x *exchange) forwardEvents(resp *protocol.Response, first sse.Event, hasFi
 	writeResponseHeader(x.w, resp, x.requestID, false)
 	sw := sse.NewWriter(x.w)
 	if hasFirst {
-		if err := sw.WriteEvent(first); err != nil {
+		if err := sw.WriteEvent(first); err != nil || x.w.writeErr != nil {
 			return streamResult{outcome: protocol.Outcome{Kind: protocol.OutcomeCanceled}} // STR-04
 		}
 	} else {
 		x.w.Flush()
+		if x.w.writeErr != nil {
+			return streamResult{outcome: protocol.Outcome{Kind: protocol.OutcomeCanceled}}
+		}
 	}
 	for hasFirst {
 		idle.reset()
@@ -132,7 +179,7 @@ func (x *exchange) forwardEvents(resp *protocol.Response, first sse.Event, hasFi
 			}
 			return x.streamFailure(sw, err, idle)
 		}
-		if err := sw.WriteEvent(ev); err != nil {
+		if err := sw.WriteEvent(ev); err != nil || x.w.writeErr != nil {
 			return streamResult{outcome: protocol.Outcome{Kind: protocol.OutcomeCanceled}} // STR-04
 		}
 	}
@@ -171,6 +218,9 @@ func (x *exchange) forwardRaw(resp *protocol.Response, idle *idleTimer) streamRe
 				return streamResult{outcome: protocol.Outcome{Kind: protocol.OutcomeCanceled}} // STR-04
 			}
 			x.w.Flush()
+			if x.w.writeErr != nil {
+				return streamResult{outcome: protocol.Outcome{Kind: protocol.OutcomeCanceled}}
+			}
 		}
 		if err == nil {
 			continue
