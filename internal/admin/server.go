@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
@@ -45,13 +47,31 @@ type Deps struct {
 	// health 的附加字段（spec/09 §6.4）；为 nil 时不输出对应字段。
 	LedgerQueue  func() (length, capacity int)
 	AuditDropped func() int64
+
+	// Reload 执行一次配置重载（ADM-18，spec/03 §8）；返回 HTTP 状态码与响应体。为 nil 时端点返回 404。
+	// actor 是发起重载的管理员客户端 ID。
+	Reload func(ctx context.Context, actor int64, dryRun bool) (status int, body any)
+	// ReloadRecords 返回最近的重载记录（ADM-19）；为 nil 时端点返回 404。
+	ReloadRecords func() any
+}
+
+// Control 让调用方在运行中替换管理面读取的配置（配置热重载，spec/03 §8）。
+type Control struct{ s *server }
+
+// SetConfig 原子替换配置：池、模型列表、可信代理与 admin_hosts 都按新配置生效。
+func (c *Control) SetConfig(cfg *config.Config) { c.s.setConfig(cfg) }
+
+// netState 是由配置推导的网络判定参数，整体原子替换。
+type netState struct {
+	trusted clientip.Trusted
+	hosts   map[string]bool // UI-20 允许的 Host 主机名（小写）；只在 d.HostCheck 时使用
 }
 
 type server struct {
 	d         Deps
-	trusted   clientip.Trusted
+	cfg       atomic.Pointer[config.Config] // 当前配置；可能为 nil
+	net       atomic.Pointer[netState]
 	ipTracker *ipFailureTracker
-	hosts     map[string]bool // UI-20 允许的 Host 主机名（小写）；只在 d.HostCheck 时使用
 
 	// writeMu 串行化所有写操作（创建/修改/轮换）。管理面写入频率很低，串行化后
 	// 「读-改-写」不会互相覆盖（例如 rotate-token 把刚禁用的客户端写回启用），
@@ -121,6 +141,12 @@ func (t *ipFailureTracker) recordFailure(ip string, now time.Time) {
 
 // NewServer 返回管理面 http.Handler（spec/09 §4）。
 func NewServer(d Deps) http.Handler {
+	h, _ := NewServerWithControl(d)
+	return h
+}
+
+// NewServerWithControl 与 NewServer 相同，另外返回用于热重载配置的 Control。
+func NewServerWithControl(d Deps) (http.Handler, *Control) {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
@@ -128,21 +154,12 @@ func NewServer(d Deps) http.Handler {
 		d.Logger = obs.Discard()
 	}
 
-	var trusted clientip.Trusted
-	if d.Config != nil && len(d.Config.Server.TrustedProxies) > 0 {
-		var err error
-		trusted, err = clientip.ParseTrusted(d.Config.Server.TrustedProxies)
-		if err != nil {
-			d.Logger.Warn("admin: parse trusted proxies failed", "error", err)
-		}
-	}
-
 	s := &server{
 		d:         d,
-		trusted:   trusted,
 		ipTracker: newIPFailureTracker(),
-		hosts:     allowedHostSet(d.AdminHosts),
 	}
+	s.cfg.Store(d.Config)
+	s.net.Store(&netState{trusted: s.parseTrusted(d.Config), hosts: allowedHostSet(d.AdminHosts)})
 
 	mux := http.NewServeMux()
 
@@ -185,12 +202,71 @@ func NewServer(d Deps) http.Handler {
 		writeError(w, apperr.New(apperr.CodeNotFound, "metrics not configured"))
 	})
 
+	// 配置重载（ADM-18、ADM-19）
+	mux.HandleFunc("POST /admin/api/reload", s.handleReload)
+	mux.HandleFunc("GET /admin/api/reload", s.handleReloadRecords)
+
 	// Fallback
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.New(apperr.CodeNotFound, "route not found"))
 	})
 
-	return s.wrap(mux)
+	return s.wrap(mux), &Control{s: s}
+}
+
+// config 返回当前配置（可能为 nil）。
+func (s *server) config() *config.Config { return s.cfg.Load() }
+
+func (s *server) parseTrusted(cfg *config.Config) clientip.Trusted {
+	if cfg == nil || len(cfg.Server.TrustedProxies) == 0 {
+		return clientip.Trusted{}
+	}
+	trusted, err := clientip.ParseTrusted(cfg.Server.TrustedProxies)
+	if err != nil {
+		s.d.Logger.Warn("admin: parse trusted proxies failed", "error", err)
+	}
+	return trusted
+}
+
+func (s *server) setConfig(cfg *config.Config) {
+	hosts := []string(nil)
+	if cfg != nil {
+		hosts = cfg.Server.AdminHosts
+	}
+	s.net.Store(&netState{trusted: s.parseTrusted(cfg), hosts: allowedHostSet(hosts)})
+	s.cfg.Store(cfg)
+}
+
+// handleReload 实现 ADM-18。
+func (s *server) handleReload(w http.ResponseWriter, r *http.Request) {
+	if s.d.Reload == nil {
+		writeError(w, apperr.New(apperr.CodeNotFound, "reload is not available"))
+		return
+	}
+	var req struct {
+		DryRun bool `json:"dry_run"`
+	}
+	if r.ContentLength != 0 {
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+	var actor int64
+	if p, ok := auth.PrincipalFrom(r.Context()); ok && p != nil {
+		actor = p.ClientID
+	}
+	status, body := s.d.Reload(r.Context(), actor, req.DryRun)
+	writeJSON(w, status, body)
+}
+
+// handleReloadRecords 实现 ADM-19。
+func (s *server) handleReloadRecords(w http.ResponseWriter, _ *http.Request) {
+	if s.d.ReloadRecords == nil {
+		writeError(w, apperr.New(apperr.CodeNotFound, "reload is not available"))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.d.ReloadRecords())
 }
 
 func (s *server) wrap(next http.Handler) http.Handler {
@@ -219,7 +295,7 @@ func (s *server) wrap(next http.Handler) http.Handler {
 		}
 
 		// 2. IP Lockout (ADM-04)
-		remoteIP := s.trusted.From(r)
+		remoteIP := s.net.Load().trusted.From(r)
 		ipStr := "unknown"
 		if remoteIP.IsValid() {
 			ipStr = remoteIP.String()

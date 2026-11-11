@@ -392,11 +392,12 @@ func (s *server) normalizeAllowedModels(models []string) ([]string, error) {
 	if len(models) == 0 {
 		return models, nil
 	}
-	if s.d.Config == nil || len(s.d.Config.Models) == 0 {
+	cfg := s.config()
+	if cfg == nil || len(cfg.Models) == 0 {
 		return nil, apperr.New(apperr.CodeInvalidRequest, "no models are configured")
 	}
-	configured := make(map[string]bool, len(s.d.Config.Models))
-	for _, cm := range s.d.Config.Models {
+	configured := make(map[string]bool, len(cfg.Models))
+	for _, cm := range cfg.Models {
 		configured[cm.Name] = true
 	}
 	seen := make(map[string]bool, len(models))

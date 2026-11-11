@@ -63,6 +63,7 @@ type KeyView struct {
 	Name            string `json:"name"`
 	SecretHint      string `json:"secret_hint"`
 	State           string `json:"state"`
+	StoredState     string `json:"stored_state,omitempty"` // state 为 orphaned 时，库中的状态（HR-19）
 	StateReason     string `json:"state_reason"`
 	Weight          int    `json:"weight"`
 	MaxInFlight     int    `json:"max_in_flight"`

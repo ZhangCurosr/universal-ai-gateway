@@ -102,6 +102,15 @@ func (c *Config) Validate() error {
 	if c.MCP.MaxResultBytes <= 0 {
 		return fieldErr("mcp.max_result_bytes", "must be > 0")
 	}
+	// CFG-19（工具名是否存在由装配代码在注册表封存后检查）
+	switch c.MCP.ToolMode {
+	case ToolModeAuto, ToolModeDirect, ToolModeCatalog:
+	default:
+		return fieldErr("mcp.tool_mode", "must be auto, direct or catalog, got %q", c.MCP.ToolMode)
+	}
+	if c.MCP.AutoThreshold < 1 {
+		return fieldErr("mcp.auto_threshold", "must be >= 1, got %d", c.MCP.AutoThreshold)
+	}
 	if c.Ledger.FlushInterval <= 0 || c.Ledger.EventQueueCapacity <= 0 {
 		return fieldErr("ledger", "flush_interval and event_queue_capacity must be > 0")
 	}
@@ -167,6 +176,7 @@ func (c *Config) Validate() error {
 	}
 
 	seenModel := map[string]bool{}
+	seenTool := map[string]bool{}
 	for i, m := range c.Models {
 		path := fmt.Sprintf("models[%d]", i)
 		// CFG-06
@@ -197,8 +207,130 @@ func (c *Config) Validate() error {
 				return fieldErr(path+".reserve", "unit %q: name must be valid and value >= 0", unit)
 			}
 		}
+		// CFG-17
+		for j, t := range m.Tools {
+			tp := fmt.Sprintf("%s.tools[%d]", path, j)
+			if err := validateTool(tp, t); err != nil {
+				return err
+			}
+			if seenTool[t.Name] {
+				return fieldErr(tp+".name", "duplicate %q", t.Name)
+			}
+			seenTool[t.Name] = true
+		}
 	}
 	return nil
+}
+
+var (
+	toolName        = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,64}$`)
+	toolPlaceholder = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	toolMethods     = map[string]bool{"GET": true, "DELETE": true, "POST": true, "PUT": true, "PATCH": true}
+	toolIdemMethods = map[string]bool{"POST": true, "PATCH": true}
+)
+
+// validateTool 实现 CFG-17 对单个接口声明的校验。
+func validateTool(tp string, t ToolConfig) error {
+	if !toolName.MatchString(t.Name) {
+		return fieldErr(tp+".name", "must match ^[A-Za-z0-9_.-]{1,64}$, got %q", t.Name)
+	}
+	if strings.TrimSpace(t.Description) == "" {
+		return fieldErr(tp+".description", "must not be empty")
+	}
+	if !toolMethods[t.Method] {
+		return fieldErr(tp+".method", "must be GET, DELETE, POST, PUT or PATCH, got %q", t.Method)
+	}
+	if t.Idempotent && !toolIdemMethods[t.Method] {
+		return fieldErr(tp+".idempotent", "only allowed for POST and PATCH")
+	}
+	names, err := ToolPathPlaceholders(t.Path)
+	if err != nil {
+		return fieldErr(tp+".path", "%v", err)
+	}
+	if t.InputSchema == nil {
+		if len(names) > 0 {
+			return fieldErr(tp+".input_schema", "must declare path placeholder %q", names[0])
+		}
+		return nil
+	}
+	if _, err := t.SchemaJSON(); err != nil {
+		return fieldErr(tp+".input_schema", "must be a mapping with string keys: %v", err)
+	}
+	if typ, _ := t.InputSchema["type"].(string); typ != "object" {
+		return fieldErr(tp+".input_schema.type", "must be \"object\"")
+	}
+	props, _ := t.InputSchema["properties"].(map[string]any)
+	required := map[string]bool{}
+	if req, ok := t.InputSchema["required"].([]any); ok {
+		for _, r := range req {
+			if s, ok := r.(string); ok {
+				required[s] = true
+			}
+		}
+	}
+	for _, n := range names {
+		if _, ok := props[n]; !ok {
+			return fieldErr(tp+".input_schema.properties", "must declare path placeholder %q", n)
+		}
+		if !required[n] {
+			return fieldErr(tp+".input_schema.required", "must include path placeholder %q", n)
+		}
+	}
+	return nil
+}
+
+// ToolPathPlaceholders 校验接口声明的 path（CFG-17），返回其中占位符的名字（按出现顺序）。
+// path 以 / 开头；不含 ?、#、\、空白与控制字符；百分号编码合法；没有 . 或 .. 段；
+// {name} 的名字合法且不重复，不允许 {name...}，花括号必须成对。
+func ToolPathPlaceholders(path string) ([]string, error) {
+	if !strings.HasPrefix(path, "/") {
+		return nil, fmt.Errorf("must start with /, got %q", path)
+	}
+	for _, c := range path {
+		if c == '?' || c == '#' || c == '\\' || c <= ' ' || c == 0x7f {
+			return nil, fmt.Errorf(`must not contain ?, #, \, whitespace or control characters`)
+		}
+	}
+	var names []string
+	seen := map[string]bool{}
+	rest := path
+	var literal strings.Builder
+	for {
+		i := strings.IndexAny(rest, "{}")
+		if i < 0 {
+			literal.WriteString(rest)
+			break
+		}
+		if rest[i] == '}' {
+			return nil, fmt.Errorf("unbalanced braces")
+		}
+		j := strings.IndexAny(rest[i+1:], "{}")
+		if j < 0 || rest[i+1+j] != '}' {
+			return nil, fmt.Errorf("unbalanced braces")
+		}
+		name := rest[i+1 : i+1+j]
+		if !toolPlaceholder.MatchString(name) {
+			return nil, fmt.Errorf("invalid placeholder {%s}", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("placeholder {%s} appears more than once", name)
+		}
+		seen[name] = true
+		names = append(names, name)
+		literal.WriteString(rest[:i])
+		literal.WriteString("x") // 占位符在段检查中视为普通字符
+		rest = rest[i+2+j:]
+	}
+	for _, seg := range strings.Split(literal.String()[1:], "/") {
+		dec, err := url.PathUnescape(seg)
+		if err != nil {
+			return nil, fmt.Errorf("invalid percent-encoding in segment %q", seg)
+		}
+		if dec == "." || dec == ".." {
+			return nil, fmt.Errorf("must not contain . or .. segments")
+		}
+	}
+	return names, nil
 }
 
 var protocolName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)

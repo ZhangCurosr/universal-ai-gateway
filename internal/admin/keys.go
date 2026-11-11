@@ -25,8 +25,8 @@ func (s *server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 
 	// ADM-13: pool 必须在配置中存在（否则 400）
 	poolFound := false
-	if s.d.Config != nil {
-		for _, p := range s.d.Config.Pools {
+	if cfg := s.config(); cfg != nil {
+		for _, p := range cfg.Pools {
 			if p.Name == req.Pool {
 				poolFound = true
 				break
@@ -127,6 +127,7 @@ func (s *server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stMap := s.keyStatusMap()
+	pools := s.configuredPools()
 	views := make([]KeyView, 0, len(keys))
 	for i := range keys {
 		st, ok := stMap[keys[i].ID]
@@ -134,7 +135,7 @@ func (s *server) handleListKeys(w http.ResponseWriter, r *http.Request) {
 		if ok {
 			stPtr = &st
 		}
-		views = append(views, buildKeyViewWithStatus(&keys[i], stPtr))
+		views = append(views, markOrphaned(buildKeyViewWithStatus(&keys[i], stPtr), pools))
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -268,7 +269,32 @@ func (s *server) buildKeyView(k *store.UpstreamKey) KeyView {
 	if ok {
 		stPtr = &st
 	}
-	return buildKeyViewWithStatus(k, stPtr)
+	return markOrphaned(buildKeyViewWithStatus(k, stPtr), s.configuredPools())
+}
+
+// KeyStateOrphaned 是池不在当前配置中的 Key 的展示状态（spec/03 HR-19）；不写库。
+const KeyStateOrphaned = "orphaned"
+
+// configuredPools 返回当前配置中的池名集合；没有配置时返回 nil（不判定孤立）。
+func (s *server) configuredPools() map[string]bool {
+	cfg := s.config()
+	if cfg == nil {
+		return nil
+	}
+	m := make(map[string]bool, len(cfg.Pools))
+	for _, p := range cfg.Pools {
+		m[p.Name] = true
+	}
+	return m
+}
+
+// markOrphaned 实现 HR-19：池不在配置中时 state 显示为 orphaned，库中的状态放进 stored_state。
+func markOrphaned(v KeyView, pools map[string]bool) KeyView {
+	if pools != nil && !pools[v.Pool] {
+		v.StoredState = v.State
+		v.State = KeyStateOrphaned
+	}
+	return v
 }
 
 func buildKeyViewWithStatus(k *store.UpstreamKey, st *scheduler.KeyStatus) KeyView {

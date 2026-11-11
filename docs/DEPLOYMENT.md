@@ -163,6 +163,34 @@ server:
    脚本会先校验配置，再注册一个开机时以 SYSTEM 身份运行、退出后每分钟重启的计划任务。
 3. 以 SYSTEM 身份运行时，`data_dir` 和 `master_key_file` 所在的目录必须对 SYSTEM 可写。
 
+### 5.1 修改配置后生效（热重载）
+
+改完 `gateway.yaml` 后不需要重启进程，运行：
+
+```bash
+export UAIG_ADMIN_URL=http://127.0.0.1:8081   # 缺省就是这个地址
+export UAIG_ADMIN_TOKEN=<管理员 Token>
+gateway reload --dry-run   # 先看会改什么，不应用
+gateway reload             # 应用
+```
+
+也可以直接调用管理 API：`POST /admin/api/reload`（请求体可选 `{"dry_run": true}`），`GET /admin/api/reload` 查看最近 20 次重载记录。
+
+网关比较新旧配置，自动选择需要的方式：
+
+| 方式 | 哪些字段 | 对客户端的影响 |
+|:--|:--|:--|
+| **热重载** | `pools`、`models`（含价格、接口声明）、`mcp`、`translation`、`server.log_level`、`server.trusted_proxies`、`server.admin_hosts` | 没有影响：进行中的请求按旧配置完成（包括计费价格），新请求立即使用新配置；Key 的冷却、熔断、亲和状态保留 |
+| **进程内重启** | 其他全部字段：监听地址、`data_dir`、`master_key_file`、超时、`limits`、`ledger`、`audit` | 进行中的请求最多等 `shutdown_grace` 完成；监听地址不变时，重启期间的新连接排队等待、不会被拒绝；计费事件全部落库后才重启。Key 的冷却与熔断状态会重置（与重启进程相同） |
+
+- **先检查、再动手**：配置有错（400）、无法构造（422，例如引用了不存在的协议）、新监听地址已被占用、新数据目录不可用，都会直接报错，**旧配置继续生效**。
+- **重启失败会回滚**：进程内重启后新配置启动失败（例如新数据目录中的数据库损坏），网关用旧配置重新启动，并在重载记录中标记 `rolled_back`。只有回滚也失败时进程才退出（交给第 5 节的系统服务自动拉起）。
+- **删除池**：池里的 Key 保留在数据库中，不再被使用，Key 列表显示为 `orphaned`；以后再加回同名的池，这些 Key 自动恢复使用。
+- **换数据目录**：等于换一个新数据库（客户端、Key、用量都从空开始），新实例会生成新的引导管理员 Token 并打印到 stderr，原来的管理员 Token 在新库里不存在。`--dry-run` 会提示这一点。
+- **主密钥文件**：只有新文件中的密钥与当前相同（例如只是移动了文件），或同时更换数据目录时才允许修改；否则拒绝，因为已保存的 Key 与 Token 都依赖当前主密钥。
+- 不会自动监视配置文件：修改后必须显式执行 `gateway reload`（避免读到只保存了一半的文件）。
+- 重载记录与日志中只有池名、服务名和字段名，不包含配置内容；配置错误的原文只出现在命令输出和 `GET /admin/api/reload` 中。
+
 ## 6. 客户端接入
 
 先用管理 API 为每个 AI 客户端创建 Token，并用 `allowed_models` 限制它能用的服务。下文中 `https://gw.example.com` 换成你的地址：局域网形态用 `http://<网关IP>:8080`。
@@ -284,6 +312,35 @@ claude mcp add --transport http uaig https://gw.example.com/mcp --header "Author
   }
 }
 ```
+
+#### 工具目录：工具多了也不占上下文（CAT-09）
+
+MCP 客户端一连上就会读取工具列表，把每个工具的说明和参数 Schema 都放进 AI 的上下文，一个工具大约 150–300 token。接入的接口越多，这部分开销越大，AI 选错工具的概率也越高。`mcp.tool_mode` 控制工具怎么列出：
+
+| `tool_mode` | 行为 |
+|:--|:--|
+| `auto`（缺省） | 该客户端能看到的工具不超过 `auto_threshold`（缺省 8）个时直接列出，否则切换为目录 |
+| `direct` | 总是直接列出全部工具 |
+| `catalog` | 总是只列出目录工具 |
+
+目录模式下 `tools/list` 只有 3 个目录工具（加上 `pinned_tools` 中的常用工具），常驻上下文约 600 token，与接口数量无关。AI 按三步使用：
+
+```
+gateway_search_tools  {"query": "判断"}            → 每个工具一行：名称 — 说明
+gateway_describe_tool {"name": "bivia_boolean"}    → 完整的参数 Schema、是否只读
+gateway_call_tool     {"name": "bivia_boolean", "arguments": {...}}   → 调用结果（照常计费）
+```
+
+```yaml
+mcp:
+  tool_mode: auto
+  auto_threshold: 8
+  pinned_tools: [tavily_search]   # 目录模式下仍然直接列出
+```
+
+- 搜索、查看只针对该客户端白名单内的工具，不访问上游、不计费；其他客户端的工具搜不到，按名字查看时与「不存在」得到同样的提示。
+- 目录模式下工具只是不列出，仍可用原名直接调用：`gateway call <工具名>` 和已有的客户端配置照常可用；`gateway tools` 会翻页列出全部真实工具。
+- 代价是 AI 调用不常用的工具要多走一两步；最常用的一两个工具放进 `pinned_tools`。
 
 ### 6.3 作为命令行（CLI）
 
@@ -503,11 +560,69 @@ curl -H "Authorization: Bearer <Token>" \
     -d '{"state":"disabled"}'
   ```
 
-### 9.6 已知限制
+### 9.6 把接口暴露给 AI（RS-45）
+
+> **接口声明不是权限边界**：声明接口只是让 AI 方便地调用它。被允许访问该服务的客户端，仍然可以直接请求 `/rest/{service}/` 下的任意路径与方法。权限仍然靠最小权限的 Key 和服务名拆分来控制（见本节开头的安全警告）。
+
+在服务下用 `tools` 声明接口，网关就把它们作为 MCP 工具（以及 `gateway call` 命令）提供给 AI；调用时照常鉴权、计费、选 Key、重试。修改后需要重启网关。
+
+```yaml
+models:
+  - name: bivia
+    pool: bivia-pool
+    price: { requests: "0.001" }
+    reserve: { requests: 1 }
+    tools:
+      - name: bivia_boolean
+        description: "对一段情境回答是或否的问题，返回答案、概率和是否弃答。"
+        method: POST
+        path: /boolean
+        idempotent: true        # 无副作用：走 /rest-idem/，失败可换 Key 重试
+        read_only: true
+        input_schema:
+          type: object
+          properties:
+            state:    { type: string, description: "需要判断的情境" }
+            question: { type: string, description: "是非问题" }
+          required: [state, question]
+          additionalProperties: false
+
+  - name: github-ro
+    pool: github-ro-pool
+    price: { requests: "0" }
+    tools:
+      - name: github_issue_get
+        description: "读取一个 GitHub issue 的标题、正文、状态和标签。"
+        method: GET
+        path: /repos/{owner}/{repo}/issues/{number}
+        input_schema:
+          type: object
+          properties:
+            owner:  { type: string }
+            repo:   { type: string }
+            number: { type: integer }
+          required: [owner, repo, number]
+```
+
+**参数怎么变成请求**：
+
+| 参数 | 去向 |
+|:--|:--|
+| `path` 中 `{name}` 对应的参数 | 填进路径（单个路径段，`/` 会被转义为 `%2F`）；必须是字符串或数字，不能为空、`.`、`..`。在 `input_schema` 中必须声明并列入 `required` |
+| `GET` / `DELETE` 的其余参数 | 查询串：标量一个值；标量数组重复同名参数；`null` 省略；对象被拒绝 |
+| `POST` / `PUT` / `PATCH` 的其余参数 | 组成 JSON 请求体（数字原样保留） |
+
+- `input_schema` 只给 AI 看，网关不做完整校验；参数是否合法由上游判断，上游的错误消息会作为工具错误返回给 AI。
+- `idempotent: true` 只用于 `POST` / `PATCH`，表示接口没有副作用、可以重试；否则只尝试一次（与 9.4 相同）。
+- `read_only` 缺省时 `GET` 为 true，其他方法为 false；多数 MCP 客户端会对非只读工具先征求确认。
+- 响应：JSON 和文本原样返回给 AI（JSON 对象同时作为结构化结果）；非 2xx 返回 `HTTP <状态码>: ` 加错误体前 2000 字节；图片、PDF 等二进制响应不支持，返回工具错误。
+- 只有 `rest` 池上的服务可以声明接口；工具名在整个网关内唯一，不能使用 `gateway_` 开头的三个目录工具名。
+
+### 9.7 已知限制
 
 1. **仅按次计费**：`rest` 协议仅支持计量单位 `requests`（每次成功请求 1 次），不支持按 token、按请求体字段或按路径计费。
 2. **`/rest/` 下 POST / PATCH 不重试**：依据 CORE-07 规则，流式请求体严格只尝试一次。
 3. **错误体截断**：上游返回的非 2xx 错误响应正文超过 8 KiB（`MaxErrorBodyBytes`）时会被截断。
 4. **无会话亲和**：通用 REST 转发不做状态维持和会话亲和。
-5. **无路径白名单**：网关不做请求路径与方法的内容过滤，安全控制依赖上游 Key 最小权限与模型访问列表（`allowed_models`）。
+5. **无路径白名单**：网关不做请求路径与方法的内容过滤，安全控制依赖上游 Key 最小权限与模型访问列表（`allowed_models`）。接口声明（9.6）也不改变这一点。
 

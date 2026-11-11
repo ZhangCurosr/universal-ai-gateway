@@ -8,7 +8,13 @@
 gateway serve   --config <path>      启动服务（默认 ./gateway.yaml）
 gateway version                      打印版本号
 gateway check-config --config <path> 只加载并校验配置，成功输出 "config ok" 并以 0 退出，失败以 1 退出
+gateway reload [--dry-run] [--json]  让运行中的网关重新读取配置文件（§8，任务卡 T55）
 ```
+
+| 编号 | 规则 |
+|:--|:--|
+| HR-01 | `gateway serve` 记住 `--config` 的路径；重载总是重新读取这个文件。 |
+| HR-02 | `gateway reload [--dry-run] [--json] [--timeout 2m]`：连接信息来自环境变量 `UAIG_ADMIN_URL`（缺省 `http://127.0.0.1:8081`）与 `UAIG_ADMIN_TOKEN`（必填），不提供 `--token` 参数（同 CLI-05）。调用 `POST /admin/api/reload`。收到 202 时轮询 `GET /admin/api/reload`，直到最新一条记录不再是 `restarting`，或者超时。成功退出码 0；校验或预检失败退出码 1，把错误消息写到 stderr；`--json` 输出完整响应。 |
 
 - 未知子命令：打印用法到 stderr，退出码 2。
 - 所有日志输出到 **stderr**（JSON 格式，`slog.NewJSONHandler`）。stdout 只用于 `version` 与 `check-config` 的结果。
@@ -42,6 +48,9 @@ limits:
 mcp:                               # spec/14：/mcp 端点
   disabled: false                  # true = 不挂载 /mcp
   max_result_bytes: 4194304        # 单次工具调用的端点响应上限（4 MiB）
+  tool_mode: auto                  # auto | direct | catalog（spec/14 §2.5）
+  auto_threshold: 8                # auto：客户端可见工具数不超过它时直接列出，否则用目录
+  pinned_tools: []                 # 目录模式下仍然直接列出的工具名
 
 ledger:
   flush_interval: 250ms
@@ -97,6 +106,24 @@ models:                           # 客户端可见的「服务」：大模型�
     pool: tavily
     price: { credits: "0.008" }
     reserve: { credits: 2 }
+
+  - name: "bivia"                 # rest 服务可以声明接口，交给 AI 当作工具调用（CFG-17，spec/08 §8.3.5）
+    pool: bivia-pool
+    price: { requests: "0.001" }
+    reserve: { requests: 1 }
+    tools:
+      - name: bivia_boolean
+        description: "对一段情境回答是或否的问题，返回答案与概率"
+        method: POST
+        path: /boolean
+        idempotent: true
+        read_only: true
+        input_schema:
+          type: object
+          properties:
+            state:    { type: string, description: "需要判断的情境" }
+            question: { type: string, description: "是非问题" }
+          required: [state, question]
 ```
 
 `price` 必须为该池协议的出站适配器声明的**每个**单位定价（免费写 `"0"`），否则启动失败（CORE-05）。各协议的单位见 spec/08（anthropic：`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`；openai_chat：前三个）。
@@ -123,6 +150,7 @@ models:                           # 客户端可见的「服务」：大模型�
 | `limits.max_buffered_body_bytes` | `536870912` |
 | `limits.preauth_ip_rpm` | `600` |
 | `mcp.disabled` / `mcp.max_result_bytes` | `false` / `4194304` |
+| `mcp.tool_mode` / `mcp.auto_threshold` / `mcp.pinned_tools` | `auto` / `8` / `[]` |
 | `ledger.flush_interval` | `250ms` |
 | `ledger.event_queue_capacity` | `4096` |
 | `ledger.admission_high_watermark` | `0.9` |
@@ -157,6 +185,9 @@ models:                           # 客户端可见的「服务」：大模型�
 | CFG-14 | `audit.retention_days >= 1`，否则网关拒绝启动（配置校验 fail-fast） |
 | CFG-15 | `translation.unknown_fields` 只能是 `reject` 或 `drop` |
 | CFG-16 | `server.admin_hosts` 每一项都必须是不带端口的主机名或 IP 地址：非空；IPv6 地址可带或不带方括号，其他取值只含字母、数字、`.`、`-`，不含通配符；比较时不区分大小写（spec/09 UI-20） |
+| CFG-17 | `models[].tools` 可选，是接口声明的列表。每项字段：`name`（匹配 `^[A-Za-z0-9_.-]{1,64}$`，在整份配置内唯一）、`title`（可选）、`description`（非空）、`method`（`GET`、`DELETE`、`POST`、`PUT`、`PATCH` 之一，不区分大小写，规范化为大写）、`path`（以 `/` 开头；不含 `?`、`#`、`\`、NUL；按 `/` 拆段后没有 `.` 或 `..` 段；`{name}` 占位符的名字匹配 `^[A-Za-z_][A-Za-z0-9_]*$`，同一名字只出现一次，不允许 `{name...}`）、`input_schema`（可选；缺省为 `{"type":"object","properties":{},"additionalProperties":false}`；给出时必须是映射，`type` 为 `object`，键名都是字符串；每个占位符必须出现在 `properties` 与 `required` 中）、`idempotent`（可选，布尔，只允许用于 `POST` / `PATCH`）、`read_only`（可选，布尔；缺省 `GET` 为 true，其他为 false）。任一项不满足 → 拒绝启动，错误消息含 `models[i].tools[j]` 位置 |
+| CFG-18 | `models[].tools` 非空时，该服务所在池的协议必须支持接口声明（目前只有 `rest`），否则拒绝启动。由装配代码（`cmd/gateway`）检查，配置包不判断协议名 |
+| CFG-19 | `mcp.tool_mode` 取 `auto`（缺省）、`direct`、`catalog` 之一；`mcp.auto_threshold` 缺省 8，必须 `>= 1`；`mcp.pinned_tools` 可选，每一项必须是注册表中存在的工具名，且不能是目录工具名（CAT-01），否则拒绝启动（工具名的存在性在注册表封存后由装配代码检查） |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 
@@ -221,3 +252,28 @@ func (t clientip.Trusted) From(r *http.Request) netip.Addr
 | CIP-05 | 不读取 `X-Real-IP`、`Forwarded` 等其他头（只支持一种来源，避免多种头互相矛盾） |
 
 客户端 IP 用于：鉴权前的按 IP 限流（spec/09 §5）、管理面鉴权失败封禁（ADM-04）、访问日志（`client_ip` 字段）。
+
+## 8. 配置重载（任务卡 T55）
+
+全部配置都可以在不退出进程的情况下重新加载，分两级，由网关比较新旧配置后自动选择：
+
+| 级别 | 字段 | 做法 |
+|:--|:--|:--|
+| 热重载 | `pools`、`models`、`mcp`、`translation`、`server.log_level`、`server.trusted_proxies`、`server.admin_hosts` | 重建注册表、内核、MCP 服务端与数据面路由，原子替换；账本、调度器、存储、审计、限流器、并发计数器沿用。在途请求在旧内核上完成 |
+| 进程内重启 | 其他全部字段（`server` 的其余字段、`limits`、`ledger`、`audit`） | 先预检；通过后按 §5 的关闭顺序排空并刷盘，再按启动顺序用新配置启动。监听地址不变时沿用同一个监听套接字 |
+
+`master_key_file` 只在新文件中的密钥与当前相同，或 `data_dir` 同时变化时允许变更（上游 Key 的加密与 Token 哈希都依赖主密钥）。进程内重启后新实例启动失败时，用旧配置回滚；回滚也失败才以退出码 1 退出。
+
+| 编号 | 规则 |
+|:--|:--|
+| HR-10 | 同一时间只有一次重载；进行中再收到请求 → 409 `reload in progress`。 |
+| HR-11 | 读取并解析配置（`config.Parse`：Default → YAML → Normalize → Validate）。失败 → 400，消息为配置错误原文。旧配置继续生效。 |
+| HR-12 | 比较新旧配置得到 `changes`。`server.log_level`、`server.trusted_proxies`、`server.admin_hosts`、`pools`、`models`、`mcp`、`translation` 以外的任何字段不同 → `mode = "restart"`；否则只要有差异 → `mode = "hot"`；完全相同 → `mode = "none"`，什么都不做，返回 200。 |
+| HR-13 | 热重载：构造新一代（`newRegistry` → `core.New` → `mcp.New` → 数据面路由），任一步失败 → 422，旧配置继续生效。成功后依次执行：`Scheduler.SetPools`，从数据库重新加载 Key 并 `SetKeys`，`admin.SetConfig`，设置日志级别，`RestrictModels`，最后原子替换数据面处理器。返回 200。 |
+| HR-14 | 旧一代：在途请求在旧内核上完成（handler 计数照常）。连接 timeout 变化时，切换后立即对旧 Transport 调用 `CloseIdleConnections`，仍在使用的连接在请求结束后由 `IdleConnTimeout` 关闭。 |
+| HR-15 | 进程内重启：先按 §2.3 预检，失败 → 422，旧实例不受影响。预检通过 → 写回 202，然后执行关闭序列（与收到 SIGTERM 相同），再用新配置执行启动序列。监听套接字由常驻的 accept 协程持有、跨实例保留（地址不变时交给新实例），旧服务端只关闭自己的虚拟监听器，不打断真正的 Accept。排空顺序：关闭监听器并等 `Serve` 返回 → 关闭 keep-alive，等全部连接关闭（最多 `shutdown_grace`，超时强制关闭）→ `Shutdown` 收尾。不直接用 `Shutdown` 排空，因为 net/http 会把「关闭开始后才读完请求」的连接直接关掉而不作响应。正常关机使用同样的排空顺序。新实例从数据库重新加载 Key，Key 的冷却、熔断与亲和状态会重置（与重启进程相同） |
+| HR-16 | 新实例启动失败：按待定 6 处理，并在重载记录里写明失败原因。 |
+| HR-17 | `dry_run: true`：执行 HR-11、HR-12，热重载时执行 HR-13 中的构造步骤，进程内重启时执行预检（只做检查：探测新地址时绑定后立即释放，不保留目录锁），返回同样的响应，但不应用。 |
+| HR-18 | 记录：每次重载按 §2.5 记 Info 日志，并追加到内存中的最近 20 条记录（`status`：`applied`、`restarting`、`failed`、`rolled_back`、`noop`）。dry-run 只记日志（`dry_run: true`），不追加记录。错误原文只放进记录，不写日志（可能引用配置中的值） |
+| HR-19 | 删除或重命名池：池里的 Key 保留在数据库中，不再被调度；管理 API 的 Key 列表对池不在当前配置中的 Key 显示 `state: "orphaned"`（只是展示，不写库；库中的状态原样保留在 `stored_state` 字段）。同名的池恢复后，这些 Key 自动重新被调度。 |
+| HR-30 | DEPLOYMENT.md 新增「修改配置后生效」一节：热重载与进程内重启的字段对照表、`gateway reload` 用法与 dry-run、`data_dir` 变化会生成新管理员 Token 的提示、主密钥变更的限制（待定 5）、重载失败后的行为（待定 6）、`GET /admin/api/reload` 的记录。 |

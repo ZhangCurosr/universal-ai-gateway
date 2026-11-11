@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/mcp"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	_ "modernc.org/sqlite"
 )
@@ -1009,5 +1011,229 @@ func TestE2E_REST_ResponseHeaders_WhitelistForwarding(t *testing.T) {
 	// 严禁透传的敏感头（Set-Cookie 必须被丢弃）
 	if got := resp.Header.Get("Set-Cookie"); got != "" {
 		t.Errorf("Set-Cookie must be stripped, got: %q", got)
+	}
+}
+
+// T54：rest 接口声明经 MCP 目录调用（RS-40 ~ RS-44、CAT-01 ~ CAT-08、TL-12）。
+func TestE2E_REST_DeclaredTools_ViaMCPCatalog(t *testing.T) {
+	type hit struct{ method, path, query, body, auth string }
+	var mu sync.Mutex
+	var hits []hit
+	var flaky atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body) // 测试上游：读取失败时 body 为空，由断言发现
+		mu.Lock()
+		hits = append(hits, hit{r.Method, r.URL.EscapedPath(), r.URL.RawQuery, string(body), r.Header.Get("Authorization")})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/flaky":
+			if flaky.Add(1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = io.WriteString(w, `{"error":"busy"}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"answer":"yes"}`)
+		case "/once":
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":"down"}`)
+		case "/err":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(w, `{"error":"state is required"}`)
+		default:
+			_, _ = io.WriteString(w, `{"item":"ok"}`)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	hitCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(hits)
+	}
+
+	obj := func(props map[string]any, required ...any) map[string]any {
+		return map[string]any{"type": "object", "properties": props, "required": required}
+	}
+	g := startRESTGateway(t, func(c *config.Config) {
+		c.MCP.ToolMode = config.ToolModeCatalog
+		c.Pools = append(c.Pools, config.PoolConfig{Name: "tool-pool", Protocol: "rest", BaseURL: upstream.URL, MaxAttempts: 3})
+		c.Models = append(c.Models, config.ModelConfig{
+			Name: "toolsvc", Pool: "tool-pool",
+			Price: map[string]string{"requests": "0.01"}, Reserve: map[string]int64{"requests": 1},
+			Tools: []config.ToolConfig{
+				{Name: "svc_get", Description: "Get one item by id from the inventory.", Method: "GET", Path: "/items/{id}",
+					InputSchema: obj(map[string]any{"id": map[string]any{"type": "string"}}, "id")},
+				{Name: "svc_judge", Description: "Judge a statement; retried on failure.", Method: "POST", Path: "/flaky", Idempotent: true},
+				{Name: "svc_send", Description: "Send a notification once.", Method: "POST", Path: "/once"},
+				{Name: "svc_err", Description: "Always rejected by upstream.", Method: "POST", Path: "/err", Idempotent: true},
+			},
+		})
+		c.Normalize()
+	})
+	adminURL := "http://" + g.admin + "/admin/api"
+	dataURL := "http://" + g.data
+
+	newClient := func(name string, allowed ...string) string {
+		var created struct {
+			Token string `json:"token"`
+		}
+		if code := doJSON(t, "POST", adminURL+"/clients", g.adminToken, map[string]any{
+			"name": name, "role": "user", "quota_nano_usd": int64(1e12), "allowed_models": allowed}, &created); code != http.StatusCreated {
+			t.Fatalf("create client %s: %d", name, code)
+		}
+		return created.Token
+	}
+	token := newClient("tool-user", "toolsvc")
+	otherToken := newClient("other-user", "base-dummy-model")
+	for i, k := range []string{"bearer:tool-secret-one", "bearer:tool-secret-two"} {
+		if code := doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+			map[string]any{"pool": "tool-pool", "name": fmt.Sprintf("k%d", i+1), "secret": k}, nil); code != http.StatusCreated {
+			t.Fatalf("create key: %d", code)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	mc := &mcp.Client{URL: dataURL + "/mcp", Token: token, HTTP: http.DefaultClient}
+
+	// CAT-03：目录模式只列出三个目录工具
+	tools, err := mc.ListTools(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tl := range tools {
+		names = append(names, tl.Name)
+	}
+	if strings.Join(names, ",") != "gateway_call_tool,gateway_describe_tool,gateway_search_tools" {
+		t.Fatalf("tools/list = %v", names)
+	}
+
+	// CAT-04：搜索；CAT-05：查看
+	res, err := mc.CallTool(ctx, mcp.CatalogSearchTool, json.RawMessage(`{"query":"inventory"}`))
+	if err != nil || res.IsError || !strings.Contains(res.Content[0].Text, "svc_get") || strings.Contains(res.Content[0].Text, "svc_send") {
+		t.Fatalf("search = %+v, %v", res, err)
+	}
+	res, err = mc.CallTool(ctx, mcp.CatalogDescribeTool, json.RawMessage(`{"name":"svc_send"}`))
+	if err != nil || res.IsError || !strings.Contains(string(res.StructuredContent), `"readOnlyHint":false`) {
+		t.Fatalf("describe = %+v, %v", res, err)
+	}
+
+	// RS-42、TL-12：占位符段内的 / 转义为 %2F，其余参数进查询串
+	res, err = mc.CallTool(ctx, mcp.CatalogCallTool, json.RawMessage(`{"name":"svc_get","arguments":{"id":"a/b c","q":"x y","tag":["1","2"]}}`))
+	if err != nil || res.IsError || res.Content[0].Text != `{"item":"ok"}` || !strings.Contains(string(res.StructuredContent), `"item"`) {
+		t.Fatalf("call svc_get = %+v, %v", res, err)
+	}
+	mu.Lock()
+	h := hits[len(hits)-1]
+	mu.Unlock()
+	if h.method != "GET" || h.path != "/items/a%2Fb%20c" || h.query != "q=x+y&tag=1&tag=2" || h.body != "" || !strings.HasPrefix(h.auth, "Bearer tool-secret-") {
+		t.Errorf("upstream saw %+v", h)
+	}
+
+	// RS-19：idempotent 的 POST 遇 503 换 Key 重试，两次请求体相同
+	before := hitCount()
+	res, err = mc.CallTool(ctx, mcp.CatalogCallTool, json.RawMessage(`{"name":"svc_judge","arguments":{"state":"s","n":12345678901234567890}}`))
+	if err != nil || res.IsError || !strings.Contains(res.Content[0].Text, "yes") {
+		t.Fatalf("call svc_judge = %+v, %v", res, err)
+	}
+	mu.Lock()
+	judged := append([]hit(nil), hits[before:]...)
+	mu.Unlock()
+	if len(judged) != 2 || judged[0].body != judged[1].body || judged[0].body != `{"n":12345678901234567890,"state":"s"}` || judged[0].auth == judged[1].auth {
+		t.Errorf("idempotent attempts = %+v", judged)
+	}
+
+	// CORE-07：非 idempotent 的 POST 只尝试一次
+	before = hitCount()
+	res, err = mc.CallTool(ctx, mcp.CatalogCallTool, json.RawMessage(`{"name":"svc_send","arguments":{"msg":"hello-arg"}}`))
+	if err != nil || !res.IsError {
+		t.Fatalf("call svc_send = %+v, %v", res, err)
+	}
+	if n := hitCount() - before; n != 1 {
+		t.Errorf("svc_send attempts = %d, want 1", n)
+	}
+
+	// RS-43：上游 4xx 的错误体出现在工具结果中
+	res, err = mc.CallTool(ctx, mcp.CatalogCallTool, json.RawMessage(`{"name":"svc_err"}`))
+	if err != nil || !res.IsError || !strings.Contains(res.Content[0].Text, "HTTP 422") || !strings.Contains(res.Content[0].Text, "state is required") {
+		t.Fatalf("call svc_err = %+v, %v", res, err)
+	}
+
+	// CAT-07：隐藏的工具可以用原名直接调用；命令行 gateway call、gateway tools 可用
+	res, err = mc.CallTool(ctx, "svc_get", json.RawMessage(`{"id":"7"}`))
+	if err != nil || res.IsError {
+		t.Fatalf("direct svc_get = %+v, %v", res, err)
+	}
+	var out, errb bytes.Buffer
+	cliEnv := func(k string) string {
+		return map[string]string{"UAIG_URL": dataURL, "UAIG_TOKEN": token}[k]
+	}
+	if code := realMainIO([]string{"call", "svc_get", "--args", `{"id":"cli"}`}, strings.NewReader(""), &out, &errb, cliEnv); code != 0 || !strings.Contains(out.String(), `"item"`) {
+		t.Fatalf("gateway call: code=%d out=%q err=%q", code, out.String(), errb.String())
+	}
+	out.Reset()
+	if code := realMainIO([]string{"tools"}, strings.NewReader(""), &out, &errb, cliEnv); code != 0 || strings.Count(out.String(), "svc_") != 4 {
+		t.Fatalf("gateway tools: code=%d out=%q", code, out.String())
+	}
+
+	// TL-03：白名单外的客户端看不到也调不了这些接口
+	other := &mcp.Client{URL: dataURL + "/mcp", Token: otherToken, HTTP: http.DefaultClient}
+	res, err = other.CallTool(ctx, mcp.CatalogSearchTool, json.RawMessage(`{}`))
+	if err != nil || strings.Contains(res.Content[0].Text, "svc_") {
+		t.Fatalf("other search = %+v, %v", res, err)
+	}
+	res, err = other.CallTool(ctx, mcp.CatalogCallTool, json.RawMessage(`{"name":"svc_get","arguments":{"id":"1"}}`))
+	if err != nil || !res.IsError || !strings.Contains(res.Content[0].Text, "unknown tool") {
+		t.Fatalf("other call = %+v, %v", res, err)
+	}
+
+	// 计费：成功 4 次（svc_get ×3 含命令行、svc_judge ×1）；搜索、查看与失败调用不计费
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var usage struct {
+			Items []struct {
+				Requests int64 `json:"requests"`
+			} `json:"items"`
+		}
+		doJSON(t, "GET", adminURL+"/usage?client=tool-user", g.adminToken, nil, &usage)
+		var n int64
+		for _, it := range usage.Items {
+			n += it.Requests
+		}
+		if n == 4 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("billed requests = %d (%+v), want 4", n, usage.Items)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if log := g.stderr.String(); strings.Contains(log, "tool-secret-") || strings.Contains(log, "hello-arg") || strings.Contains(log, "inventory") {
+		t.Errorf("log leaks secrets or arguments:\n%s", log)
+	}
+}
+
+// CFG-18：非 rest 池上的服务声明接口 → 拒绝启动
+func TestRestToolDefsRejectNonRestPool(t *testing.T) {
+	cfg := &config.Config{
+		Pools:  []config.PoolConfig{{Name: "tv", Protocol: "tavily"}},
+		Models: []config.ModelConfig{{Name: "s", Pool: "tv", Tools: []config.ToolConfig{{Name: "x", Method: "GET", Path: "/"}}}},
+	}
+	if _, err := restToolDefs(cfg); err == nil || !strings.Contains(err.Error(), "does not support declared tools") {
+		t.Fatalf("restToolDefs = %v", err)
+	}
+}
+
+// CFG-19：置顶的工具必须存在
+func TestNewRegistryRejectsUnknownPinnedTool(t *testing.T) {
+	cfg := &config.Config{MCP: config.MCPConfig{PinnedTools: []string{"no_such_tool"}}}
+	if _, err := newRegistry(cfg, nil); err == nil || !strings.Contains(err.Error(), "pinned_tools") {
+		t.Fatalf("newRegistry = %v", err)
+	}
+	cfg.MCP.PinnedTools = []string{"tavily_search"}
+	if _, err := newRegistry(cfg, nil); err != nil {
+		t.Fatalf("valid pin rejected: %v", err)
 	}
 }

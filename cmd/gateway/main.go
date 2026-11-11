@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
@@ -36,7 +37,7 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		fmt.Fprintln(stdout, version)
 		return 0
 	case "check-config":
-		cfg, code := loadConfig(args[1:], stderr)
+		cfg, _, code := loadConfig(args[1:], stderr)
 		if cfg == nil {
 			return code
 		}
@@ -53,14 +54,18 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		default:
 			return cmdMCP(ctx, getenv, stdin, stdout, stderr)
 		}
+	case "reload":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return cmdReload(ctx, args[1:], getenv, stdout, stderr)
 	case "serve":
-		cfg, code := loadConfig(args[1:], stderr)
+		cfg, path, code := loadConfig(args[1:], stderr)
 		if cfg == nil {
 			return code
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		if err := run(ctx, cfg, runOptions{Stderr: stderr}); err != nil {
+		if err := serveLoop(ctx, cfg, runOptions{Stderr: stderr, ConfigPath: path}); err != nil {
 			fmt.Fprintln(stderr, "gateway:", err)
 			return 1
 		}
@@ -71,19 +76,24 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 	}
 }
 
-func loadConfig(args []string, stderr io.Writer) (*config.Config, int) {
+// loadConfig 解析 --config 并加载配置，返回配置、文件的绝对路径（供重载重新读取，HR-01）与退出码。
+func loadConfig(args []string, stderr io.Writer) (*config.Config, string, int) {
 	fs := flag.NewFlagSet("gateway", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	path := fs.String("config", "gateway.yaml", "path to config file")
 	if err := fs.Parse(args); err != nil {
-		return nil, 2
+		return nil, "", 2
 	}
 	cfg, err := config.Load(*path)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return nil, 1
+		return nil, "", 1
 	}
-	return cfg, 0
+	abs, err := filepath.Abs(*path)
+	if err != nil {
+		abs = *path // 取绝对路径失败时沿用原路径：只影响重载，不影响启动
+	}
+	return cfg, abs, 0
 }
 
 func usage(w io.Writer) {
@@ -95,5 +105,8 @@ func usage(w io.Writer) {
 client commands (talk to a running gateway; env UAIG_URL, UAIG_TOKEN):
   gateway tools [--json]                       list the tools available to this token
   gateway call <tool> [--args JSON|-] [--json] call a tool and print its result
-  gateway mcp                                  run an MCP server on stdio (for Claude Code, Cursor, ...)`)
+  gateway mcp                                  run an MCP server on stdio (for Claude Code, Cursor, ...)
+
+admin commands (env UAIG_ADMIN_URL, UAIG_ADMIN_TOKEN):
+  gateway reload [--dry-run] [--json]          re-read the config file of the running gateway`)
 }

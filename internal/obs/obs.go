@@ -9,18 +9,26 @@ import (
 
 // NewLogger 创建输出 JSON 到 w 的 logger。level 取 debug|info|warn|error，未知值按 info。
 func NewLogger(w io.Writer, level string) *slog.Logger {
-	var lv slog.Level
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: ParseLevel(level)}))
+}
+
+// NewLoggerVar 与 NewLogger 相同，但级别取自 lv：之后调用 lv.Set 即可在运行中改变级别（配置热重载）。
+func NewLoggerVar(w io.Writer, lv *slog.LevelVar) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lv}))
+}
+
+// ParseLevel 把 debug|info|warn|error 转换为 slog.Level（不区分大小写），未知值按 info。
+func ParseLevel(level string) slog.Level {
 	switch strings.ToLower(level) {
 	case "debug":
-		lv = slog.LevelDebug
+		return slog.LevelDebug
 	case "warn":
-		lv = slog.LevelWarn
+		return slog.LevelWarn
 	case "error":
-		lv = slog.LevelError
+		return slog.LevelError
 	default:
-		lv = slog.LevelInfo
+		return slog.LevelInfo
 	}
-	return slog.New(slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lv}))
 }
 
 // Discard 返回丢弃所有输出的 logger，供测试使用。

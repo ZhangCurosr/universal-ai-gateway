@@ -325,6 +325,8 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T49 | 管理 Web UI，M3（[说明](../docs/handoff/T49_admin_web_ui.md)） | — | 是 | `DONE` |
 | T50 | 性能基线与发布工程，M3（[说明](../docs/handoff/T50_perf_and_release.md)） | — | 是（阶段 A 已批准） | `DONE` |
 | T51 | 通用 REST 转发适配器，M3（[说明](../docs/handoff/T51_rest_forwarder.md)） | — | 是 | `DONE` |
+| T54 | rest 接口声明与 MCP 工具目录，M3（[说明](../docs/handoff/T54_rest_mcp_tools.md)） | T51 | 是（已批准） | `DONE` |
+| T55 | 配置热重载，M3（[说明](../docs/handoff/T55_config_reload.md)） | T54 | 是（已批准） | `DONE` |
 
 ---
 

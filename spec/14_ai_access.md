@@ -96,6 +96,23 @@ type ToolSource interface {
 | TL-09 | 端点响应超过 `mcp.max_result_bytes` → `isError: true`（`result exceeds mcp.max_result_bytes`）；计费照常（上游已经产生费用） |
 | TL-10 | `ToolResult` 返回错误 → `isError: true`（`could not parse the service response`），记 `Warn` 日志（不含响应正文） |
 | TL-11 | `content` 中每项按类型输出：`text` → `{"type":"text","text"}`；`image` → `{"type":"image","data","mimeType"}`；`resource` → `{"type":"resource","resource":{"uri","mimeType","text"}}` |
+| TL-12 | `fillPath`：`{name...}` 通配段的值是**已转义的路径**（与 `URL.EscapedPath()` 同一形式）：必须能被 `url.PathUnescape` 解码，且不含 `?`、`#`、空白与控制字符，否则 `-32602`；合法时原样写入，允许为空；内部请求中该名字的 `PathValue` 为解码后的值。`{name}` 的值仍整体 `url.PathEscape` 且不允许为空 |
+
+### 2.5 工具目录（任务卡 T54）
+
+工具数量多时，把全部工具的描述与 Schema 放进 `tools/list` 会长期占用 AI 的上下文。目录模式下只列出三个固定的目录工具（搜索、查看、调用）与置顶工具，AI 按需查找；常驻上下文与工具数量无关。目录在 `internal/mcp` 实现，与协议无关，可见性与 TL-03 / TL-04 相同，目录工具本身不访问上游、不计费。
+
+| 编号 | 规则 |
+|:--|:--|
+| CAT-01 | 目录工具三个：`gateway_search_tools`、`gateway_describe_tool`、`gateway_call_tool`，由 `internal/mcp` 提供，不进入注册表。注册表中出现同名工具 → 网关拒绝启动 |
+| CAT-02 | 生效模式按请求的客户端计算：`direct` → 直接；`catalog` → 目录；`auto` → 该客户端按 TL-03 / TL-04 可见的真实工具数 `<= auto_threshold` 时直接，否则目录。直接模式的 `tools/list` 与现状相同（TL-01 ~ TL-04），不出现目录工具 |
+| CAT-03 | 目录模式的 `tools/list` = 三个目录工具 + `pinned_tools` 中对该客户端可见的工具（按 TL-02 输出），按名称升序。`initialize` 的 `instructions` 在目录模式下追加一句：用 `gateway_search_tools` 查找可用工具，用 `gateway_describe_tool` 查看参数，用 `gateway_call_tool` 调用 |
+| CAT-04 | `gateway_search_tools`，参数 `{query?: string, limit?: integer 1–100（缺省 20）, offset?: integer >= 0（缺省 0）}`，只读。`query` 按空白拆成词，不区分大小写；工具的名称、标题、描述同时包含全部词即为匹配；`query` 为空则全部匹配。范围是该客户端可见的真实工具（不含目录工具），按名称升序后分页。结果文本每个工具一行 `名称 — 描述首行`（首行超过 160 个字符时截断）；`Structured` = `{"tools": [{"name", "title"?, "summary", "read_only"}], "total": 匹配总数, "offset", "has_more"}`。没有匹配时返回空列表，不是错误 |
+| CAT-05 | `gateway_describe_tool`，参数 `{name: string}`，只读。结果文本与 `Structured` 都是该工具按 TL-02 输出的完整对象（含 TL-04 追加的可用服务列表）。工具不存在或对该客户端不可见 → `isError`，文本 `unknown tool <name>; use gateway_search_tools`（与真正不存在时相同，不泄露其他客户端的工具） |
+| CAT-06 | `gateway_call_tool`，参数 `{name: string, arguments?: object}`，**非只读**（`readOnlyHint: false`）。行为与用 `name` 和 `arguments` 调用 `tools/call` 完全相同（TL-06 ~ TL-12）；工具不存在或不可见 → `isError`，文本同 CAT-05；`name` 是目录工具 → `isError`。不嵌套产生新的鉴权、限流或计费 |
+| CAT-07 | 无论哪种模式，`tools/call` 都接受对该客户端可见的真实工具名（隐藏不等于禁用）；也接受目录工具名，但只在目录模式下：直接模式下调用目录工具 → `-32602 unknown tool` |
+| CAT-08 | 目录工具的参数不合法（类型错、`limit` 越界等）→ `isError`，文本说明哪个参数不合法。日志只记目录工具名和目标工具名，不记 `query` 与 `arguments` |
+| CAT-09 | DEPLOYMENT.md 的 MCP 一节说明 `tool_mode` 三种取值、`auto_threshold` 与 `pinned_tools` 的用法、目录模式下 AI 的三步调用过程，以及上下文开销的对比 |
 
 ## 3. 命令行（`cmd/gateway/client_cmds.go`，已提供；依赖 T33 的 `mcp.Client`）
 
@@ -108,6 +125,7 @@ type ToolSource interface {
 | CLI-05 | 连接信息只来自环境变量 `UAIG_URL`（缺省 `http://127.0.0.1:8080`）与 `UAIG_TOKEN`（必填）；**不提供** `--token` 参数（会出现在进程列表与 shell 历史中）。Token 不得出现在任何输出中 |
 | CLI-06 | `gateway tools [--json]`：每行 `名称 + 描述首行`；`--json` 输出完整列表 |
 | CLI-07 | `gateway call <tool> [--args JSON\|-] [--json] [--timeout 10m]`：`--args -` 从 stdin 读参数；输出结果中的文本；`isError` 时退出码 1；参数不是 JSON 对象时退出码 2 |
+| CLI-08 | `gateway tools`：`tools/list` 中含 `gateway_search_tools` 时，改为调用它（`query` 为空，`limit` 100，按 `has_more` 翻页）列出全部真实工具，输出格式同 CLI-06；`--json` 输出 `Structured` 中合并后的 `tools` 列表 |
 
 ## 4. 客户端配置示例（写进 `docs/DEPLOYMENT.md`，T15）
 

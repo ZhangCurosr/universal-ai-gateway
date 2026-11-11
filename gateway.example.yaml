@@ -26,6 +26,9 @@ limits:
 mcp:                                  # /mcp 端点：让 AI 以 MCP 工具的方式调用网关（spec/14）
   disabled: false
   max_result_bytes: 4194304
+  tool_mode: auto                     # auto | direct | catalog：工具多时只列出搜索 / 查看 / 调用三个目录工具
+  auto_threshold: 8                   # auto：客户端可见工具不超过 8 个时直接列出
+  pinned_tools: []                    # 目录模式下仍然直接列出的工具名
 
 ledger:
   flush_interval: 250ms
@@ -134,4 +137,15 @@ models:
 #     pool: rest-weather
 #     price: { requests: "0.001" }      # 通用 REST 统一按次计费（每请求 0.001 美元）
 #     reserve: { requests: 1 }          # 单次请求预留 1 requests
+#     tools:                            # 可选：把接口作为 MCP 工具交给 AI（DEPLOYMENT.md 9.6）
+#       - name: weather_forecast
+#         description: "查询城市未来几天的天气预报"
+#         method: GET
+#         path: /forecast               # 其余参数进查询串：?city=...&days=...
+#         input_schema:
+#           type: object
+#           properties:
+#             city: { type: string, description: "城市名" }
+#             days: { type: integer, description: "天数 1-7" }
+#           required: [city]
 

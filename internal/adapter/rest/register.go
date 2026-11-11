@@ -44,11 +44,30 @@ func Register(r *protocol.Registry) error {
 	return RegisterWithLogger(r, defaultLogger)
 }
 
-// RegisterWithLogger 把本包的入站与出站适配器注册到 r，并为出站适配器注入 log。
+// RegisterWithLogger 把本包的入站与出站适配器注册到 r，并为出站适配器注入 log。没有接口声明。
 func RegisterWithLogger(r *protocol.Registry, log *slog.Logger) error {
+	return RegisterWithOptions(r, Options{Logger: log})
+}
+
+// Options 是 RegisterWithOptions 的参数（RS-40）。
+type Options struct {
+	Logger *slog.Logger // 出站适配器的日志器；nil 时使用 slog.Default
+	Tools  []ToolDef    // 配置声明的接口，作为 MCP 工具提供
+}
+
+// RegisterWithOptions 把本包的入站与出站适配器注册到 r（RS-40）。接口声明不合法时返回错误。
+func RegisterWithOptions(r *protocol.Registry, opts Options) error {
+	in := Ingress{}
+	if len(opts.Tools) > 0 {
+		t, err := newToolTable(opts.Tools)
+		if err != nil {
+			return err
+		}
+		in.tools = t
+	}
 	// RS-01: 注册优先级与 tavily 相同（10），不是 Fallback
-	if err := r.RegisterIngress(Ingress{}, protocol.IngressOptions{Priority: 10}); err != nil {
+	if err := r.RegisterIngress(in, protocol.IngressOptions{Priority: 10}); err != nil {
 		return err
 	}
-	return r.RegisterEgress(NewEgressWithLogger(log))
+	return r.RegisterEgress(NewEgressWithLogger(opts.Logger))
 }

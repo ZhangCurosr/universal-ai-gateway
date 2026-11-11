@@ -68,7 +68,7 @@ type pool struct {
 // Scheduler 管理全部池。并发安全。
 type Scheduler struct {
 	opts     Options
-	pools    map[string]*pool // 构造后只读
+	pools    atomic.Pointer[map[string]*pool] // 整体替换（SetPools，SCH-20）；读取不加锁
 	affinity *affinityCache
 
 	mu   sync.RWMutex
@@ -83,21 +83,54 @@ func New(pools []PoolConfig, opts Options) *Scheduler {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	s := &Scheduler{opts: opts, pools: map[string]*pool{}, affinity: newAffinityCache(opts.AffinityCapacity), byID: map[int64]*Key{}}
+	s := &Scheduler{opts: opts, affinity: newAffinityCache(opts.AffinityCapacity), byID: map[int64]*Key{}}
+	m := make(map[string]*pool, len(pools))
 	for _, pc := range pools {
-		s.pools[pc.Name] = &pool{cfg: pc}
+		m[pc.Name] = &pool{cfg: pc}
 	}
+	s.pools.Store(&m)
 	return s
+}
+
+// SetPools 用 pools 替换全部池（SCH-20，配置热重载）：新池加入；已有池更新参数并保留其 Key 与运行时状态；
+// 不在 pools 中的池停止调度，其 Key 从调度器移除。已发出的租约按发出时的池参数结束。
+func (s *Scheduler) SetPools(pools []PoolConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := *s.pools.Load()
+	next := make(map[string]*pool, len(pools))
+	for _, pc := range pools {
+		np := &pool{cfg: pc}
+		if op, ok := old[pc.Name]; ok {
+			op.mu.Lock()
+			np.keys = op.keys
+			op.mu.Unlock()
+			np.cursor.Store(op.cursor.Load())
+			for _, k := range np.keys {
+				k.breaker.configure(pc.Breaker)
+			}
+		}
+		next[pc.Name] = np
+	}
+	byID := make(map[int64]*Key, len(s.byID))
+	for id, k := range s.byID {
+		if _, ok := next[k.Pool]; ok {
+			byID[id] = k
+		}
+	}
+	s.byID = byID
+	s.pools.Store(&next)
 }
 
 // SetKeys 用 keys 替换全部 Key，同 ID 的处理规则见 SCH-16。Pool 不存在的 Key 被忽略并记录 Warn。
 func (s *Scheduler) SetKeys(keys []*Key) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	pools := *s.pools.Load()
 	byID := make(map[int64]*Key, len(keys))
 	perPool := map[string][]*Key{}
 	for _, k := range keys {
-		p, ok := s.pools[k.Pool]
+		p, ok := pools[k.Pool]
 		if !ok {
 			s.opts.Logger.Warn("scheduler: key references unknown pool; ignored", "key_id", k.ID, "pool", k.Pool)
 			continue
@@ -115,7 +148,7 @@ func (s *Scheduler) SetKeys(keys []*Key) {
 		byID[k.ID] = k
 		perPool[k.Pool] = append(perPool[k.Pool], k)
 	}
-	for name, p := range s.pools {
+	for name, p := range pools {
 		ks := perPool[name]
 		sort.Slice(ks, func(i, j int) bool { return ks[i].ID < ks[j].ID })
 		p.mu.Lock()
@@ -144,7 +177,7 @@ func usable(k *Key, now time.Time, exclude []int64) bool {
 
 // Acquire 按 spec/07 §3 选择一个 Key。无可用 Key 返回 CodeUpstreamUnavailable（§3.1）。
 func (s *Scheduler) Acquire(req AcquireRequest) (*Lease, error) {
-	p, ok := s.pools[req.Pool]
+	p, ok := (*s.pools.Load())[req.Pool]
 	if !ok {
 		return nil, apperr.New(apperr.CodeUpstreamUnavailable, "unknown pool "+req.Pool)
 	}

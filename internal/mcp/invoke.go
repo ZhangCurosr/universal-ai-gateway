@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"sort"
@@ -190,12 +191,35 @@ func newInternalRequest(outer *http.Request, rt protocol.Route, tr *protocol.Too
 		req.Header.Set("Content-Type", "application/json")
 	}
 	for k, v := range tr.PathValues {
+		if strings.Contains(rt.Path, "{"+k+"...}") {
+			// TL-12：通配段的值是已转义的路径，PathValue 与 ServeMux 一致取解码后的值（fillPath 已校验可解码）
+			if dec, err := url.PathUnescape(v); err == nil {
+				v = dec
+			}
+		}
 		req.SetPathValue(k, v)
 	}
 	return req, nil
 }
 
-// fillPath 把 ServeMux 模式中的 {name} 与 {name...} 替换为 values 中的值（已转义）。缺少值时返回错误。
+// checkEscapedPath 校验 {name...} 的值是合法的已转义路径（TL-12）：可被 url.PathUnescape 解码，
+// 且不含 ?、#、空白与控制字符。
+func checkEscapedPath(v string) error {
+	for _, c := range v {
+		if c == '?' || c == '#' || c <= ' ' || c == 0x7f {
+			return errInvalidEscapedPath
+		}
+	}
+	if _, err := url.PathUnescape(v); err != nil {
+		return errInvalidEscapedPath
+	}
+	return nil
+}
+
+var errInvalidEscapedPath = errors.New("invalid escaped path")
+
+// fillPath 把 ServeMux 模式中的 {name} 与 {name...} 替换为 values 中的值（TL-12）。
+// {name} 的值整体转义，不允许为空；{name...} 的值是已转义的路径，校验后原样写入，允许为空。
 func fillPath(pattern string, values map[string]string) (string, error) {
 	var b strings.Builder
 	for {
@@ -208,13 +232,21 @@ func fillPath(pattern string, values map[string]string) (string, error) {
 		if j < 0 {
 			return "", &Error{Code: CodeInternalError, Message: "malformed route pattern"}
 		}
-		name := strings.TrimSuffix(pattern[i+1:i+j], "...")
+		raw := pattern[i+1 : i+j]
+		name := strings.TrimSuffix(raw, "...")
 		v, ok := values[name]
-		if !ok || v == "" {
-			return "", &Error{Code: CodeInvalidParams, Message: "missing path parameter " + name}
-		}
 		b.WriteString(pattern[:i])
-		b.WriteString(url.PathEscape(v))
+		if name != raw { // {name...}
+			if err := checkEscapedPath(v); err != nil {
+				return "", &Error{Code: CodeInvalidParams, Message: "invalid path parameter " + name}
+			}
+			b.WriteString(v)
+		} else {
+			if !ok || v == "" {
+				return "", &Error{Code: CodeInvalidParams, Message: "missing path parameter " + name}
+			}
+			b.WriteString(url.PathEscape(v))
+		}
 		pattern = pattern[i+j+1:]
 	}
 }

@@ -30,6 +30,12 @@ type Deps struct {
 	MaxResultBytes int64 // 单次工具调用的端点响应上限（config mcp.max_result_bytes）
 	Version        string
 	Logger         *slog.Logger
+	// ToolMode 是工具列表模式（CAT-02）：ToolModeAuto | ToolModeDirect | ToolModeCatalog；空串 = direct。
+	ToolMode string
+	// AutoThreshold：auto 模式下客户端可见工具数不超过它时直接列出；<= 0 时取 8。
+	AutoThreshold int
+	// PinnedTools 是目录模式下仍然直接列出的工具名（CAT-03）。
+	PinnedTools []string
 }
 
 // Server 是 MCP 服务端（Streamable HTTP 传输，无状态：不签发 Mcp-Session-Id）。并发安全。
@@ -37,6 +43,7 @@ type Deps struct {
 type Server struct {
 	d        Deps
 	handlers map[handlerKey]http.Handler // (协议, Op) → core.Handler，构造后只读
+	pinned   map[string]bool             // Deps.PinnedTools，构造后只读
 }
 
 type handlerKey struct {
@@ -46,7 +53,10 @@ type handlerKey struct {
 
 // New 创建服务端，并为每个工具所属入站适配器的每个调用端点预先创建内核处理器。
 func New(d Deps) *Server {
-	s := &Server{d: d, handlers: map[handlerKey]http.Handler{}}
+	s := &Server{d: d, handlers: map[handlerKey]http.Handler{}, pinned: map[string]bool{}}
+	for _, name := range d.PinnedTools {
+		s.pinned[name] = true
+	}
 	for _, t := range d.Registry.Tools() {
 		for _, rt := range t.Ingress.Routes() {
 			k := handlerKey{t.Ingress.Protocol(), rt.Op}
@@ -169,6 +179,11 @@ func (s *Server) dispatch(r *http.Request, req *Request) *Response {
 				break
 			}
 		}
+		instructions := "These tools are proxied by universal-ai-gateway. Tool calls are subject to metering and billing."
+		principal, _ := auth.PrincipalFrom(r.Context())
+		if _, catalog := s.visibleTools(principal); catalog {
+			instructions += catalogInstructions // CAT-03
+		}
 		res := map[string]any{
 			"protocolVersion": version,
 			"capabilities": map[string]any{
@@ -180,7 +195,7 @@ func (s *Server) dispatch(r *http.Request, req *Request) *Response {
 				"name":    "universal-ai-gateway",
 				"version": s.d.Version,
 			},
-			"instructions": "These tools are proxied by universal-ai-gateway. Tool calls are subject to metering and billing.",
+			"instructions": instructions,
 		}
 		return ResultResponse(req.ID, res)
 
@@ -189,7 +204,7 @@ func (s *Server) dispatch(r *http.Request, req *Request) *Response {
 
 	case "tools/list":
 		principal, _ := auth.PrincipalFrom(r.Context())
-		tools := s.listTools(principal)
+		tools := s.toolsListResult(principal)
 		return ResultResponse(req.ID, map[string]any{
 			"tools": tools,
 		})
@@ -210,47 +225,61 @@ func (s *Server) dispatch(r *http.Request, req *Request) *Response {
 		if len(p.Arguments) == 0 {
 			p.Arguments = json.RawMessage("{}")
 		}
+		if IsCatalogTool(p.Name) {
+			// CAT-07：目录工具只在目录模式下可用
+			principal, _ := auth.PrincipalFrom(r.Context())
+			visible, catalog := s.visibleTools(principal)
+			if !catalog {
+				return ErrorResponse(req.ID, CodeInvalidParams, "unknown tool")
+			}
+			return ResultResponse(req.ID, s.callCatalogTool(r, p.Name, p.Arguments, visible))
+		}
 		res, rpcErr := s.callTool(r, p.Name, p.Arguments)
 		if rpcErr != nil {
 			return ErrorResponse(req.ID, rpcErr.Code, rpcErr.Message)
 		}
-		content := make([]map[string]any, 0, len(res.Content))
-		for _, c := range res.Content {
-			switch c.Type {
-			case "image":
-				content = append(content, map[string]any{
-					"type":     "image",
-					"data":     c.Data,
-					"mimeType": c.MIMEType,
-				})
-			case "resource":
-				content = append(content, map[string]any{
-					"type": "resource",
-					"resource": map[string]any{
-						"uri":      c.URI,
-						"mimeType": c.MIMEType,
-						"text":     c.Text,
-					},
-				})
-			default:
-				content = append(content, map[string]any{
-					"type": "text",
-					"text": c.Text,
-				})
-			}
-		}
-		result := map[string]any{
-			"content": content,
-			"isError": res.IsError,
-		}
-		if len(res.Structured) > 0 && json.Valid(res.Structured) {
-			result["structuredContent"] = res.Structured
-		}
-		return ResultResponse(req.ID, result)
+		return ResultResponse(req.ID, toolResultObject(res))
 
 	default:
 		return ErrorResponse(req.ID, CodeMethodNotFound, "method not found")
 	}
+}
+
+// toolResultObject 把工具结果转换为 MCP CallToolResult 对象（TL-11）。
+func toolResultObject(res *protocol.ToolResult) map[string]any {
+	content := make([]map[string]any, 0, len(res.Content))
+	for _, c := range res.Content {
+		switch c.Type {
+		case "image":
+			content = append(content, map[string]any{
+				"type":     "image",
+				"data":     c.Data,
+				"mimeType": c.MIMEType,
+			})
+		case "resource":
+			content = append(content, map[string]any{
+				"type": "resource",
+				"resource": map[string]any{
+					"uri":      c.URI,
+					"mimeType": c.MIMEType,
+					"text":     c.Text,
+				},
+			})
+		default:
+			content = append(content, map[string]any{
+				"type": "text",
+				"text": c.Text,
+			})
+		}
+	}
+	result := map[string]any{
+		"content": content,
+		"isError": res.IsError,
+	}
+	if len(res.Structured) > 0 && json.Valid(res.Structured) {
+		result["structuredContent"] = res.Structured
+	}
+	return result
 }
 
 // WriteHTTPError 是 /mcp 端点中间件使用的错误格式（spec/14 SRV-M08）：

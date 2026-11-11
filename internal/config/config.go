@@ -1,7 +1,11 @@
 // Package config 定义网关配置结构、默认值、加载与校验（spec/03）。
 package config
 
-import "time"
+import (
+	"encoding/json"
+	"strings"
+	"time"
+)
 
 // Config 是配置文件的根结构。
 type Config struct {
@@ -50,7 +54,20 @@ type LimitsConfig struct {
 type MCPConfig struct {
 	Disabled       bool  `yaml:"disabled"`         // true = 不挂载 /mcp
 	MaxResultBytes int64 `yaml:"max_result_bytes"` // 单次工具调用的端点响应上限
+	// ToolMode 是工具列表的模式（CFG-19，spec/14 §2.5）：auto | direct | catalog。
+	ToolMode string `yaml:"tool_mode"`
+	// AutoThreshold：auto 模式下，客户端可见的工具数不超过它时直接列出，否则使用目录。
+	AutoThreshold int `yaml:"auto_threshold"`
+	// PinnedTools 是目录模式下仍然直接列出的工具名。
+	PinnedTools []string `yaml:"pinned_tools"`
 }
+
+// 工具列表模式（CFG-19）。
+const (
+	ToolModeAuto    = "auto"
+	ToolModeDirect  = "direct"
+	ToolModeCatalog = "catalog"
+)
 
 type LedgerConfig struct {
 	FlushInterval          time.Duration `yaml:"flush_interval"`
@@ -121,6 +138,44 @@ type ModelConfig struct {
 	Price map[string]string `yaml:"price"`
 	// Reserve 是预留用量的上限兼默认值：计量单位 → 数量（spec/06 PRC-03），如 {output_tokens: 8192}。
 	Reserve map[string]int64 `yaml:"reserve"`
+	// Tools 是该服务声明的接口，作为工具交给 MCP 与命令行（CFG-17、CFG-18，spec/08 §8.3.5）。
+	Tools []ToolConfig `yaml:"tools"`
+}
+
+// ToolConfig 是一个接口声明（CFG-17）。配置包只做与协议无关的校验；
+// 服务所在池的协议是否支持接口声明由装配代码检查（CFG-18）。
+type ToolConfig struct {
+	Name        string `yaml:"name"`
+	Title       string `yaml:"title"`
+	Description string `yaml:"description"`
+	Method      string `yaml:"method"` // Normalize 后为大写
+	Path        string `yaml:"path"`   // 以 / 开头，相对于池的 base_url；可含 {name} 占位符
+	// InputSchema 是参数的 JSON Schema（YAML 映射）；为 nil 时使用 DefaultToolSchema。
+	InputSchema map[string]any `yaml:"input_schema"`
+	// Idempotent 只用于 POST / PATCH：true 表示无副作用，失败可换 Key 重试。
+	Idempotent bool `yaml:"idempotent"`
+	// ReadOnly 为 nil 时：GET 为 true，其他方法为 false（见 IsReadOnly）。
+	ReadOnly *bool `yaml:"read_only"`
+}
+
+// DefaultToolSchema 是未声明 input_schema 时的参数 Schema（CFG-17）。
+const DefaultToolSchema = `{"type":"object","properties":{},"additionalProperties":false}`
+
+// IsReadOnly 返回接口是否只读：显式配置优先，否则 GET 为 true（CFG-17）。
+func (t ToolConfig) IsReadOnly() bool {
+	if t.ReadOnly != nil {
+		return *t.ReadOnly
+	}
+	return t.Method == "GET"
+}
+
+// SchemaJSON 返回 input_schema 编码成的 JSON；未声明时返回 DefaultToolSchema。
+// YAML 映射中出现非字符串键时返回错误（Validate 已检查，正常不会发生）。
+func (t ToolConfig) SchemaJSON() ([]byte, error) {
+	if t.InputSchema == nil {
+		return []byte(DefaultToolSchema), nil
+	}
+	return json.Marshal(t.InputSchema)
 }
 
 // Default 返回全部顶层默认值（spec/03 §3）。池级默认值由 Normalize 填充。
@@ -150,7 +205,7 @@ func Default() Config {
 			EventQueueCapacity:     4096,
 			AdmissionHighWatermark: 0.9,
 		},
-		MCP: MCPConfig{MaxResultBytes: 4 << 20},
+		MCP: MCPConfig{MaxResultBytes: 4 << 20, ToolMode: ToolModeAuto, AutoThreshold: 8},
 		Audit: AuditConfig{
 			QueueCapacity: 8192,
 			BatchSize:     256,
@@ -187,6 +242,10 @@ func (c *Config) Normalize() {
 	}
 	for i := range c.Models {
 		setDefault(&c.Models[i].UpstreamModel, c.Models[i].Name)
+		for j := range c.Models[i].Tools {
+			t := &c.Models[i].Tools[j]
+			t.Method = strings.ToUpper(t.Method)
+		}
 	}
 }
 

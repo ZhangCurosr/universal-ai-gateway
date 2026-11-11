@@ -137,3 +137,138 @@ func TestAdminHostsValid(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
+
+// toolsYAML 是带接口声明的配置（CFG-17）；%s 处插入工具列表。
+const toolsYAML = `
+server:
+  data_dir: "./data"
+  master_key_file: "./secrets/master.key"
+pools:
+  - name: rp
+    protocol: rest
+    base_url: "https://api.example.com"
+models:
+  - name: svc
+    pool: rp
+    price: { requests: "0.001" }
+    tools:
+%s
+`
+
+const goodTool = `      - name: svc_get
+        description: "get an item"
+        method: get
+        path: /items/{id}
+        input_schema:
+          type: object
+          properties:
+            id: { type: string }
+          required: [id]
+`
+
+func toolCfg(tools string) string { return strings.Replace(toolsYAML, "%s", tools, 1) }
+
+func TestToolConfigDefaults(t *testing.T) {
+	cfg, err := Parse([]byte(toolCfg(goodTool + `      - name: svc_post
+        description: "create"
+        method: POST
+        path: /items
+`)))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	tools := cfg.Models[0].Tools
+	if tools[0].Method != "GET" || !tools[0].IsReadOnly() {
+		t.Errorf("tool 0: method %q read_only %v, want GET true", tools[0].Method, tools[0].IsReadOnly())
+	}
+	if tools[1].IsReadOnly() {
+		t.Error("POST tool must default to read_only false")
+	}
+	if b, err := tools[1].SchemaJSON(); err != nil || string(b) != DefaultToolSchema {
+		t.Errorf("default schema = %s, %v", b, err)
+	}
+	b, err := tools[0].SchemaJSON()
+	if err != nil || !strings.Contains(string(b), `"required":["id"]`) {
+		t.Errorf("schema JSON = %s, %v", b, err)
+	}
+	if cfg.MCP.ToolMode != ToolModeAuto || cfg.MCP.AutoThreshold != 8 {
+		t.Errorf("mcp defaults = %q / %d", cfg.MCP.ToolMode, cfg.MCP.AutoThreshold)
+	}
+}
+
+func TestToolConfigReadOnlyExplicit(t *testing.T) {
+	cfg, err := Parse([]byte(toolCfg(`      - name: svc_q
+        description: "query"
+        method: POST
+        path: /q
+        idempotent: true
+        read_only: true
+`)))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if tool := cfg.Models[0].Tools[0]; !tool.IsReadOnly() || !tool.Idempotent {
+		t.Errorf("tool = %+v", tool)
+	}
+}
+
+func TestToolConfigRejects(t *testing.T) {
+	base := func(name, method, path, extra string) string {
+		return "      - name: " + name + "\n        description: \"d\"\n        method: " + method + "\n        path: \"" + path + "\"\n" + extra
+	}
+	schemaID := "        input_schema:\n          type: object\n          properties: { id: { type: string } }\n          required: [id]\n"
+	tests := []struct {
+		name, tools, want string
+	}{
+		{"bad name", base("bad name", "GET", "/x", ""), "tools[0].name"},
+		{"duplicate", base("a", "GET", "/x", "") + base("a", "GET", "/y", ""), "duplicate"},
+		{"empty description", "      - name: a\n        description: \" \"\n        method: GET\n        path: /x\n", "description"},
+		{"bad method", base("a", "OPTIONS", "/x", ""), "method"},
+		{"no leading slash", base("a", "GET", "x", ""), "path"},
+		{"query", base("a", "GET", "/x?y=1", ""), "path"},
+		{"fragment", base("a", "GET", "/x#y", ""), "path"},
+		{"space", base("a", "GET", "/x y", ""), "path"},
+		{"dot dot", base("a", "GET", "/a/../b", ""), "path"},
+		{"encoded dot dot", base("a", "GET", "/a/%2e%2e/b", ""), "path"},
+		{"bad escape", base("a", "GET", "/a%zz", ""), "path"},
+		{"wildcard placeholder", base("a", "GET", "/a/{id...}", schemaID), "path"},
+		{"unbalanced", base("a", "GET", "/a/{id", ""), "path"},
+		{"repeated placeholder", base("a", "GET", "/{id}/{id}", schemaID), "path"},
+		{"placeholder without schema", base("a", "GET", "/a/{id}", ""), "input_schema"},
+		{"placeholder not in properties", base("a", "GET", "/a/{id}", "        input_schema:\n          type: object\n          required: [id]\n"), "properties"},
+		{"placeholder not required", base("a", "GET", "/a/{id}", "        input_schema:\n          type: object\n          properties: { id: { type: string } }\n"), "required"},
+		{"schema not object", base("a", "GET", "/x", "        input_schema:\n          type: array\n"), "input_schema.type"},
+		{"non-string schema key", base("a", "GET", "/x", "        input_schema:\n          type: object\n          properties:\n            ? [a, b]\n            : { type: string }\n"), "invalid map key"}, // yaml.v3 在解析阶段就拒绝非标量键
+		{"idempotent GET", base("a", "GET", "/x", "        idempotent: true\n"), "idempotent"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(toolCfg(tt.tools)))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Parse() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestMCPToolModeValidation(t *testing.T) {
+	for _, extra := range []string{"\nmcp:\n  tool_mode: lazy\n", "\nmcp:\n  auto_threshold: 0\n"} {
+		if _, err := Parse([]byte(minimalYAML + extra)); err == nil {
+			t.Errorf("accepted %q", extra)
+		}
+	}
+	cfg, err := Parse([]byte(minimalYAML + "\nmcp:\n  tool_mode: catalog\n  pinned_tools: [a, b]\n"))
+	if err != nil || cfg.MCP.ToolMode != ToolModeCatalog || len(cfg.MCP.PinnedTools) != 2 {
+		t.Fatalf("Parse() = %+v, %v", cfg, err)
+	}
+}
+
+func TestToolPathPlaceholders(t *testing.T) {
+	names, err := ToolPathPlaceholders("/repos/{owner}/{repo}/files/{id}.json")
+	if err != nil || strings.Join(names, ",") != "owner,repo,id" {
+		t.Fatalf("names = %v, %v", names, err)
+	}
+	if names, err := ToolPathPlaceholders("/"); err != nil || len(names) != 0 {
+		t.Fatalf("root: %v, %v", names, err)
+	}
+}

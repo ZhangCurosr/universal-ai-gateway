@@ -70,6 +70,44 @@ func TestFillPath(t *testing.T) {
 	}
 }
 
+// TL-12：{name...} 的值是已转义的路径，原样写入，允许为空。
+func TestFillPathWildcard(t *testing.T) {
+	ok := []struct{ in, want string }{
+		{"repos/a/b", "/rest/s/repos/a/b"},
+		{"a%2Fb/c%20d", "/rest/s/a%2Fb/c%20d"},
+		{"", "/rest/s/"},
+	}
+	for _, tt := range ok {
+		got, err := fillPath("/rest/{service}/{path...}", map[string]string{"service": "s", "path": tt.in})
+		if err != nil || got != tt.want {
+			t.Errorf("fillPath(path=%q) = %q, %v; want %q", tt.in, got, err, tt.want)
+		}
+	}
+	if got, err := fillPath("/rest/{service}/{path...}", map[string]string{"service": "s"}); err != nil || got != "/rest/s/" {
+		t.Errorf("fillPath(path missing) = %q, %v", got, err)
+	}
+	for _, bad := range []string{"a?b", "a#b", "a b", "a\tb", "a%zz", "a%2"} {
+		if _, err := fillPath("/rest/{service}/{path...}", map[string]string{"service": "s", "path": bad}); err == nil {
+			t.Errorf("fillPath(path=%q) accepted", bad)
+		}
+	}
+}
+
+func TestNewInternalRequestWildcardPathValue(t *testing.T) {
+	outer := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	rt := protocol.Route{Method: http.MethodGet, Path: "/rest/{service}/{path...}"}
+	req, err := newInternalRequest(outer, rt, &protocol.ToolRequest{PathValues: map[string]string{"service": "s", "path": "a%2Fb/c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.EscapedPath(); got != "/rest/s/a%2Fb/c" {
+		t.Errorf("EscapedPath = %q", got)
+	}
+	if got := req.PathValue("path"); got != "a/b/c" {
+		t.Errorf("PathValue(path) = %q", got)
+	}
+}
+
 func TestBufferedWriter(t *testing.T) {
 	b := newBufferedWriter(5)
 	b.Header().Set("Content-Type", "text/plain")

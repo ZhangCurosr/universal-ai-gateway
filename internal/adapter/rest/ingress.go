@@ -12,10 +12,15 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/sse"
 )
 
-// Ingress 是通用 REST 入站适配器（客户端 → 网关）。零值可用。
-type Ingress struct{}
+// Ingress 是通用 REST 入站适配器（客户端 → 网关）。零值可用（没有接口声明）。
+type Ingress struct {
+	tools *toolTable // 配置声明的接口（RS-40）；构造后只读，nil = 没有工具
+}
 
-var _ protocol.Ingress = Ingress{}
+var (
+	_ protocol.Ingress    = Ingress{}
+	_ protocol.ToolSource = Ingress{}
+)
 
 // Protocol 返回 Protocol。
 func (Ingress) Protocol() protocol.Protocol { return Protocol }

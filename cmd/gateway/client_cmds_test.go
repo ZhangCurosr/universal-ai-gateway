@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -365,5 +366,84 @@ func TestCmdMCP(t *testing.T) {
 	}
 	if !strings.Contains(lines[1], "echo: stdio test") {
 		t.Errorf("line 1 not tools/call: %s", lines[1])
+	}
+}
+
+// newFakeCatalogGateway 模拟目录模式的网关：tools/list 只有目录工具，gateway_search_tools 分页返回 150 个工具。
+func newFakeCatalogGateway(t *testing.T, calls *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					Limit, Offset int
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var result any
+		switch req.Method {
+		case "notifications/initialized":
+			w.WriteHeader(http.StatusAccepted)
+			return
+		case "initialize":
+			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}}
+		case "tools/list":
+			result = map[string]any{"tools": []map[string]any{
+				{"name": mcp.CatalogCallTool, "description": "c", "inputSchema": map[string]any{"type": "object"}},
+				{"name": mcp.CatalogDescribeTool, "description": "d", "inputSchema": map[string]any{"type": "object"}},
+				{"name": mcp.CatalogSearchTool, "description": "s", "inputSchema": map[string]any{"type": "object"}},
+			}}
+		case "tools/call":
+			*calls = append(*calls, fmt.Sprintf("%s limit=%d offset=%d", req.Params.Name, req.Params.Arguments.Limit, req.Params.Arguments.Offset))
+			const total = 150
+			var items []map[string]any
+			for i := req.Params.Arguments.Offset; i < total && len(items) < req.Params.Arguments.Limit; i++ {
+				items = append(items, map[string]any{"name": fmt.Sprintf("tool_%03d", i), "summary": fmt.Sprintf("summary %d", i), "read_only": true})
+			}
+			off := req.Params.Arguments.Offset
+			sc, _ := json.Marshal(map[string]any{"tools": items, "total": total, "offset": off, "has_more": off+len(items) < total})
+			result = map[string]any{"content": []map[string]any{{"type": "text", "text": "..."}}, "structuredContent": json.RawMessage(sc), "isError": false}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+}
+
+// CLI-08：目录模式下 gateway tools 翻页列出全部真实工具
+func TestCmdToolsCatalog(t *testing.T) {
+	var calls []string
+	gw := newFakeCatalogGateway(t, &calls)
+	defer gw.Close()
+	env := testEnv(gw.URL, "test-client-token")
+
+	var out, errb bytes.Buffer
+	if code := realMainIO([]string{"tools"}, strings.NewReader(""), &out, &errb, env); code != 0 {
+		t.Fatalf("code = %d, stderr = %s", code, errb.String())
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 150 || !strings.HasPrefix(lines[0], "tool_000") || !strings.Contains(lines[149], "summary 149") {
+		t.Fatalf("got %d lines; first %q", len(lines), lines[0])
+	}
+	if strings.Join(calls, ";") != "gateway_search_tools limit=100 offset=0;gateway_search_tools limit=100 offset=100" {
+		t.Errorf("calls = %v", calls)
+	}
+
+	out.Reset()
+	if code := realMainIO([]string{"tools", "--json"}, strings.NewReader(""), &out, &errb, env); code != 0 {
+		t.Fatalf("--json code = %d", code)
+	}
+	var tools []struct {
+		Name     string `json:"name"`
+		ReadOnly bool   `json:"read_only"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &tools); err != nil || len(tools) != 150 || !tools[0].ReadOnly {
+		t.Fatalf("--json = %d tools, %v", len(tools), err)
 	}
 }

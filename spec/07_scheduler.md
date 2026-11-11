@@ -72,6 +72,7 @@ Key 在时刻 `now` 可被选中，当且仅当以下**全部**成立：
 | SCH-17 | `Strict == true`：亲和缓存未命中（或已过期）→ `CodeNotFound`（消息 `unknown or expired task; resubmit`）；命中但该 Key 不在候选集 C 中或 `tryAcquire` 失败 → `CodeUpstreamUnavailable`（带 §3.1 的 Retry-After）。**绝不**回落到其他 Key。严格模式不刷新 TTL |
 | SCH-18 | `Lease.Pin(key, ttl)`：把 `key` 绑定到本 Lease 的 Key，TTL 为 `ttl`（池的 `pin_ttl`）；与普通亲和共用同一个缓存。缓存满时 LRU 淘汰可能淘汰固定条目——这是已知限制，写进部署文档（固定条目数 ≈ 并发未完成任务数，远小于默认容量 65536） |
 | SCH-19 | `PinnedPool(key)`：亲和缓存命中且未过期、且该 Key 仍存在时返回其池名；不刷新 TTL。供内核为不带服务名的严格亲和请求确定路由（CORE-11） |
+| SCH-20 | `SetPools(pools)`：新池加入；已有池更新参数，Key 及其运行时状态保留（熔断参数按新配置重新设置），已发出的租约按发出时的池参数结束；不在 `pools` 中的池停止调度，`Acquire` 视为不存在，其中的 Key 从调度器移除（`KeyStatus` 不再包含）。并发安全，与 `Acquire`、`Lease.Finish`、`SetKeys` 可以同时调用；`Acquire` 不加全局锁。 |
 | SCH-16 | `SetKeys` 对同 ID 的 Key：若 `Pool/Name/Secret/Weight/MaxInFlight` 全部不变，**继续使用旧的 `*Key` 对象**，只更新持久化状态；若有任一改变，使用新对象，并从旧对象复制 `cooldownUntil` 与 `authFailures`，熔断器重新从 closed 开始，`inFlight` 从 0 开始（旧租约在旧对象上结束，过渡期内并发可能短暂超过上限，这是可接受的）。导出字段在对象被放入池后永不修改，因此读取它们不需要加锁 |
 
 ### 3.1 无可用 Key

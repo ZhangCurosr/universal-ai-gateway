@@ -410,6 +410,19 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | RS-30 | DEPLOYMENT.md「接入任意 REST API」一节开头用醒目的提示框写明：Key 的全部权限都暴露给被允许访问该服务的客户端，只放最小权限的 Key；读写分离用两个服务名 + `allowed_models` |
 | RS-31 | 写明 RS-16 的风险：上游用 403 表示 Key 失效时，Key 不会被自动隔离；看到同一掩码的 Warn 反复出现，就用 `PATCH /admin/api/keys/{id}`、请求体 `{"state":"disabled"}` 停用该 Key（ADM-15） |
 
+#### 8.3.5 接口声明（任务卡 T54）
+
+服务可以在配置中声明接口（`models[].tools`，spec/03 CFG-17）。网关把每个接口作为一个工具交给 MCP 与命令行（spec/14），调用时走与直接请求相同的路由。参数映射：路径中的 `{name}` 从同名参数取值（按单个路径段转义，空串、`.`、`..` 拒绝）并移出参数表；`GET` / `DELETE` 的其余参数放进查询串（标量各一个值、标量数组重复同名参数、`null` 省略、对象或嵌套数组拒绝）；`POST` / `PUT` / `PATCH` 的其余参数原样组成 JSON 请求体（数字保持原文）。`input_schema` 只给 AI 看，网关不按它做完整校验。接口声明**不是**权限边界：被允许访问该服务的客户端仍然可以直接请求 `/rest/{service}/` 下的任意路径（RS-30）。
+
+| 编号 | 规则 |
+|:--|:--|
+| RS-40 | `rest.Options{Logger *slog.Logger; Tools []ToolDef}`；`RegisterWithOptions(r, opts)`。`ToolDef` 是配置中接口声明的适配器侧表示，另含 `Service`（所属 `models[].name`）。`Register`、`RegisterWithLogger` 保留，等价于没有工具。`Ingress` 实现 `protocol.ToolSource`；零值 `Ingress{}` 的 `Tools()` 返回空 |
+| RS-41 | `Tools()`：每个声明生成一个 `protocol.Tool`，`Model` = `Service`，`ReadOnly` 按 CFG-17 的缺省规则，`InputSchema` 为声明的 Schema 编码成的 JSON；按名称升序。工具名与其他适配器冲突时由 `Registry.Seal` 报错，网关拒绝启动（REG-05） |
+| RS-42 | `ToolRequest(name, args)` 按 §2.2 映射。Op：`GET` → `rest.get`，`DELETE` → `rest.delete`，`PUT` → `rest.put`，`POST` → `idempotent` ? `rest.post_idem` : `rest.post`，`PATCH` 同理。`PathValues` = `{"service": Service, "path": 去掉开头 / 并填好占位符（已转义）的路径}`。参数不合法 → `CodeInvalidRequest`，消息指明参数名，如 `argument "owner" must be a string or number` |
+| RS-43 | `ToolResult`：2xx 时，响应体为空 → 文本 `empty response (HTTP <status>)`；`Content-Type` 为 `application/json` 或 `*+json` 且是合法 JSON → 文本为响应体原文，顶层是对象时同时放进 `Structured`；`text/*` → 文本为响应体（必须是合法 UTF-8，否则同下）；没有 `Content-Type` → 按文本处理（不少 API 不设置它），是合法 JSON 对象时同样放进 `Structured`；其他类型 → `IsError`，文本 `binary response (<Content-Type>, <N> bytes) is not supported by tools`，不包含响应内容。非 2xx → `IsError`，文本 `HTTP <status>: ` + 响应体前 2000 字节（在 UTF-8 字符边界截断）。`ToolResult` 不返回 error |
+| RS-44 | 工具调用与直接调用同一路由，鉴权、白名单（TL-03 / TL-06）、计费、选 Key、重试、403 告警全部沿用 T51 规则，本卡不增加特殊路径 |
+| RS-45 | DEPLOYMENT.md §9 新增「把接口暴露给 AI」：配置示例（Bivia 的 POST 接口、带占位符的 GET 接口）、参数映射规则、`idempotent` 与 `read_only` 的含义、二进制响应不支持、修改后需重启；并醒目写明 §2.5：接口声明不是权限边界 |
+
 ## 9. OpenAI Responses API（`openai_responses`，任务卡 T09C）
 
 `internal/adapter/openairesp`。Codex CLI 等新客户端使用的 OpenAI 接口。与 Chat Completions 的关键区别是**有状态**：`store` 缺省为 true，响应保存在上游账号下，之后的 `previous_response_id` 与按 ID 的操作都只能在同一个上游账号上执行——所以本协议依赖任务固定（spec/07 §7.1）。

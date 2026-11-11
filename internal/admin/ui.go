@@ -104,7 +104,7 @@ func (s *server) hostAllowed(hostHeader string) bool {
 	if h, _, err := net.SplitHostPort(hostHeader); err == nil {
 		host = h
 	}
-	return s.hosts[normalizeHost(host)]
+	return s.net.Load().hosts[normalizeHost(host)]
 }
 
 // ConfigView 是 GET /admin/api/config 的响应（spec/09 §6.4）：只含池与模型的名称及归属。
@@ -127,7 +127,7 @@ type ConfigModel struct {
 
 func (s *server) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	out := ConfigView{Pools: []ConfigPool{}, Models: []ConfigModel{}}
-	if c := s.d.Config; c != nil {
+	if c := s.config(); c != nil {
 		for _, p := range c.Pools {
 			out.Pools = append(out.Pools, ConfigPool{Name: p.Name, Protocol: p.Protocol})
 		}
