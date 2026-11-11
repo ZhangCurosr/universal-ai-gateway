@@ -327,6 +327,9 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T51 | 通用 REST 转发适配器，M3（[说明](../docs/handoff/T51_rest_forwarder.md)） | — | 是 | `DONE` |
 | T54 | rest 接口声明与 MCP 工具目录，M3（[说明](../docs/handoff/T54_rest_mcp_tools.md)） | T51 | 是（已批准） | `DONE` |
 | T55 | 配置热重载，M3（[说明](../docs/handoff/T55_config_reload.md)） | T54 | 是（已批准） | `DONE` |
+| T56 | 密钥导入命令与接入 API 的 skill，M3（[说明](../docs/handoff/T56_T58_ai_native_admin.md)） | T55 | 用户已要求 | `DONE` |
+| T57 | Web UI 补齐 T54 / T55，M3（[说明](../docs/handoff/T56_T58_ai_native_admin.md)） | T55 | 用户已要求 | `DONE` |
+| T58 | 管理面 MCP，M3（[说明](../docs/handoff/T56_T58_ai_native_admin.md)） | T55 | 用户已要求 | `DONE` |
 
 ---
 

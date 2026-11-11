@@ -126,6 +126,8 @@ type ToolSource interface {
 | CLI-06 | `gateway tools [--json]`：每行 `名称 + 描述首行`；`--json` 输出完整列表 |
 | CLI-07 | `gateway call <tool> [--args JSON\|-] [--json] [--timeout 10m]`：`--args -` 从 stdin 读参数；输出结果中的文本；`isError` 时退出码 1；参数不是 JSON 对象时退出码 2 |
 | CLI-08 | `gateway tools`：`tools/list` 中含 `gateway_search_tools` 时，改为调用它（`query` 为空，`limit` 100，按 `has_more` 翻页）列出全部真实工具，输出格式同 CLI-06；`--json` 输出 `Structured` 中合并后的 `tools` 列表 |
+| CLI-09 | `gateway keys import --pool P --file F [--format jsonl\|lines] [--field api_key] [--where k=v]... [--secret-prefix S] [--name-prefix N] [--weight W] [--max-in-flight M] [--dry-run]`：连接信息来自 `UAIG_ADMIN_URL`、`UAIG_ADMIN_TOKEN`（同 HR-02）。`jsonl`（缺省）每行一个 JSON 对象，取 `--field` 字段（缺省 `api_key`，必须是非空字符串），`--where` 要求顶层字段的字符串形式等于给定值（可重复，全部满足才导入）；`lines` 每行一个密钥，忽略空行与 `#` 开头的行。密钥前加 `--secret-prefix`（例如 `bearer:`）。名称为 `--name-prefix`（缺省为池名）+ `-` + 三位序号（按导入顺序）。文件上限 16 MiB。逐个 `POST /admin/api/keys`：201 计为导入，409 计为重复，其他错误计为失败并在 stderr 写行号与 HTTP 状态（不写错误体以外的内容）。输出 `imported N, duplicate D, skipped S (filtered or invalid), failed F`；有失败时退出码 1。`--dry-run` 只解析并计数，不调用管理 API。**任何输出都不包含密钥或文件中的其他字段值**。 |
+| CLI-10 | `gateway admin-mcp`：stdio MCP 服务端，桥接到 `<UAIG_ADMIN_URL>/admin/mcp`，Token 取 `UAIG_ADMIN_TOKEN`；行为同 CLI-04。 |
 
 ## 4. 客户端配置示例（写进 `docs/DEPLOYMENT.md`，T15）
 
@@ -168,3 +170,15 @@ gateway call ask_model --args '{"model":"deepseek-chat","input":"用一句话解
 - `/mcp` 与协议端点共用数据面监听地址；对公网开放时必须经过 HTTPS 反向代理（spec/12）。
 - 工具调用是**有费用**的：给 AI 用的 Token 应设置额度（`quota_nano_usd`）与 RPM，并用 `allowed_models` 只开放需要的服务。
 - MCP 规范的 OAuth 授权流程不在 M1 范围内；使用静态 Bearer Token（MCP 规范允许）。
+
+## 6. 管理面 MCP（任务卡 T58）
+
+管理网关本身的 MCP 端点 `POST /admin/mcp`，只监听在管理面（回环地址），需要管理员 Token。只暴露不产生、不接收凭据的操作：新建客户端、轮换 Token、添加 Key 不提供工具（分别用 Web UI 与 `gateway keys import`，后者在本机读取账号文件，密钥不经过 AI）。
+
+| 编号 | 规则 |
+|:--|:--|
+| AM-01 | 传输与方法同 SRV-M02 ~ SRV-M07（版本协商、`MCP-Protocol-Version` 校验、单条 JSON-RPC、不使用 SSE、`Origin` 校验）；`serverInfo.name` 为 `universal-ai-gateway-admin`；`instructions` 说明这些工具管理网关本身、写操作立即生效、新建客户端与添加 Key 请用 Web UI 与 `gateway keys import`。 |
+| AM-02 | 工具（名称 → 管理 API）：`gateway_admin_status` → `GET health`；`gateway_admin_list_clients` → `GET clients`；`gateway_admin_list_keys` → `GET keys`；`gateway_admin_usage {client?, from?, to?}` → `GET usage`；`gateway_admin_config` → `GET config`；`gateway_admin_tools` → `GET tools`；`gateway_admin_reload_records` → `GET reload`；`gateway_admin_update_client {id, name?, quota_unlimited?, quota_nano_usd?, rpm_limit?, allowed_models?, disabled?}` → `PATCH clients/{id}`；`gateway_admin_set_key_state {id, state: ready\|disabled}` → `PATCH keys/{id}`；`gateway_admin_reload {dry_run?}` → `POST reload`。前 7 个 `readOnlyHint: true`，后 3 个 `false`（`set_key_state` 与 `update_client` 另有 `destructiveHint: true`）。 |
+| AM-03 | 不提供新建客户端、轮换 Token、添加 Key 的工具（§2.2）。 |
+| AM-04 | 调用：参数按工具的 Schema 校验类型（不合法 → `isError`）；构造进程内请求，复制外层的 `Authorization`、`RemoteAddr`、`Host`，交给管理面处理器，响应写入上限 1 MiB 的缓冲区。2xx → 文本为响应体（JSON），对象同时放进 `structuredContent`；非 2xx → `isError`，文本 `HTTP <状态>: <响应体>`。重载工具收到 202 时原样返回（进程内重启已开始，用 `gateway_admin_reload_records` 查看结果）。 |
+| AM-05 | 每次 `tools/call` 记 Info 日志 `admin mcp call`：工具名、结果状态码；不记参数与响应。 |

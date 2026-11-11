@@ -53,6 +53,10 @@ type Deps struct {
 	Reload func(ctx context.Context, actor int64, dryRun bool) (status int, body any)
 	// ReloadRecords 返回最近的重载记录（ADM-19）；为 nil 时端点返回 404。
 	ReloadRecords func() any
+	// Tools 返回当前注册表中的工具（ADM-20）；为 nil 时端点返回 404。
+	Tools func() ToolsView
+	// MCP 是管理面 MCP 端点（ADM-21，spec/14 §6），挂在 /admin/mcp，经过管理面的全部中间件；为 nil 时不挂载。
+	MCP http.Handler
 }
 
 // Control 让调用方在运行中替换管理面读取的配置（配置热重载，spec/03 §8）。
@@ -206,6 +210,16 @@ func NewServerWithControl(d Deps) (http.Handler, *Control) {
 	mux.HandleFunc("POST /admin/api/reload", s.handleReload)
 	mux.HandleFunc("GET /admin/api/reload", s.handleReloadRecords)
 
+	// 工具列表（ADM-20）与管理面 MCP（ADM-21）
+	mux.HandleFunc("GET /admin/api/tools", s.handleTools)
+	if d.MCP != nil {
+		mux.Handle("POST /admin/mcp", d.MCP)
+		mux.HandleFunc("/admin/mcp", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Allow", http.MethodPost)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		})
+	}
+
 	// Fallback
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, apperr.New(apperr.CodeNotFound, "route not found"))
@@ -258,6 +272,15 @@ func (s *server) handleReload(w http.ResponseWriter, r *http.Request) {
 	}
 	status, body := s.d.Reload(r.Context(), actor, req.DryRun)
 	writeJSON(w, status, body)
+}
+
+// handleTools 实现 ADM-20。
+func (s *server) handleTools(w http.ResponseWriter, _ *http.Request) {
+	if s.d.Tools == nil {
+		writeError(w, apperr.New(apperr.CodeNotFound, "tool list is not available"))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.d.Tools())
 }
 
 // handleReloadRecords 实现 ADM-19。

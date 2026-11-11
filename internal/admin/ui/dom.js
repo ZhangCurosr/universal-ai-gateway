@@ -43,6 +43,7 @@ const ICONS = {
   alert: ['M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z', 'M12 7v6', 'M12 16.5v.5'],
   warn: ['M12 3l10 18H2z', 'M12 10v5', 'M12 18v.5'],
   refresh: ['M20 11a8 8 0 1 0-2.3 5.7', 'M20 4v7h-7'],
+  config: ['M4 6h10', 'M18 6h2', 'M16 4v4', 'M4 12h4', 'M12 12h8', 'M10 10v4', 'M4 18h12', 'M20 18h0', 'M18 16v4'],
 };
 
 export function icon(name, size = 18) {

@@ -8,12 +8,14 @@ import * as overview from './pages/overview.js';
 import * as clients from './pages/clients.js';
 import * as keys from './pages/keys.js';
 import * as usage from './pages/usage.js';
+import * as config from './pages/config.js';
 
 const PAGES = {
   overview: { mod: overview, label: 'nav.overview', icon: 'overview' },
   clients: { mod: clients, label: 'nav.clients', icon: 'clients' },
   keys: { mod: keys, label: 'nav.keys', icon: 'keys' },
   usage: { mod: usage, label: 'nav.usage', icon: 'usage' },
+  config: { mod: config, label: 'nav.config', icon: 'config' },
 };
 
 const root = document.getElementById('app');
@@ -27,6 +29,7 @@ const ctx = {
     if (!configCache) configCache = await api('GET', '/admin/api/config');
     return configCache;
   },
+  invalidateConfig() { configCache = null; }, // 重载后配置可能已变（UI-31）
   async health() {
     health = await api('GET', '/admin/api/health');
     return health;

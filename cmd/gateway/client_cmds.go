@@ -399,3 +399,22 @@ func printReloadSummary(w io.Writer, r *cliReloadResponse, dryRun bool) {
 		fmt.Fprintln(w, "warning:", warn)
 	}
 }
+
+// cmdAdminMCP 实现 `gateway admin-mcp`（CLI-10）：stdio 上的 MCP 传输，桥接到管理面的 /admin/mcp。
+func cmdAdminMCP(ctx context.Context, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	token := getenv(envAdminToken)
+	if token == "" {
+		fmt.Fprintln(stderr, "gateway: "+envAdminToken+" is required")
+		return 2
+	}
+	base := strings.TrimRight(getenv(envAdminURL), "/")
+	if base == "" {
+		base = "http://127.0.0.1:8081"
+	}
+	c := &mcp.Client{URL: base + "/admin/mcp", Token: token, HTTP: newCLIHTTPClient()}
+	if err := mcp.Bridge(ctx, c, stdin, stdout, stderr); err != nil {
+		fmt.Fprintln(stderr, "gateway:", redactToken(err.Error(), token))
+		return 1
+	}
+	return 0
+}

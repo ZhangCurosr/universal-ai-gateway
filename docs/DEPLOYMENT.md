@@ -342,6 +342,33 @@ mcp:
 - 目录模式下工具只是不列出，仍可用原名直接调用：`gateway call <工具名>` 和已有的客户端配置照常可用；`gateway tools` 会翻页列出全部真实工具。
 - 代价是 AI 调用不常用的工具要多走一两步；最常用的一两个工具放进 `pinned_tools`。
 
+#### 让 AI 管理网关：管理面 MCP
+
+除了使用服务，AI 也可以管理网关本身（查看状态与用量、启用或禁用 Key、调整客户端额度、重载配置）。管理面 MCP 只在管理面（本机回环地址）提供，需要**管理员 Token**：
+
+```bash
+# 远程方式（与网关在同一台机器，或经 SSH 端口转发）
+claude mcp add --transport http uaig-admin http://127.0.0.1:8081/admin/mcp --header "Authorization: Bearer <管理员 Token>"
+```
+
+或者用 stdio 桥接（`UAIG_ADMIN_URL` 缺省 `http://127.0.0.1:8081`）：
+
+```json
+{ "mcpServers": { "uaig-admin": { "command": "gateway", "args": ["admin-mcp"],
+  "env": { "UAIG_ADMIN_URL": "http://127.0.0.1:8081", "UAIG_ADMIN_TOKEN": "<管理员 Token>" } } } }
+```
+
+| 工具 | 作用 | 只读 |
+|:--|:--|:--|
+| `gateway_admin_status` / `_list_clients` / `_list_keys` / `_usage` / `_config` / `_tools` / `_reload_records` | 查看状态、客户端、Key（只有掩码）、用量、配置、AI 工具、重载记录 | 是 |
+| `gateway_admin_update_client` | 修改客户端的额度、速率、允许的服务、禁用 | 否 |
+| `gateway_admin_set_key_state` | 启用或停用一把上游 Key | 否 |
+| `gateway_admin_reload` | 重载配置文件（建议先 `dry_run`） | 否 |
+
+**有意不提供**新建客户端、轮换 Token、添加 Key：这些操作会把凭据交给 AI。新建客户端请用管理页面；添加 Key 用下面的 `gateway keys import`，密钥在本机读取，不经过 AI。
+
+> 管理员 Token 有完整的管理权限。只把管理面 MCP 配给你信任的本机 AI 客户端，不要把管理面暴露到局域网或公网。
+
 ### 6.3 作为命令行（CLI）
 
 网关内置命令行子命令（`gateway tools` 与 `gateway call`），方便脚本与运维调用。连接信息必须通过环境变量传递（CLI-05），不得使用命令行参数传递 Token：
@@ -449,6 +476,8 @@ http://127.0.0.1:8081/admin/ui/
 - 新建客户端、轮换 Token 后，新 Token **只显示一次**，请当场复制保存。
 - 界面有中文和英文，按浏览器语言自动选择，左下角可以切换。
 
+「配置」页（`#/config`）：修改 `gateway.yaml` 后，在这里先「预览重载」再「应用重载」（§5.1），并查看最近的重载记录、各服务与 AI 工具（含接口声明）。上游 Key 页中，池已从配置中删除的 Key 显示为「孤立」。
+
 ### 8.2 从另一台电脑访问
 
 管理面只监听本机回环地址（CFG-02），**不要**用反向代理把它暴露到局域网或公网。远程管理时用 SSH 端口转发：
@@ -519,6 +548,25 @@ curl -H "Authorization: Bearer <网关客户端Token>" \
 | 直接写 token（无前缀） | 自动视为 `bearer:<token>` | 兼容常见 Bearer 认证 |
 
 格式非法（如 `header:` 缺少冒号或头名非法）时，网关将返回认证失败并自动隔离该 Key（RS-20）。
+
+#### 批量导入 Key（密钥不经过 AI）
+
+有一批账号文件时，用 `gateway keys import` 在本机读取文件并逐个添加。命令的任何输出都不包含密钥或文件中的其他字段（邮箱、密码），所以可以放心地让 AI 代为运行：
+
+```bash
+export UAIG_ADMIN_TOKEN=<管理员 Token>
+# JSONL：每行一个 JSON 对象，取 api_key 字段，只导入 status 为 ok 的行；先 --dry-run 看计数
+gateway keys import --pool bivia-pool --file accounts.jsonl --field api_key --where status=ok   --secret-prefix bearer: --name-prefix bivia --dry-run
+gateway keys import --pool bivia-pool --file accounts.jsonl --field api_key --where status=ok   --secret-prefix bearer: --name-prefix bivia
+# 输出：imported 84, duplicate 0, skipped 2 (filtered or invalid), failed 0
+
+# 纯文本：每行一个密钥，忽略空行与 # 注释
+gateway keys import --pool weather-pool --file keys.txt --format lines --secret-prefix "header:X-Api-Key:"
+```
+
+- Key 的名称是 `--name-prefix` 加三位序号（`bivia-001`、`bivia-002`……），不取自文件（文件里常有个人信息）。
+- 已经存在的 Key（同一密钥）计为 `duplicate`，可以放心重复运行。
+- 被 `--where` 过滤、缺少字段或不是 JSON 的行计为 `skipped`，stderr 中只写行号与原因。
 
 ### 9.3 自定义请求头转发（`X-UAIG-Forward-*`）
 

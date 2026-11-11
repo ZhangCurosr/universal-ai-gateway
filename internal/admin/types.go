@@ -82,3 +82,19 @@ type UsageItem struct {
 	Usage       map[string]int64 `json:"usage"` // 计量单位 → 数量，如 {"input_tokens":120,"pages":30}
 	CostNanoUSD int64            `json:"cost_nano_usd"`
 }
+
+// ToolView 是 GET /admin/api/tools 中的一个工具（ADM-20）。
+type ToolView struct {
+	Name     string `json:"name"`
+	Title    string `json:"title,omitempty"`
+	Summary  string `json:"summary"`           // 描述首行
+	Service  string `json:"service,omitempty"` // 工具固定的服务名；空 = 由参数选择
+	Protocol string `json:"protocol"`
+	ReadOnly bool   `json:"read_only"`
+}
+
+// ToolsView 是 GET /admin/api/tools 的响应（ADM-20）。
+type ToolsView struct {
+	ToolMode string     `json:"tool_mode"` // mcp.tool_mode；MCP 关闭时为 "disabled"
+	Tools    []ToolView `json:"tools"`
+}

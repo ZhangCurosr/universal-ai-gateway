@@ -732,3 +732,29 @@ func realMainIOEnv(args []string, env func(string) string) (int, string, string)
 	code := realMainIO(args, strings.NewReader(""), &out, &errb, env)
 	return code, out.String(), errb.String()
 }
+
+// ADM-20：工具列表随热重载更新
+func TestE2E_Reload_ToolsEndpoint(t *testing.T) {
+	url := restUpstream(t, nil, nil)
+	spec := gwSpec{pools: poolYAML("p1", url), services: svcYAML("s1", "p1", "0")}
+	g := startReloadGateway(t, spec)
+	tools := func() string {
+		var out map[string]any
+		if code := doJSON(t, "GET", g.adminURL()+"/tools", g.adminToken, nil, &out); code != 200 {
+			t.Fatalf("GET tools = %d", code)
+		}
+		b, _ := json.Marshal(out)
+		return string(b)
+	}
+	if s := tools(); strings.Contains(s, "s1_get") || !strings.Contains(s, `"tool_mode":"auto"`) {
+		t.Fatalf("before = %s", s)
+	}
+	spec.services = "  - name: s1\n    pool: p1\n    price: { requests: \"0\" }\n    tools:\n      - { name: s1_get, description: \"Get it.\", method: GET, path: /x }\n"
+	g.write(spec)
+	if code, out := g.reload(false); code != 200 {
+		t.Fatalf("reload = %d %+v", code, out)
+	}
+	if s := tools(); !strings.Contains(s, `"name":"s1_get"`) || !strings.Contains(s, `"service":"s1"`) || !strings.Contains(s, `"read_only":true`) {
+		t.Fatalf("after = %s", s)
+	}
+}

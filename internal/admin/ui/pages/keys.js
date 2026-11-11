@@ -85,7 +85,8 @@ export async function render(main, ctx) {
   function keyRow(k) {
     let state;
     let reason = k.state_reason || '';
-    if (k.state === 'disabled') state = pill(t('k.disabled'), 'off');
+    if (k.state === 'orphaned') { state = pill(t('k.orphaned'), 'off'); reason = t('k.orphanedReason'); } // UI-30
+    else if (k.state === 'disabled') state = pill(t('k.disabled'), 'off');
     else if (k.state === 'quarantined') state = pill(t('k.quarantined'), 'bad');
     else if (k.cooldown_seconds > 0) { state = pill(t('k.cooling'), 'warn'); reason = reason || t('k.coolingReason', { s: k.cooldown_seconds }); }
     else state = pill(t('k.ready'), 'ok');
@@ -106,7 +107,8 @@ export async function render(main, ctx) {
       h('td', { class: 'small' + (k.breaker === 'open' ? ' tone-bad' : ''), text: br }),
       h('td', {}, h('div', { class: 'load' }, bar(frac), h('span', { class: 'mono small', text: fmtInt(k.in_flight || 0) + ' / ' + fmtInt(k.max_in_flight) }))),
       h('td', { class: 'num mono', text: fmtInt(k.weight) }),
-      h('td', { class: 'num actions' }, h('button', { type: 'button', class: 'link-btn', text: t('common.edit'), onClick: () => editKey(k) }), toggle));
+      h('td', { class: 'num actions' }, h('button', { type: 'button', class: 'link-btn', text: t('common.edit'), onClick: () => editKey(k) }),
+        k.state === 'orphaned' ? null : toggle)); // UI-30：孤立的 Key 不提供启用 / 禁用
   }
 
   async function setState(k, next) {

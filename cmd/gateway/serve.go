@@ -245,6 +245,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 	}
 	rl.install(gen)
 	dataHandler := trackHandlers(&handlers, rl) // 数据面处理器可被热重载原子替换（HR-13）
+	adminMCPHandler := newAdminMCP(logger)
 	adminHandler, adminCtl := admin.NewServerWithControl(admin.Deps{
 		Config:    cfg,
 		Store:     db,
@@ -265,7 +266,10 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		// spec/03 §8：配置重载
 		Reload:        rl.Reload,
 		ReloadRecords: records.view,
+		Tools:         rl.toolsView,
+		MCP:           adminMCPHandler, // spec/14 §6
 	})
+	adminMCPHandler.admin = adminHandler
 	rl.adminCtl = adminCtl
 
 	// 12. 两个 http.Server（SRV-01 ~ SRV-03：先 Listen 再 Serve）。进程内重启时地址不变的套接字沿用（§2.3）

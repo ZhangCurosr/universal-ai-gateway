@@ -177,6 +177,8 @@ type UsageItem struct {
 | ADM-17 | `usage` 查询：`from`/`to` 缺省为「最近 24 小时」；`from >= to` 返回 400 |
 | ADM-18 | `POST /admin/api/reload`，仅管理员角色。请求体可选 `{"dry_run": bool}`。响应 `{"mode": "none"\|"hot"\|"restart", "applied": bool, "changes": {"pools": {"added", "removed", "changed"}, "services": {"added", "removed", "changed"}, "settings": [...], "restart_fields": [...]}, "warnings": [...]}`；`settings` 列出变化的其他热重载字段（如 `mcp`、`server.log_level`），`restart_fields` 列出需要重启的字段（如 `limits.max_in_flight_requests`）。状态码：200（none 或 hot 已应用，或 dry-run）、202（restart 已开始）、400（配置错误）、409（重载进行中）、422（构造或预检失败）。错误体使用管理 API 现有的错误格式。 |
 | ADM-19 | `GET /admin/api/reload`，仅管理员角色。返回 `{"records": [...]}`，最近 20 次重载，新的在前，每条 `{time, actor_client_id, mode, status, changes, error?}`。 |
+| ADM-20 | `GET /admin/api/tools`：`{"tool_mode": mcp.tool_mode, "tools": [{"name", "title"?, "summary", "service"?, "protocol", "read_only"}]}`，按名称升序；`summary` 为描述首行；`service` 为工具固定的服务名（空表示由参数选择）。来源是当前一代的注册表，热重载后立即更新。 |
+| ADM-21 | `POST /admin/mcp`：管理面 MCP（spec/14 §6），经过管理面的全部中间件。`GET` / `DELETE` → 405。 |
 
 ## 5. 全局过载保护（`internal/httpapi`，T11）
 
@@ -254,3 +256,11 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | `GET` | `/admin/api/health` | 在 §4.1 的字段之外**增加**：`ledger_queue: {"length","capacity"}`、`audit_dropped`（与 spec/15 的对应仪表同源）。取数函数未注入时这两个字段不输出 |
 
 两个端点都按 ADM-01 ~ ADM-04 鉴权。
+
+### 6.5 T57 补充（孤立 Key、配置页）
+
+| 编号 | 规则 |
+|:--|:--|
+| UI-30 | Key 的 `state` 为 `orphaned` 时显示「孤立」（灰色），原因「池已从配置中删除」，不提供启用 / 禁用按钮；概览把它计入已停用。 |
+| UI-31 | 「配置」页：按钮「预览重载」（`dry_run: true`）与「应用重载」（二次确认）；显示模式、增删改的池与服务、变化的设置、需要重启的字段、警告；收到 202 时显示「正在重启」，每秒查询 `GET reload` 直到该记录不再是 `restarting`（最多 2 分钟；重启期间的请求失败视为尚未就绪）；错误按 UI-16 显示。下方是最近 20 次重载记录。 |
+| UI-32 | 「配置」页的服务与工具：按 `GET config` 列出池与服务，按 `GET tools` 列出工具（名称、所属服务、只读与否、说明首行）与当前的 `tool_mode`。全部用 `textContent` 写入（UI-12）。 |

@@ -489,10 +489,11 @@ type genDeps struct {
 
 // generation 是热重载时整体替换的部分：注册表、内核、MCP 与数据面路由。
 type generation struct {
-	cfg     *config.Config
-	client  *http.Client
-	connect time.Duration // client 的连接超时；相同时下一代沿用 client
-	handler http.Handler
+	cfg      *config.Config
+	registry *protocol.Registry
+	client   *http.Client
+	connect  time.Duration // client 的连接超时；相同时下一代沿用 client
+	handler  http.Handler
 }
 
 // buildGeneration 用 cfg 构造新一代；prev 非 nil 且连接超时相同时沿用其上游 client。不修改任何共享状态。
@@ -527,7 +528,7 @@ func buildGeneration(cfg *config.Config, d genDeps, prev *generation) (*generati
 		dataDeps.MCP = newMCPServer(cfg, registry, kernel, d.logger)
 		dataDeps.MCPErrorWriter = mcp.WriteHTTPError
 	}
-	return &generation{cfg: cfg, client: client, connect: connect, handler: httpapi.NewDataRouter(dataDeps)}, nil
+	return &generation{cfg: cfg, registry: registry, client: client, connect: connect, handler: httpapi.NewDataRouter(dataDeps)}, nil
 }
 
 func newMCPServer(cfg *config.Config, registry *protocol.Registry, kernel *core.Core, logger *slog.Logger) *mcp.Server {
@@ -788,4 +789,22 @@ func (rl *configReloader) record(actor int64, mode, status string, ch *reloadCha
 		return 0
 	}
 	return rl.records.add(reloadRecord{Time: time.Now().UTC(), ActorClientID: actor, Mode: mode, Status: status, Changes: ch, Error: msg})
+}
+
+// toolsView 实现 ADM-20：当前一代注册表中的全部工具（随热重载更新）。
+func (rl *configReloader) toolsView() admin.ToolsView {
+	g := rl.gen.Load()
+	mode := g.cfg.MCP.ToolMode
+	if g.cfg.MCP.Disabled {
+		mode = "disabled"
+	}
+	out := admin.ToolsView{ToolMode: mode, Tools: []admin.ToolView{}}
+	for _, e := range g.registry.Tools() { // 已按名称升序
+		summary, _, _ := strings.Cut(e.Tool.Description, "\n")
+		out.Tools = append(out.Tools, admin.ToolView{
+			Name: e.Tool.Name, Title: e.Tool.Title, Summary: strings.TrimSpace(summary), Service: e.Tool.Model,
+			Protocol: string(e.Ingress.Protocol()), ReadOnly: e.Tool.ReadOnly,
+		})
+	}
+	return out
 }

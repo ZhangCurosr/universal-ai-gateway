@@ -383,3 +383,24 @@ func TestHealthExtraFields(t *testing.T) {
 		t.Fatalf("health without gauges = %s", w.Body.String())
 	}
 }
+
+// UI-30：孤立的 Key 有专门的显示与文案（中英文），不落入默认的「可用」。
+func TestUIOrphanedKeyState(t *testing.T) {
+	read := func(name string) string {
+		b, err := fs.ReadFile(uiFiles, "ui/"+name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(b)
+	}
+	keys, overview, i18n := read("pages/keys.js"), read("pages/overview.js"), read("i18n.js")
+	if !strings.Contains(keys, "k.state === 'orphaned'") || !strings.Contains(keys, "k.state === 'orphaned' ? null : toggle") {
+		t.Error("keys.js does not handle orphaned keys")
+	}
+	if !strings.Contains(overview, "k.state === 'orphaned'") {
+		t.Error("overview.js does not count orphaned keys as off")
+	}
+	if strings.Count(i18n, "'k.orphaned':") != 2 || strings.Count(i18n, "'k.orphanedReason':") != 2 {
+		t.Error("i18n.js lacks orphaned messages in both languages")
+	}
+}
