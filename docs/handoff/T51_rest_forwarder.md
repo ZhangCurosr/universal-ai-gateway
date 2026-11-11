@@ -197,11 +197,11 @@ internal/adapter/rest/
 ## 7. 验收标准
 
 - [x] 阶段 A 的规格已获用户批准，4 个待定项都有答案（2026-11-10，全部 a）。
-- [ ] §6 的测试全部通过；`go run ./tools/check` 全绿。
-- [ ] 没有修改 `internal/core`、`internal/protocol`、`internal/adapter/adaptertest`；`internal/archtest` 只在 `layers` 表加了一行；没有新增依赖。
-- [ ] 日志、错误信息、响应中没有任何上游 Key 的明文或片段（AGENTS.md §3 第 1 条）。
-- [ ] DEPLOYMENT.md 的新章节写明了 Key 格式、RS-30 / RS-31 的安全提示与全部已知限制。
-- [ ] 改完后在 Linux 上按 [T46](T46_race_verify_linux.md) 的流程复跑 `-race`（可以由审查方安排）。
+- [x] §6 的测试全部通过；`go run ./tools/check` 全绿。
+- [x] 没有修改 `internal/core`、`internal/protocol`、`internal/adapter/adaptertest`；`internal/archtest` 只在 `layers` 表加了一行；没有新增依赖。
+- [x] 日志、错误信息、响应中没有任何上游 Key 的明文或片段（AGENTS.md §3 第 1 条）。
+- [x] DEPLOYMENT.md 的新章节写明了 Key 格式、RS-30 / RS-31 的安全提示与全部已知限制。
+- [x] 改完后在 Linux 上按 [T46](T46_race_verify_linux.md) 的流程复跑 `-race`（可以由审查方安排）。
 
 ## 8. 建议提交拆分
 

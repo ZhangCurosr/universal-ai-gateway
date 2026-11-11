@@ -9,7 +9,11 @@
 // 本包不得导入其他适配器包（ARCH-03），也不得导入内核（ARCH-04）。
 package rest
 
-import "github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
+import (
+	"log/slog"
+
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
+)
 
 // Protocol 是本适配器的协议名，即配置文件 pools[].protocol 的取值。
 const Protocol protocol.Protocol = "rest"
@@ -28,11 +32,23 @@ const (
 // 计量单位名（RS-18）。
 const UnitRequests = "requests"
 
+var defaultLogger *slog.Logger
+
+// SetDefaultLogger 设置包级默认日志器，供 Register 使用。
+func SetDefaultLogger(log *slog.Logger) {
+	defaultLogger = log
+}
+
 // Register 把本包的入站与出站适配器注册到 r。
 func Register(r *protocol.Registry) error {
+	return RegisterWithLogger(r, defaultLogger)
+}
+
+// RegisterWithLogger 把本包的入站与出站适配器注册到 r，并为出站适配器注入 log。
+func RegisterWithLogger(r *protocol.Registry, log *slog.Logger) error {
 	// RS-01: 注册优先级与 tavily 相同（10），不是 Fallback
 	if err := r.RegisterIngress(Ingress{}, protocol.IngressOptions{Priority: 10}); err != nil {
 		return err
 	}
-	return r.RegisterEgress(NewEgress())
+	return r.RegisterEgress(NewEgressWithLogger(log))
 }

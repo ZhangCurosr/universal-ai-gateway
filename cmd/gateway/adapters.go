@@ -31,6 +31,7 @@ var adapterRegistrars = []func(*protocol.Registry) error{
 
 // newRegistry 注册全部适配器并封存注册表。
 func newRegistry(cfg *config.Config, log *slog.Logger) (*protocol.Registry, error) {
+	rest.SetDefaultLogger(log)
 	opts := translate.Options{}
 	if cfg != nil {
 		opts.DropUnknownFields = (cfg.Translation.UnknownFields == "drop")

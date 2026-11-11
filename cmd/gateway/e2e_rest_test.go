@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
+	_ "modernc.org/sqlite"
 )
 
 type keyViewItem struct {
@@ -568,5 +571,443 @@ func TestE2E_REST_QueryKey_NetworkError_NoCredentialLeak(t *testing.T) {
 	stderrOutput := g.stderr.String()
 	if strings.Contains(stderrOutput, secretQueryToken) {
 		t.Fatalf("credential leak in gateway stderr logs:\n%s", stderrOutput)
+	}
+}
+
+// 6. 测试 /rest-idem/ 下 POST/PATCH 两把 Key 重试成功用例（第 1 把 Key 返回 500，调度器切到第 2 把 Key 成功 200），
+// 断言两次出站请求体逐字节一致，且最终 usage_events 仅记录 1 次。
+func TestE2E_REST_Idem_PostPatch_RetrySuccessAndBilling(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPatch} {
+		t.Run(method, func(t *testing.T) {
+			var mu sync.Mutex
+			var capturedBodies [][]byte
+			var capturedKeys []string
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					http.Error(w, "read body err", http.StatusInternalServerError)
+					return
+				}
+				mu.Lock()
+				capturedBodies = append(capturedBodies, body)
+				capturedKeys = append(capturedKeys, r.Header.Get("Authorization"))
+				attempt := len(capturedBodies)
+				mu.Unlock()
+
+				if attempt == 1 {
+					w.WriteHeader(http.StatusInternalServerError)
+					_, _ = io.WriteString(w, `{"error":"temporary_server_error"}`)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, `{"status":"recovered_ok"}`)
+			}))
+			defer upstream.Close()
+
+			poolName := strings.ToLower(method) + "-idem-pool"
+			modelName := strings.ToLower(method) + "-idem-svc"
+
+			g := startRESTGateway(t, func(c *config.Config) {
+				c.Pools = append(c.Pools, config.PoolConfig{
+					Name:        poolName,
+					Protocol:    "rest",
+					BaseURL:     upstream.URL,
+					MaxAttempts: 3,
+				})
+				c.Models = append(c.Models, config.ModelConfig{
+					Name:    modelName,
+					Pool:    poolName,
+					Price:   map[string]string{"requests": "0.01"},
+					Reserve: map[string]int64{"requests": 1},
+				})
+				c.Normalize()
+			})
+
+			adminURL := "http://" + g.admin + "/admin/api"
+			dataURL := "http://" + g.data
+
+			var created struct {
+				Client struct {
+					ID int64 `json:"id"`
+				} `json:"client"`
+				Token string `json:"token"`
+			}
+			doJSON(t, "POST", adminURL+"/clients", g.adminToken,
+				map[string]any{"name": "idem-user-" + strings.ToLower(method), "role": "user", "quota_nano_usd": int64(1e12)}, &created)
+
+			doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+				map[string]any{"pool": poolName, "name": "k1", "secret": "bearer:first-key-500"}, nil)
+			doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+				map[string]any{"pool": poolName, "name": "k2", "secret": "bearer:second-key-200"}, nil)
+
+			reqPayload := `{"action":"sync_state","data":"sample_payload_12345"}`
+			req, err := http.NewRequest(method, dataURL+"/rest-idem/"+modelName+"/action/run", strings.NewReader(reqPayload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+created.Token)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s /rest-idem/%s/action/run: %v", method, modelName, err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				respBody, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected status 200, got %d, body: %s", resp.StatusCode, string(respBody))
+			}
+
+			respBytes, _ := io.ReadAll(resp.Body)
+			if !strings.Contains(string(respBytes), "recovered_ok") {
+				t.Errorf("response body = %s, want to contain 'recovered_ok'", string(respBytes))
+			}
+
+			mu.Lock()
+			totalAttempts := len(capturedBodies)
+			mu.Unlock()
+
+			if totalAttempts != 2 {
+				t.Fatalf("expected 2 attempts, got %d", totalAttempts)
+			}
+
+			// 断言两把不同的 Key 参与了调度切换
+			if capturedKeys[0] == capturedKeys[1] {
+				t.Errorf("expected different keys on retry, got both %q", capturedKeys[0])
+			}
+
+			// 断言两次出站请求体逐字节一致，且与客户端请求体完全一致
+			if !bytes.Equal(capturedBodies[0], capturedBodies[1]) {
+				t.Errorf("outbound request bodies differ between attempts: %q vs %q", capturedBodies[0], capturedBodies[1])
+			}
+			if !bytes.Equal(capturedBodies[0], []byte(reqPayload)) {
+				t.Errorf("outbound body = %q, want %q", capturedBodies[0], reqPayload)
+			}
+
+			// 断言最终 usage_events 仅记录 1 次
+			// 1. 轮询管理接口 /admin/api/usage
+			deadline := time.Now().Add(3 * time.Second)
+			var usageItems []struct {
+				ClientID int64            `json:"client_id"`
+				Requests int64            `json:"requests"`
+				Usage    map[string]int64 `json:"usage"`
+			}
+			for {
+				var view struct {
+					Items []struct {
+						ClientID int64            `json:"client_id"`
+						Requests int64            `json:"requests"`
+						Usage    map[string]int64 `json:"usage"`
+					} `json:"items"`
+				}
+				doJSON(t, "GET", fmt.Sprintf("%s/usage?client_id=%d", adminURL, created.Client.ID), g.adminToken, nil, &view)
+				if len(view.Items) > 0 {
+					usageItems = view.Items
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("usage query returned 0 items within deadline")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+
+			if len(usageItems) != 1 {
+				t.Fatalf("expected 1 usage item, got %d", len(usageItems))
+			}
+			if usageItems[0].Requests != 1 {
+				t.Errorf("usage requests = %d, want 1", usageItems[0].Requests)
+			}
+			if usageItems[0].Usage["requests"] != 1 {
+				t.Errorf("usage[requests] = %d, want 1", usageItems[0].Usage["requests"])
+			}
+
+			// 2. 停机并从底层 SQLite 表 usage_events 进一步断言仅有 1 行记录
+			g.cancel()
+			select {
+			case err := <-g.done:
+				if err != nil {
+					t.Fatalf("gateway run failed: %v", err)
+				}
+				g.done <- nil
+			case <-time.After(10 * time.Second):
+				t.Fatal("gateway did not stop")
+			}
+
+			sdb, err := sql.Open("sqlite", filepath.Join(g.cfg.Server.DataDir, "gateway.db"))
+			if err != nil {
+				t.Fatalf("open sqlite db: %v", err)
+			}
+			defer sdb.Close()
+
+			var rowCount int
+			if err := sdb.QueryRowContext(context.Background(), "SELECT COUNT(*) FROM usage_events WHERE client_id = ?", created.Client.ID).Scan(&rowCount); err != nil {
+				t.Fatalf("SELECT COUNT(*) FROM usage_events: %v", err)
+			}
+			if rowCount != 1 {
+				t.Fatalf("usage_events row count = %d, want exactly 1", rowCount)
+			}
+		})
+	}
+}
+
+// 7. 测试 /rest-idem/ 非 POST/PATCH（如 PUT/GET/DELETE/HEAD）返回 404（RS-02）。
+func TestE2E_REST_Idem_NonPostPatch_Returns404(t *testing.T) {
+	g := startRESTGateway(t, func(c *config.Config) {
+		c.Pools = append(c.Pools, config.PoolConfig{
+			Name:     "idem-check-pool",
+			Protocol: "rest",
+			BaseURL:  "http://127.0.0.1:1",
+		})
+		c.Models = append(c.Models, config.ModelConfig{
+			Name:    "idem-check",
+			Pool:    "idem-check-pool",
+			Price:   map[string]string{"requests": "0.01"},
+			Reserve: map[string]int64{"requests": 1},
+		})
+		c.Normalize()
+	})
+
+	adminURL := "http://" + g.admin + "/admin/api"
+	dataURL := "http://" + g.data
+
+	var created struct {
+		Token string `json:"token"`
+	}
+	doJSON(t, "POST", adminURL+"/clients", g.adminToken,
+		map[string]any{"name": "idem-404-user", "role": "user", "quota_nano_usd": int64(1e12)}, &created)
+
+	unsupportedMethods := []string{
+		http.MethodGet,
+		http.MethodPut,
+		http.MethodDelete,
+		http.MethodHead,
+	}
+
+	for _, method := range unsupportedMethods {
+		t.Run(method, func(t *testing.T) {
+			req, err := http.NewRequest(method, dataURL+"/rest-idem/idem-check/resource", strings.NewReader(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+created.Token)
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("%s /rest-idem/idem-check/resource: %v", method, err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s /rest-idem/ status = %d, want 404 Not Found", method, resp.StatusCode)
+			}
+		})
+	}
+}
+
+// 8. 测试 GET 遇 429 换 Key 重试成功用例。
+func TestE2E_REST_GET_RetryOn429(t *testing.T) {
+	var mu sync.Mutex
+	var capturedAuths []string
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		capturedAuths = append(capturedAuths, r.Header.Get("Authorization"))
+		attempt := len(capturedAuths)
+		mu.Unlock()
+
+		if attempt == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":"rate_limited_try_later"}`)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"recovered_from_429"}`)
+	}))
+	defer upstream.Close()
+
+	g := startRESTGateway(t, func(c *config.Config) {
+		c.Pools = append(c.Pools, config.PoolConfig{
+			Name:        "retry429-pool",
+			Protocol:    "rest",
+			BaseURL:     upstream.URL,
+			MaxAttempts: 3,
+		})
+		c.Models = append(c.Models, config.ModelConfig{
+			Name:    "retry429-svc",
+			Pool:    "retry429-pool",
+			Price:   map[string]string{"requests": "0.01"},
+			Reserve: map[string]int64{"requests": 1},
+		})
+		c.Normalize()
+	})
+
+	adminURL := "http://" + g.admin + "/admin/api"
+	dataURL := "http://" + g.data
+
+	var created struct {
+		Token string `json:"token"`
+	}
+	doJSON(t, "POST", adminURL+"/clients", g.adminToken,
+		map[string]any{"name": "user-429", "role": "user", "quota_nano_usd": int64(1e12)}, &created)
+
+	doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+		map[string]any{"pool": "retry429-pool", "name": "k1", "secret": "bearer:key-429-first"}, nil)
+	doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+		map[string]any{"pool": "retry429-pool", "name": "k2", "secret": "bearer:key-429-second"}, nil)
+
+	req, err := http.NewRequest(http.MethodGet, dataURL+"/rest/retry429-svc/items", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /rest/retry429-svc/items: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200, body: %s", resp.StatusCode, string(respBody))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "recovered_from_429") {
+		t.Errorf("body = %s, want to contain 'recovered_from_429'", string(body))
+	}
+
+	mu.Lock()
+	attempts := len(capturedAuths)
+	auth1 := capturedAuths[0]
+	auth2 := capturedAuths[1]
+	mu.Unlock()
+
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts upstream, got %d", attempts)
+	}
+	if auth1 == auth2 {
+		t.Errorf("expected different keys on retry, got both %q", auth1)
+	}
+	keySet := map[string]bool{auth1: true, auth2: true}
+	if !keySet["Bearer key-429-first"] || !keySet["Bearer key-429-second"] {
+		t.Errorf("expected keys Bearer key-429-first and Bearer key-429-second, got %v", keySet)
+	}
+}
+
+// 9. 测试白名单响应头透传断言（Link、Retry-After、RateLimit-Reset 等，且 Set-Cookie 严禁透传，RS-15）。
+func TestE2E_REST_ResponseHeaders_WhitelistForwarding(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Link", `<https://api.example.com/items?page=2>; rel="next"`)
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("RateLimit-Reset", "1710000000")
+		w.Header().Set("RateLimit-Limit", "5000")
+		w.Header().Set("RateLimit-Remaining", "4999")
+		w.Header().Set("RateLimit-Policy", "5000;w=3600")
+		w.Header().Set("X-RateLimit-Reset", "1710000000")
+		w.Header().Set("X-RateLimit-Remaining", "42")
+		w.Header().Set("Content-Disposition", `attachment; filename="export.json"`)
+		w.Header().Set("ETag", `"v1.2.3"`)
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Set-Cookie", "secret_session=leak_forbidden")
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer upstream.Close()
+
+	g := startRESTGateway(t, func(c *config.Config) {
+		c.Pools = append(c.Pools, config.PoolConfig{
+			Name:     "header-pool",
+			Protocol: "rest",
+			BaseURL:  upstream.URL,
+		})
+		c.Models = append(c.Models, config.ModelConfig{
+			Name:    "header-svc",
+			Pool:    "header-pool",
+			Price:   map[string]string{"requests": "0.01"},
+			Reserve: map[string]int64{"requests": 1},
+		})
+		c.Normalize()
+	})
+
+	adminURL := "http://" + g.admin + "/admin/api"
+	dataURL := "http://" + g.data
+
+	var created struct {
+		Token string `json:"token"`
+	}
+	doJSON(t, "POST", adminURL+"/clients", g.adminToken,
+		map[string]any{"name": "hdr-user", "role": "user", "quota_nano_usd": int64(1e12)}, &created)
+
+	doJSON(t, "POST", adminURL+"/keys", g.adminToken,
+		map[string]any{"pool": "header-pool", "name": "k-hdr", "secret": "bearer:key-hdr-sec"}, nil)
+
+	req, err := http.NewRequest(http.MethodGet, dataURL+"/rest/header-svc/list", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+created.Token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET /rest/header-svc/list: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	// 白名单响应头透传验证 (RS-15)
+	if got := resp.Header.Get("Link"); got != `<https://api.example.com/items?page=2>; rel="next"` {
+		t.Errorf("Link = %q, want %q", got, `<https://api.example.com/items?page=2>; rel="next"`)
+	}
+	if got := resp.Header.Get("Retry-After"); got != "120" {
+		t.Errorf("Retry-After = %q, want 120", got)
+	}
+	if got := resp.Header.Get("RateLimit-Reset"); got != "1710000000" {
+		t.Errorf("RateLimit-Reset = %q, want 1710000000", got)
+	}
+	if got := resp.Header.Get("RateLimit-Limit"); got != "5000" {
+		t.Errorf("RateLimit-Limit = %q, want 5000", got)
+	}
+	if got := resp.Header.Get("RateLimit-Remaining"); got != "4999" {
+		t.Errorf("RateLimit-Remaining = %q, want 4999", got)
+	}
+	if got := resp.Header.Get("RateLimit-Policy"); got != "5000;w=3600" {
+		t.Errorf("RateLimit-Policy = %q, want 5000;w=3600", got)
+	}
+	if got := resp.Header.Get("X-RateLimit-Reset"); got != "1710000000" {
+		t.Errorf("X-RateLimit-Reset = %q, want 1710000000", got)
+	}
+	if got := resp.Header.Get("X-RateLimit-Remaining"); got != "42" {
+		t.Errorf("X-RateLimit-Remaining = %q, want 42", got)
+	}
+	if got := resp.Header.Get("Content-Disposition"); got != `attachment; filename="export.json"` {
+		t.Errorf("Content-Disposition = %q, want attachment", got)
+	}
+	if got := resp.Header.Get("ETag"); got != `"v1.2.3"` {
+		t.Errorf("ETag = %q, want \"v1.2.3\"", got)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "public, max-age=3600" {
+		t.Errorf("Cache-Control = %q, want public, max-age=3600", got)
+	}
+
+	// 严禁透传的敏感头（Set-Cookie 必须被丢弃）
+	if got := resp.Header.Get("Set-Cookie"); got != "" {
+		t.Errorf("Set-Cookie must be stripped, got: %q", got)
 	}
 }

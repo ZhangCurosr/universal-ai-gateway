@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
@@ -370,5 +374,107 @@ func TestEgress_RawBodyPassthrough(t *testing.T) {
 	}
 	if !bytes.Equal(body, sampleBytes) {
 		t.Errorf("raw body = %v, want %v", body, sampleBytes)
+	}
+}
+
+func TestEgress_Log403Warn(t *testing.T) {
+	t.Run("suppresses duplicate 403 warning for same secret within 1 minute", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		eg := NewEgressWithLogger(logger)
+
+		ctx := context.Background()
+		secret := "bearer:sec-secret-test-key-403"
+
+		// 第一次 403 记录日志
+		eg.log403Warn(ctx, "api.example.com", "/v1/data", secret)
+		out1 := buf.String()
+		if !strings.Contains(out1, "rest upstream returned 403; key not quarantined") {
+			t.Fatalf("first 403 did not log expected warning, got: %q", out1)
+		}
+		if !strings.Contains(out1, "upstream_host=api.example.com") {
+			t.Errorf("log missing upstream_host, got: %q", out1)
+		}
+		if !strings.Contains(out1, "path=/v1/data") {
+			t.Errorf("log missing path, got: %q", out1)
+		}
+		mask := obs.MaskSecret(secret)
+		if !strings.Contains(out1, mask) {
+			t.Errorf("log missing key_mask %q, got: %q", mask, out1)
+		}
+		if strings.Contains(out1, "sec-secret-test-key-403") {
+			t.Errorf("secret leaked in log: %q", out1)
+		}
+
+		// 同一个 Masked Secret 在 1 分钟内第 2 次 403 不会重复记录日志（限频）
+		buf.Reset()
+		eg.log403Warn(ctx, "api.example.com", "/v1/data", secret)
+		if buf.Len() != 0 {
+			t.Errorf("second 403 within 1 minute should be suppressed, got: %q", buf.String())
+		}
+	})
+
+	t.Run("clears warned403 when reaching 1024 entries", func(t *testing.T) {
+		var buf bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+		eg := NewEgressWithLogger(logger)
+
+		ctx := context.Background()
+
+		// 填充 1024 条记录
+		eg.state.mu.Lock()
+		for i := 0; i < 1024; i++ {
+			eg.state.warned403[fmt.Sprintf("mock-mask-%04d", i)] = time.Now()
+		}
+		if len(eg.state.warned403) != 1024 {
+			eg.state.mu.Unlock()
+			t.Fatalf("setup failed: expected 1024 entries, got %d", len(eg.state.warned403))
+		}
+		eg.state.mu.Unlock()
+
+		// 当 warned403 条目达到 1024 时执行 clear 清空逻辑
+		newSecret := "bearer:new-unique-secret-key-1025"
+		eg.log403Warn(ctx, "api.example.com", "/v1/clear-test", newSecret)
+
+		eg.state.mu.Lock()
+		count := len(eg.state.warned403)
+		_, hasOld := eg.state.warned403["mock-mask-0000"]
+		newMask := obs.MaskSecret(newSecret)
+		_, hasNew := eg.state.warned403[newMask]
+		eg.state.mu.Unlock()
+
+		if count != 1 {
+			t.Errorf("warned403 size = %d after clear, want 1", count)
+		}
+		if hasOld {
+			t.Errorf("old entries were not cleared from warned403")
+		}
+		if !hasNew {
+			t.Errorf("new entry %q not found in warned403", newMask)
+		}
+		if !strings.Contains(buf.String(), "rest upstream returned 403; key not quarantined") {
+			t.Errorf("expected warning to be logged after map clear, got: %q", buf.String())
+		}
+	})
+}
+
+func TestEgress_LoggerConfiguration(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+
+	eg := NewEgress().WithLogger(logger)
+	if eg.Logger != logger {
+		t.Errorf("WithLogger failed to set logger")
+	}
+
+	eg2 := NewEgress()
+	eg2.SetLogger(logger)
+	if eg2.Logger != logger {
+		t.Errorf("SetLogger failed to set logger")
+	}
+
+	r := protocol.NewRegistry()
+	if err := RegisterWithLogger(r, logger); err != nil {
+		t.Fatalf("RegisterWithLogger failed: %v", err)
 	}
 }

@@ -59,6 +59,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 
 	// 2. logger
 	logger := obs.NewLogger(stderr, cfg.Server.LogLevel)
+	slog.SetDefault(logger)
 	defer func() {
 		if err != nil {
 			logger.Error("gateway stopped with error", "err", err)

@@ -42,11 +42,28 @@ var _ protocol.Egress = Egress{}
 
 // NewEgress 构造 Egress 实例。
 func NewEgress() Egress {
+	return NewEgressWithLogger(nil)
+}
+
+// NewEgressWithLogger 构造带有指定 logger 的 Egress 实例。
+func NewEgressWithLogger(logger *slog.Logger) Egress {
 	return Egress{
+		Logger: logger,
 		state: &egressState{
 			warned403: make(map[string]time.Time),
 		},
 	}
+}
+
+// WithLogger 返回设置了指定 logger 的 Egress 副本。
+func (e Egress) WithLogger(logger *slog.Logger) Egress {
+	e.Logger = logger
+	return e
+}
+
+// SetLogger 设置 Egress 的 logger。
+func (e *Egress) SetLogger(logger *slog.Logger) {
+	e.Logger = logger
 }
 
 // Protocol 返回 Protocol。
