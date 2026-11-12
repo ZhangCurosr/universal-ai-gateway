@@ -90,8 +90,8 @@ export async function render(main, ctx) {
   fill();
 
   main.replaceChildren(head(), msg,
-    card(t('cfg.reload'), h('p', { class: 'muted small', text: t('cfg.reloadHint') }),
-      h('div', { class: 'row-wrap' }, previewBtn, applyBtn), result),
+    card(t('cfg.reload'), h('div', { class: 'stack pad' }, h('p', { class: 'muted small', text: t('cfg.reloadHint') }),
+      h('div', { class: 'row-wrap' }, previewBtn, applyBtn), result)),
     card(t('cfg.records'), recordsBox),
     card(t('cfg.services'), servicesBox),
     card(h('div', { class: 'row-wrap' }, h('h2', { text: t('cfg.tools') }), pill(t('cfg.mode', { mode: tools.tool_mode }), 'off')), toolsBox));
@@ -116,15 +116,15 @@ function changesView(resp, dryRun) {
   const modeText = t('cfg.mode_' + resp.mode) + (dryRun ? ' · ' + t('cfg.dryRun') : resp.applied ? ' · ' + t('cfg.applied') : '');
   return h('div', { class: 'stack' },
     h('div', {}, pill(modeText, resp.mode === 'restart' ? 'warn' : resp.mode === 'hot' ? 'ok' : 'off')),
-    rows.length ? tableWrap(h('table', {}, h('tbody', {}, rows.map(([k, v]) =>
+    rows.length ? tableWrap(h('table', { class: 'table' }, h('tbody', {}, rows.map(([k, v]) =>
       h('tr', {}, h('th', { scope: 'row', text: k }), h('td', { class: 'mono small', text: v })))))) : h('p', { class: 'muted', text: t('cfg.noChanges') }),
     (resp.warnings || []).map((w) => notice(w, 'warn')));
 }
 
 function recordsTable(recs) {
-  if (!recs.length) return h('p', { class: 'muted', text: t('cfg.noRecords') });
+  if (!recs.length) return h('p', { class: 'muted pad', text: t('cfg.noRecords') });
   const tone = { applied: 'ok', noop: 'off', restarting: 'warn', failed: 'bad', rolled_back: 'bad' };
-  return tableWrap(h('table', {},
+  return tableWrap(h('table', { class: 'table' },
     h('thead', {}, h('tr', {}, [t('cfg.time'), t('cfg.modeCol'), t('cfg.status'), t('cfg.actor'), t('cfg.error')].map((x) => h('th', { scope: 'col', text: x })))),
     h('tbody', {}, recs.map((r) => h('tr', {},
       h('td', { class: 'small', text: fmtTime(r.time), title: r.time }),
@@ -143,8 +143,8 @@ function servicesTable(cfg, tools) {
     toolsOf.get(tl.service).push(tl.name);
   }
   const models = (cfg.models || []).slice().sort((a, b) => a.name.localeCompare(b.name));
-  if (!models.length) return h('p', { class: 'muted', text: t('common.none') });
-  return tableWrap(h('table', {},
+  if (!models.length) return h('p', { class: 'muted pad', text: t('common.none') });
+  return tableWrap(h('table', { class: 'table' },
     h('thead', {}, h('tr', {}, [t('cfg.service'), t('cfg.pool'), t('cfg.protocol'), t('cfg.serviceTools')].map((x) => h('th', { scope: 'col', text: x })))),
     h('tbody', {}, models.map((m) => h('tr', {},
       h('td', { class: 'strong', text: m.name }),
@@ -155,8 +155,8 @@ function servicesTable(cfg, tools) {
 
 function toolsTable(view) {
   const list = view.tools || [];
-  if (!list.length) return h('p', { class: 'muted', text: t('common.none') });
-  return tableWrap(h('table', {},
+  if (!list.length) return h('p', { class: 'muted pad', text: t('common.none') });
+  return tableWrap(h('table', { class: 'table' },
     h('thead', {}, h('tr', {}, [t('cfg.tool'), t('cfg.service'), t('cfg.access'), t('cfg.summary')].map((x) => h('th', { scope: 'col', text: x })))),
     h('tbody', {}, list.map((tl) => h('tr', {},
       h('td', { class: 'mono small strong', text: tl.name }),
