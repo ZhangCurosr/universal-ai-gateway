@@ -26,6 +26,9 @@ var (
 // Protocol 返回 Protocol。
 func (Ingress) Protocol() protocol.Protocol { return Protocol }
 
+// maxRequestBody 是提交类请求体的上限（MU-01）：只含文档 URL 与解析选项。
+const maxRequestBody = 64 << 10
+
 // Routes 声明 MinerU 的 4 个端点（spec/08 §8.2）。无目录路由。
 func (Ingress) Routes() []protocol.Route {
 	return []protocol.Route{
@@ -34,16 +37,16 @@ func (Ingress) Routes() []protocol.Route {
 			Path:         "/v1/parse",
 			Kind:         protocol.RouteCall,
 			Op:           OpParse,
-			Body:         protocol.BodyStream,
-			MaxBodyBytes: 200 << 20, // 200 MiB 单文件上限
+			Body:         protocol.BodyBuffered, // MU-01：JSON 请求体（文档 URL 与解析选项），可换 Key 重试
+			MaxBodyBytes: maxRequestBody,
 		},
 		{
 			Method:       http.MethodPost,
 			Path:         "/v1/tasks",
 			Kind:         protocol.RouteCall,
 			Op:           OpTaskCreate,
-			Body:         protocol.BodyStream,
-			MaxBodyBytes: 200 << 20,
+			Body:         protocol.BodyBuffered,
+			MaxBodyBytes: maxRequestBody,
 		},
 		{
 			Method: http.MethodGet,
@@ -66,7 +69,7 @@ func (Ingress) Routes() []protocol.Route {
 func (Ingress) Claims(*http.Request) bool { return false }
 
 // Parse 实现 IN-G01 ~ IN-G07 与 spec/08 §8.2。
-func (Ingress) Parse(r *http.Request, rt protocol.Route, _ []byte) (*protocol.Envelope, error) {
+func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol.Envelope, error) {
 	switch rt.Op {
 	case OpParse, OpTaskCreate:
 		model := r.Header.Get("X-UAIG-Model")
@@ -106,6 +109,7 @@ func (Ingress) Parse(r *http.Request, rt protocol.Route, _ []byte) (*protocol.En
 			Estimate: est,
 			Params:   params,
 			Header:   r.Header,
+			Body:     body,
 		}, nil
 
 	case OpTaskGet, OpTaskResult:

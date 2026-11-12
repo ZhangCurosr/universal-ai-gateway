@@ -109,7 +109,7 @@ server:
 | 请求体上限 | 代理的上限要和 `limits.max_request_body_bytes` 一致（默认 32 MiB）。Caddy 写 `32MiB`（`MB` 是十进制），nginx 写 `32m` |
 | 流式输出（SSE） | Caddy 设 `flush_interval -1`；nginx 设 `proxy_buffering off` |
 | `/mcp` | 原样转发 `Authorization`、`MCP-Protocol-Version`、`Origin` 头（两个示例默认都会转发）。浏览器类 MCP 客户端不受支持 |
-| 文件上传（如 MinerU 的 `/v1/parse`、`/v1/tasks`） | 只对这两个路径把上限放宽到 `limits.max_stream_body_bytes`（默认 512 MiB）；nginx 还要关闭 `proxy_request_buffering`。网关的 `server.read_timeout` 按「文件大小 ÷ 最低上行带宽」调大 |
+| 文件上传（流式请求体的路由） | 只对这些路径把上限放宽到 `limits.max_stream_body_bytes`（默认 512 MiB）；nginx 还要关闭 `proxy_request_buffering`。网关的 `server.read_timeout` 按「文件大小 ÷ 最低上行带宽」调大。MinerU 的 `/v1/parse`、`/v1/tasks` 自 T59 起只接受带文件 URL 的 JSON（≤ 64 KiB），示例配置中对它们的放宽保留无害 |
 | 同步封装的长任务 | 代理的读超时必须 ≥ 该池的 `timeouts.response_header_base`，否则代理先断开，而上游照样收费 |
 
 ### 3.1 对外前检查清单

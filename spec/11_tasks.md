@@ -330,6 +330,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T56 | 密钥导入命令与接入 API 的 skill，M3（[说明](../docs/handoff/T56_T58_ai_native_admin.md)） | T55 | 用户已要求 | `DONE` |
 | T57 | Web UI 补齐 T54 / T55，M3（[说明](../docs/handoff/T56_T58_ai_native_admin.md)） | T55 | 用户已要求 | `DONE` |
 | T58 | 管理面 MCP，M3（[说明](../docs/handoff/T56_T58_ai_native_admin.md)） | T55 | 用户已要求 | `DONE` |
+| T59 | MinerU 适配器对接官方精准解析 API v4，M3（[说明](../docs/handoff/T59_mineru_v4.md)） | T31 | 用户已要求 | `DONE` |
 
 ---
 

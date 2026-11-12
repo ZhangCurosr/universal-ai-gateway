@@ -2,7 +2,6 @@ package mineru
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -97,91 +96,89 @@ func TestEgressConformance(t *testing.T) {
 		InitialPollInterval: 5 * time.Millisecond,
 		MaxPollInterval:     20 * time.Millisecond,
 	}
+	md := "# Extracted Document\n\nContent from mineru."
+	zipBytes := resultZip(t, "doc/", md, 0)
+	body := []byte(`{"url":"https://example.com/doc.pdf"}`)
 
 	var taskSeq int64
 	pollCounts := sync.Map{}
-
-	parseUpstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// v4 上游：提交、查询（第 2 次起完成）、结果包（与 base_url 同主机）。
+	upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, adaptertest.UpstreamPrefix)
+		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodPost && path == "/v1/tasks":
-			id := fmt.Sprintf("task_%d", atomic.AddInt64(&taskSeq, 1))
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprintf(w, `{"id":%q,"status":"pending"}`, id)
-
-		case r.Method == http.MethodGet && strings.HasSuffix(path, "/result"):
-			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-			_, _ = io.WriteString(w, "# Extracted Document\n\nContent from mineru.")
-
-		case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/tasks/"):
-			taskID := strings.TrimPrefix(path, "/v1/tasks/")
-			val, _ := pollCounts.LoadOrStore(taskID, new(int32))
-			cnt := atomic.AddInt32(val.(*int32), 1)
-			w.Header().Set("Content-Type", "application/json")
-			if cnt < 2 {
-				_, _ = fmt.Fprintf(w, `{"id":%q,"status":"running"}`, taskID)
-			} else {
-				_, _ = fmt.Fprintf(w, `{"id":%q,"status":"completed","pages":6}`, taskID)
+		case r.Method == http.MethodPost && path == "/api/v4/extract/task":
+			_, _ = fmt.Fprintf(w, `{"code":0,"msg":"ok","data":{"task_id":"task_%d"}}`, atomic.AddInt64(&taskSeq, 1))
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/api/v4/extract/task/"):
+			id := strings.TrimPrefix(path, "/api/v4/extract/task/")
+			val, _ := pollCounts.LoadOrStore(id, new(int32))
+			if atomic.AddInt32(val.(*int32), 1) < 2 {
+				_, _ = fmt.Fprintf(w, `{"code":0,"data":{"task_id":%q,"state":"running","extract_progress":{"extracted_pages":2,"total_pages":6}}}`, id)
+				return
 			}
-
+			zipURL := "http://" + r.Host + adaptertest.UpstreamPrefix + "/files/" + id + ".zip"
+			_, _ = fmt.Fprintf(w, `{"code":0,"data":{"task_id":%q,"state":"done","full_zip_url":%q}}`, id, zipURL)
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/files/"):
+			w.Header().Set("Content-Type", "application/zip")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(zipBytes)))
+			_, _ = w.Write(zipBytes)
 		default:
 			http.NotFound(w, r)
 		}
 	})
-
-	asyncCreateResp := []byte(`{"id":"task_pin_42","status":"pending"}`)
-	asyncGetResp := []byte(`{"id":"task_pin_42","pages":15,"status":"completed"}`)
-	zipBytes := []byte("PK\x03\x04samplezipbytes")
+	createResp := []byte(`{"code":0,"msg":"ok","data":{"task_id":"task_pin_42"}}`)
+	getResp := []byte(`{"code":0,"msg":"ok","data":{"task_id":"task_pin_42","state":"pending"}}`)
 
 	adaptertest.RunEgress(t, eg, adaptertest.EgressFixture{
 		Cases: []adaptertest.EgressCase{
 			{
-				Name:          "sync parse polls until done",
-				Envelope:      protocol.Envelope{Op: OpParse, Model: ModelParse},
-				NewBodyStream: func() io.Reader { return strings.NewReader("sample document content") },
-				Upstream:      parseUpstream,
-				WantKind:      protocol.ResponseBuffered,
-				WantUsage:     pricing.Usage{UnitPages: 6, UnitRequests: 1},
-				WantSource:    protocol.UsageUpstream,
-				WantClient:    []byte("# Extracted Document\n\nContent from mineru."),
+				Name:       "sync parse polls until done",
+				Envelope:   protocol.Envelope{Op: OpParse, Model: ModelParse, Body: body},
+				Upstream:   upstream,
+				WantKind:   protocol.ResponseBuffered,
+				WantUsage:  pricing.Usage{UnitPages: 6, UnitRequests: 1},
+				WantSource: protocol.UsageUpstream,
+				WantClient: []byte(md),
 			},
 			{
 				Name: "task create returns pins",
 				Envelope: protocol.Envelope{
 					Op:       OpTaskCreate,
 					Model:    ModelParse,
+					Body:     body,
 					Estimate: pricing.Usage{UnitPages: 15, UnitRequests: 1},
 				},
-				NewBodyStream: func() io.Reader { return strings.NewReader("sample upload stream") },
 				Upstream: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					_, _ = w.Write(asyncCreateResp)
+					_, _ = w.Write(createResp)
 				}),
 				WantKind:   protocol.ResponseBuffered,
 				WantUsage:  pricing.Usage{UnitPages: 15, UnitRequests: 1},
 				WantSource: protocol.UsageEstimated,
 				WantPins:   []string{"task_pin_42"},
-				WantClient: asyncCreateResp,
+				WantClient: createResp,
 			},
 			{
 				Name:     "task get is free",
 				Envelope: protocol.Envelope{Op: OpTaskGet, Params: map[string]string{"id": "task_pin_42"}},
 				Upstream: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Content-Type", "application/json")
-					_, _ = w.Write(asyncGetResp)
+					_, _ = w.Write(getResp)
 				}),
 				WantKind:   protocol.ResponseBuffered,
 				WantUsage:  nil,
 				WantSource: protocol.UsageUpstream,
-				WantClient: asyncGetResp,
+				WantClient: getResp,
 			},
 			{
-				Name:     "task result downloads stream",
-				Envelope: protocol.Envelope{Op: OpTaskResult, Params: map[string]string{"id": "task_pin_42"}},
+				Name:     "task result downloads zip",
+				Envelope: protocol.Envelope{Op: OpTaskResult, Params: map[string]string{"id": "task_9"}},
 				Upstream: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					w.Header().Set("Content-Type", "application/zip")
-					w.Header().Set("Content-Length", fmt.Sprintf("%d", len(zipBytes)))
-					_, _ = w.Write(zipBytes)
+					if strings.HasSuffix(r.URL.Path, "/files/task_9.zip") {
+						w.Header().Set("Content-Type", "application/zip")
+						_, _ = w.Write(zipBytes)
+						return
+					}
+					zipURL := "http://" + r.Host + adaptertest.UpstreamPrefix + "/files/task_9.zip"
+					_, _ = fmt.Fprintf(w, `{"code":0,"data":{"task_id":"task_9","state":"done","full_zip_url":%q}}`, zipURL)
 				}),
 				WantKind:   protocol.ResponseRaw,
 				WantUsage:  nil,
@@ -193,6 +190,7 @@ func TestEgressConformance(t *testing.T) {
 			{Op: "unsupported_op"},
 			{Op: OpTaskGet, Params: map[string]string{}},
 			{Op: OpParse, Body: []byte(`[1]`)},
+			{Op: OpParse, Body: []byte(`{"is_ocr":true}`)},
 		},
 	})
 }

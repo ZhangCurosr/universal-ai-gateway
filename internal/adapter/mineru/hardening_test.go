@@ -27,23 +27,25 @@ func TestPaidFailuresRetainUsage(t *testing.T) {
 		{name: "submission rejected", op: OpParse, submitStatus: 503},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodPost {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPost:
 					w.WriteHeader(tt.submitStatus)
 					if tt.breakSubmitBody {
 						w.(http.Flusher).Flush()
 						panic(http.ErrAbortHandler)
 					}
-					_, _ = io.WriteString(w, `{"id":"paid-task"}`)
-				} else if r.URL.Path == "/v1/tasks/paid-task" {
-					_, _ = io.WriteString(w, `{"status":"completed","pages":7}`)
-				} else {
+					_, _ = io.WriteString(w, `{"code":0,"data":{"task_id":"paid-task"}}`)
+				case r.URL.Path == "/api/v4/extract/task/paid-task":
+					_, _ = io.WriteString(w, `{"code":0,"data":{"state":"done","full_zip_url":"`+srv.URL+`/files/r.zip","extract_progress":{"total_pages":7}}}`)
+				default:
 					w.WriteHeader(503)
 				}
 			}))
 			defer srv.Close()
 			resp, err := fastPoll.Do(context.Background(), protocol.Upstream{BaseURL: srv.URL, Client: srv.Client()},
-				&protocol.Call{Op: tt.op, State: pricing.Usage{UnitPages: 3}})
+				&protocol.Call{Op: tt.op, Body: urlBody, State: pricing.Usage{UnitPages: 3}})
 			var ae *protocol.AttemptError
 			if !errors.As(err, &ae) {
 				t.Fatalf("Do() error = %v, want AttemptError", err)

@@ -32,13 +32,13 @@ func TestIngressRoutes(t *testing.T) {
 
 	if rt, ok := ops[OpParse]; !ok {
 		t.Errorf("missing route for %s", OpParse)
-	} else if rt.Method != http.MethodPost || rt.Path != "/v1/parse" || rt.Body != protocol.BodyStream {
+	} else if rt.Method != http.MethodPost || rt.Path != "/v1/parse" || rt.Body != protocol.BodyBuffered || rt.MaxBodyBytes != 64<<10 {
 		t.Errorf("unexpected route for %s: %+v", OpParse, rt)
 	}
 
 	if rt, ok := ops[OpTaskCreate]; !ok {
 		t.Errorf("missing route for %s", OpTaskCreate)
-	} else if rt.Method != http.MethodPost || rt.Path != "/v1/tasks" || rt.Body != protocol.BodyStream {
+	} else if rt.Method != http.MethodPost || rt.Path != "/v1/tasks" || rt.Body != protocol.BodyBuffered || rt.MaxBodyBytes != 64<<10 {
 		t.Errorf("unexpected route for %s: %+v", OpTaskCreate, rt)
 	}
 

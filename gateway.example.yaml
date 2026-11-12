@@ -114,10 +114,11 @@ models:
 #     protocol: tavily
 #     base_url: "https://api.tavily.com"
 #   - name: mineru
-#     protocol: mineru
+#     protocol: mineru                  # 对接 MinerU 精准解析 API v4（spec/08 §8.2.1）；客户端提交文件 URL
 #     base_url: "https://mineru.net"
 #     pin_ttl: 48h                      # 任务 ID 固定到创建它的 Key 的时长
 #     timeouts: { response_header_base: 10m }
+#     cooldown: { max: 24h }            # 日额度用完（-60018）的 Key 冷却到北京时间次日
 #   - name: rest-weather                # 通用 REST 转发适配器（spec/08 §8.3，任务卡 T51）
 #     protocol: rest
 #     base_url: "https://api.weather.example.com/v1"

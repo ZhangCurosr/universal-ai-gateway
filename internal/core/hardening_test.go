@@ -24,9 +24,9 @@ func TestPaidMultiStepFailureSettlesOnce(t *testing.T) {
 	env := newTestEnv(t, 2, func(w http.ResponseWriter, _ int32, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost:
-			_, _ = io.WriteString(w, `{"id":"paid-task"}`)
-		case r.URL.Path == "/v1/tasks/paid-task":
-			_, _ = io.WriteString(w, `{"status":"completed","pages":7}`)
+			_, _ = io.WriteString(w, `{"code":0,"data":{"task_id":"paid-task"}}`)
+		case strings.HasSuffix(r.URL.Path, "/api/v4/extract/task/paid-task"):
+			_, _ = io.WriteString(w, `{"code":0,"data":{"state":"done","full_zip_url":"http://`+r.Host+`/files/paid-task.zip","extract_progress":{"total_pages":7}}}`)
 		default:
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
@@ -37,7 +37,7 @@ func TestPaidMultiStepFailureSettlesOnce(t *testing.T) {
 	env.core.routes["parser"] = route
 	in := mineru.Ingress{}
 	rt := in.Routes()[0]
-	req := httptest.NewRequest(http.MethodPost, rt.Path, strings.NewReader("file"))
+	req := httptest.NewRequest(http.MethodPost, rt.Path, strings.NewReader(`{"url":"https://example.com/a.pdf"}`))
 	req.Header.Set("X-UAIG-Model", "parser")
 	rec := httptest.NewRecorder()
 	env.core.Handler(in, rt).ServeHTTP(rec, env.withIdentity(req))

@@ -1,6 +1,7 @@
 package mineru
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,14 +10,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
-	"github.com/ZhangCurosr/universal-ai-gateway/internal/jsonx"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/pricing"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
+)
+
+// 上游 MinerU 精准解析 API v4（spec/08 §8.2.1）。base_url 为站点根，例如 https://mineru.net。
+const (
+	pathTask = "/api/v4/extract/task" // POST 提交；GET pathTask/{id} 查询
 )
 
 // Egress 是 MinerU 出站适配器（网关 → MinerU 上游）。零值可用。
@@ -27,6 +31,8 @@ type Egress struct {
 	InitialPollInterval time.Duration
 	// MaxPollInterval 轮询最大间隔；<= 0 时默认 10 秒（EG-02）。
 	MaxPollInterval time.Duration
+	// Now 返回当前时间（计算日配额的冷却时长）；nil 时用 time.Now。
+	Now func() time.Time
 }
 
 var _ protocol.Egress = Egress{}
@@ -39,37 +45,60 @@ func (Egress) Units() []string {
 	return []string{UnitPages, UnitRequests}
 }
 
-// Prepare 实现同协议透传与参数校验（spec/08 §8.2）。
+// Prepare 校验操作与参数，并为提交类操作构造上游请求体（MU-02）。
 func (Egress) Prepare(env *protocol.Envelope, upstreamModel string) (*protocol.Call, error) {
-	switch env.Op {
-	case OpParse, OpTaskCreate, OpTaskGet, OpTaskResult:
-	default:
-		return nil, apperr.New(apperr.CodeInvalidRequest, "unsupported operation: "+env.Op)
+	call := &protocol.Call{
+		Op:     env.Op,
+		Model:  upstreamModel,
+		Stream: env.Stream,
+		Params: env.Params,
+		Header: env.Header,
+		State:  env.Estimate,
 	}
-
-	if env.Op == OpTaskGet || env.Op == OpTaskResult {
+	switch env.Op {
+	case OpParse, OpTaskCreate:
+		body, err := submitBody(env.Body, env.Params["url"])
+		if err != nil {
+			return nil, err
+		}
+		call.Body = body
+	case OpTaskGet, OpTaskResult:
 		if env.Params == nil || strings.TrimSpace(env.Params["id"]) == "" {
 			return nil, apperr.New(apperr.CodeInvalidRequest, "task id is required")
 		}
+	default:
+		return nil, apperr.New(apperr.CodeInvalidRequest, "unsupported operation: "+env.Op)
 	}
+	return call, nil
+}
 
-	if len(env.Body) > 0 {
-		trimmed := bytes.TrimSpace(env.Body)
-		if len(trimmed) > 0 && trimmed[0] == '[' {
-			return nil, apperr.New(apperr.CodeInvalidRequest, "request body must be a JSON object")
+// submitBody 把客户端请求体（JSON 对象，可为空）与查询参数 url 合并为 v4 提交请求体；必须有非空的 url（MU-02）。
+func submitBody(body []byte, queryURL string) ([]byte, error) {
+	obj := map[string]json.RawMessage{}
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 {
+		if trimmed[0] != '{' {
+			return nil, apperr.New(apperr.CodeInvalidRequest, "request body must be a JSON object with the document url (file upload is not supported)")
+		}
+		if err := json.Unmarshal(trimmed, &obj); err != nil {
+			return nil, apperr.New(apperr.CodeInvalidRequest, "request body: "+err.Error())
 		}
 	}
-
-	return &protocol.Call{
-		Op:         env.Op,
-		Model:      upstreamModel,
-		Stream:     env.Stream,
-		Body:       env.Body,
-		BodyStream: env.BodyStream,
-		Params:     env.Params,
-		Header:     env.Header,
-		State:      env.Estimate,
-	}, nil
+	if _, ok := obj["url"]; !ok && queryURL != "" {
+		raw, err := json.Marshal(queryURL)
+		if err != nil {
+			return nil, apperr.New(apperr.CodeInvalidRequest, "url: "+err.Error())
+		}
+		obj["url"] = raw
+	}
+	var u string
+	if raw, ok := obj["url"]; !ok || json.Unmarshal(raw, &u) != nil || strings.TrimSpace(u) == "" {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "url is required: a public URL of the document (file upload is not supported)")
+	}
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, apperr.New(apperr.CodeInvalidRequest, "request body: "+err.Error())
+	}
+	return out, nil
 }
 
 // Do 执行一次尝试：根据操作调用 MinerU 上游（spec/08 §3、§8.2）。
@@ -88,272 +117,402 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	}
 }
 
-func (e Egress) doTaskCreate(ctx context.Context, up protocol.Upstream, call *protocol.Call) (result *protocol.Response, err error) {
-	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks")
-	bodyReader := makeBodyReader(call)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bodyReader)
+// submit 提交任务。返回响应体与任务 ID。上游已接受（2xx）但读取失败时 accepted 为 true（可能已付费）。
+func (e Egress) submit(ctx context.Context, up protocol.Upstream, call *protocol.Call) (body []byte, taskID string, accepted bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, protocol.JoinURL(up.BaseURL, pathTask), bytes.NewReader(call.Body))
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
-
-	setupRequestHeaders(req, call, up.Secret, e.userAgent())
-
+	e.setHeaders(req, up.Secret)
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := protocol.Send(up, req)
 	if err != nil {
-		return nil, err
+		return nil, "", false, err
 	}
-	defer func() {
-		if err != nil {
-			result = paidSubmission(call, 0)
-		}
-	}()
-
-	body, err := protocol.ReadBody(up, resp)
+	body, err = protocol.ReadBody(up, resp)
 	if err != nil {
+		return nil, "", true, err
+	}
+	if err := e.businessError(body); err != nil {
+		return nil, "", false, err // 业务错误：任务没有创建，不计费
+	}
+	var r struct {
+		Data struct {
+			TaskID string `json:"task_id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(body, &r) != nil || r.Data.TaskID == "" {
+		return nil, "", false, &protocol.AttemptError{
+			Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError, Status: http.StatusBadGateway},
+			Body:    body,
+			Err:     errors.New("upstream did not return task id"),
+		}
+	}
+	return body, r.Data.TaskID, true, nil
+}
+
+func (e Egress) doTaskCreate(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
+	body, taskID, accepted, err := e.submit(ctx, up, call)
+	if err != nil {
+		if accepted {
+			return paidSubmission(call, 0), err // CORE-12：上游已接受，按估计计费
+		}
 		return nil, err
 	}
-
-	var pins []string
-	if id := extractTaskID(body); id != "" {
-		pins = []string{id}
-	}
-
 	// spec/08 §8.2: 异步透传提交时按估计页数结算（UsageEstimated）
 	est, _ := call.State.(pricing.Usage)
 	usage := pricing.Usage{UnitRequests: 1}
 	if p := est.Get(UnitPages); p > 0 {
 		usage[UnitPages] = p
 	}
-
-	h := http.Header{}
-	protocol.CopyHeaders(h, resp.Header, "Content-Type")
-	if h.Get("Content-Type") == "" {
-		h.Set("Content-Type", "application/json")
-	}
-
-	m := &meter{usage: usage, src: protocol.UsageEstimated}
 	return &protocol.Response{
 		Kind:   protocol.ResponseBuffered,
-		Status: resp.StatusCode,
-		Header: h,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": {"application/json"}},
 		Body:   body,
-		Pins:   pins,
-		Meter:  m,
+		Pins:   []string{taskID},
+		Meter:  &meter{usage: usage, src: protocol.UsageEstimated},
 	}, nil
+}
+
+// taskState 是 GET /api/v4/extract/task/{id} 中 data 的相关字段。
+type taskState struct {
+	State      string `json:"state"`
+	FullZipURL string `json:"full_zip_url"`
+	ErrMsg     string `json:"err_msg"`
+	Progress   struct {
+		TotalPages int64 `json:"total_pages"`
+	} `json:"extract_progress"`
+}
+
+// getTask 查询任务。业务错误（例如 -60012 找不到任务）返回 *AttemptError。
+func (e Egress) getTask(ctx context.Context, up protocol.Upstream, id string) ([]byte, *taskState, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, protocol.JoinURL(up.BaseURL, pathTask+"/"+url.PathEscape(id)), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	e.setHeaders(req, up.Secret)
+	resp, err := protocol.Send(up, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	body, err := protocol.ReadBody(up, resp)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := e.businessError(body); err != nil {
+		return nil, nil, err
+	}
+	var r struct {
+		Data taskState `json:"data"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, nil, &protocol.AttemptError{
+			Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError, Status: http.StatusBadGateway},
+			Body:    body,
+			Err:     fmt.Errorf("decode task state: %w", err),
+		}
+	}
+	r.Data.State = strings.ToLower(strings.TrimSpace(r.Data.State))
+	return body, &r.Data, nil
 }
 
 func (e Egress) doTaskGet(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
-	id := call.Params["id"]
-	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(id))
-	if q := call.Params["query"]; q != "" {
-		reqURL += "?" + q
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	body, _, err := e.getTask(ctx, up, call.Params["id"])
 	if err != nil {
 		return nil, err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+string(up.Secret))
-	req.Header.Set("User-Agent", e.userAgent())
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := protocol.Send(up, req)
-	if err != nil {
-		return nil, err
-	}
-
-	body, err := protocol.ReadBody(up, resp)
-	if err != nil {
-		return nil, err
-	}
-
-	h := http.Header{}
-	protocol.CopyHeaders(h, resp.Header, "Content-Type")
-	if h.Get("Content-Type") == "" {
-		h.Set("Content-Type", "application/json")
-	}
-
 	// spec/08 §8.2: 查询不计费，Meter 返回 (nil, UsageUpstream)
-	m := &meter{usage: nil, src: protocol.UsageUpstream}
 	return &protocol.Response{
 		Kind:   protocol.ResponseBuffered,
-		Status: resp.StatusCode,
-		Header: h,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": {"application/json"}},
 		Body:   body,
-		Meter:  m,
+		Meter:  &meter{usage: nil, src: protocol.UsageUpstream},
 	}, nil
 }
 
+// doTaskResult 查询任务，完成后原样转发结果压缩包（MU-05）。
 func (e Egress) doTaskResult(ctx context.Context, up protocol.Upstream, call *protocol.Call) (*protocol.Response, error) {
-	id := call.Params["id"]
-	reqURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(id)+"/result")
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	_, st, err := e.getTask(ctx, up, call.Params["id"])
 	if err != nil {
 		return nil, err
 	}
-
-	req.Header.Set("Authorization", "Bearer "+string(up.Secret))
-	req.Header.Set("User-Agent", e.userAgent())
-	req.Header.Set("Accept", "*/*")
-
-	resp, err := protocol.Send(up, req)
+	if st.State != "done" || st.FullZipURL == "" {
+		return nil, notFinished(st.State)
+	}
+	resp, err := e.fetchZip(ctx, up, st.FullZipURL)
 	if err != nil {
 		return nil, err
 	}
-
 	h := http.Header{}
-	protocol.CopyHeaders(h, resp.Header, "Content-Type", "Content-Length", "Content-Disposition")
+	protocol.CopyHeaders(h, resp.Header, "Content-Type", "Content-Length")
 	if h.Get("Content-Type") == "" {
-		h.Set("Content-Type", "application/octet-stream")
+		h.Set("Content-Type", "application/zip")
 	}
-
+	h.Set("Content-Disposition", `attachment; filename="`+resultFileName(call.Params["id"])+`"`)
 	// spec/08 §8.2: 下载不计费，ResponseRaw 流式转发
-	m := &meter{usage: nil, src: protocol.UsageUpstream}
 	return &protocol.Response{
 		Kind:   protocol.ResponseRaw,
-		Status: resp.StatusCode,
+		Status: http.StatusOK,
 		Header: h,
 		Raw:    resp.Body,
-		Meter:  m,
+		Meter:  &meter{usage: nil, src: protocol.UsageUpstream},
 	}, nil
+}
+
+// notFinished 是任务尚未完成时下载结果的错误：409，不惩罚 Key。
+func notFinished(state string) error {
+	if state == "" {
+		state = "unknown"
+	}
+	body, _ := json.Marshal(map[string]any{"code": http.StatusConflict, "msg": "task is not finished (state: " + state + ")", "state": state}) // map 的 Marshal 不会失败
+	return &protocol.AttemptError{
+		Outcome: protocol.Outcome{Kind: protocol.OutcomeClientError, Status: http.StatusConflict},
+		Body:    body,
+		Header:  http.Header{"Content-Type": {"application/json"}},
+		Err:     errors.New("mineru task not finished: " + state),
+	}
+}
+
+func resultFileName(id string) string {
+	clean := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' {
+			return r
+		}
+		return -1
+	}, id)
+	if clean == "" {
+		clean = "result"
+	}
+	return clean + ".zip"
 }
 
 func (e Egress) doParse(ctx context.Context, up protocol.Upstream, call *protocol.Call) (result *protocol.Response, err error) {
-	// 1. 提交任务到上游 POST /v1/tasks
-	submitURL := protocol.JoinURL(up.BaseURL, "/v1/tasks")
-	submitReq, err := http.NewRequestWithContext(ctx, http.MethodPost, submitURL, makeBodyReader(call))
+	// 1. 提交任务
+	_, taskID, accepted, err := e.submit(ctx, up, call)
 	if err != nil {
+		if accepted {
+			return paidSubmission(call, 0), err
+		}
 		return nil, err
 	}
-	setupRequestHeaders(submitReq, call, up.Secret, e.userAgent())
-
-	submitResp, err := protocol.Send(up, submitReq)
-	if err != nil {
-		return nil, err
-	}
-	var actualPages int64
-	// CORE-12：提交成功即可能计费；后续读取、轮询、下载失败或取消也保留计量结果。
+	var pages int64
+	// CORE-12：提交成功即可能计费；后续轮询、下载失败或取消也保留计量结果。
 	defer func() {
 		if err != nil {
-			result = paidSubmission(call, actualPages)
+			result = paidSubmission(call, pages)
 		}
 	}()
-	submitBody, err := protocol.ReadBody(up, submitResp)
-	if err != nil {
-		return nil, err
-	}
 
-	taskID := extractTaskID(submitBody)
-	if taskID == "" {
-		return nil, &protocol.AttemptError{
-			Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError, Status: http.StatusBadGateway},
-			Body:    submitBody,
-			Err:     errors.New("upstream did not return task id"),
-		}
-	}
-
-	// 2. 轮询任务状态 GET /v1/tasks/{id} 直到完成（EG-02: 1s 起翻倍到 10s，select 等待）
-	interval := e.initialPollInterval()
-	maxInterval := e.maxPollInterval()
-
-pollLoop:
+	// 2. 轮询直到完成（EG-02：1s 起翻倍到 10s，select 等待）
+	interval, maxInterval := e.initialPollInterval(), e.maxPollInterval()
+	var st *taskState
 	for {
 		select {
 		case <-ctx.Done():
-			outcome := protocol.ClassifyNetError(ctx.Err(), ctx)
-			return nil, afterSubmit(taskID, &protocol.AttemptError{
-				Outcome: outcome,
-				Err:     ctx.Err(),
-			})
+			return nil, afterSubmit(taskID, &protocol.AttemptError{Outcome: protocol.ClassifyNetError(ctx.Err(), ctx), Err: ctx.Err()})
 		case <-time.After(interval):
 		}
-
-		pollURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(taskID))
-		pollReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pollURL, nil)
+		var body []byte
+		body, st, err = e.getTask(ctx, up, taskID)
 		if err != nil {
 			return nil, afterSubmit(taskID, err)
 		}
-		pollReq.Header.Set("Authorization", "Bearer "+string(up.Secret))
-		pollReq.Header.Set("User-Agent", e.userAgent())
-		pollReq.Header.Set("Accept", "application/json")
-
-		pollResp, err := protocol.Send(up, pollReq)
-		if err != nil {
-			return nil, afterSubmit(taskID, err)
+		if st.Progress.TotalPages > 0 {
+			pages = st.Progress.TotalPages
 		}
-		pollBody, err := protocol.ReadBody(up, pollResp)
-		if err != nil {
-			return nil, afterSubmit(taskID, err)
+		if st.State == "done" {
+			break
 		}
-
-		status := extractTaskStatus(pollBody)
-		switch status {
-		case "completed", "done", "success", "succeeded", "finished":
-			actualPages = extractPages(pollBody)
-			break pollLoop
-
-		case "failed", "error", "fail", "cancelled", "canceled":
-			errMsg := extractErrorMessage(pollBody)
+		if st.State == "failed" {
+			msg := st.ErrMsg
+			if msg == "" {
+				msg = "mineru task failed"
+			}
 			return nil, &protocol.AttemptError{
 				Outcome: protocol.Outcome{Kind: protocol.OutcomeClientError, Status: http.StatusBadRequest},
-				Body:    pollBody,
-				Err:     errors.New(errMsg),
-			}
-
-		default:
-			interval = interval * 2
-			if interval > maxInterval {
-				interval = maxInterval
+				Body:    body,
+				Header:  http.Header{"Content-Type": {"application/json"}},
+				Err:     errors.New(msg),
 			}
 		}
+		interval = min(interval*2, maxInterval)
 	}
 
-	// 3. 下载结果 GET /v1/tasks/{id}/result
-	resultURL := protocol.JoinURL(up.BaseURL, "/v1/tasks/"+url.PathEscape(taskID)+"/result")
-	resReq, err := http.NewRequestWithContext(ctx, http.MethodGet, resultURL, nil)
+	// 3. 下载结果包，取出 full.md
+	if st.FullZipURL == "" {
+		return nil, afterSubmit(taskID, &protocol.AttemptError{
+			Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError, Status: http.StatusBadGateway},
+			Err:     errors.New("task done without full_zip_url"),
+		})
+	}
+	zresp, err := e.fetchZip(ctx, up, st.FullZipURL)
 	if err != nil {
 		return nil, afterSubmit(taskID, err)
 	}
-	resReq.Header.Set("Authorization", "Bearer "+string(up.Secret))
-	resReq.Header.Set("User-Agent", e.userAgent())
-	resReq.Header.Set("Accept", "*/*")
-
-	resResp, err := protocol.Send(up, resReq)
+	zbody, err := protocol.ReadBody(up, zresp)
 	if err != nil {
 		return nil, afterSubmit(taskID, err)
 	}
-	resultBody, err := protocol.ReadBody(up, resResp)
+	md, zpages, err := readResultZip(zbody, maxBuffered(up))
 	if err != nil {
-		return nil, afterSubmit(taskID, err)
+		return nil, afterSubmit(taskID, &protocol.AttemptError{
+			Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError, Status: http.StatusBadGateway},
+			Err:     err,
+		})
 	}
-
-	if actualPages == 0 {
-		actualPages = extractPages(resultBody)
-	}
-
-	h := http.Header{}
-	protocol.CopyHeaders(h, resResp.Header, "Content-Type")
-	if h.Get("Content-Type") == "" {
-		h.Set("Content-Type", "text/markdown; charset=utf-8")
+	if pages == 0 {
+		pages = zpages
 	}
 
 	// spec/08 §8.2: 同步封装完成时按上游报告的实际页数结算（UsageUpstream）。
-	// 上游没报告页数时不能按 0 页结算（少计费），返回 UsageNone 让内核按预留用量结算（spec/06 §3.3）。
+	// 页数未知时不能按 0 页结算（少计费），返回 UsageNone 让内核按预留用量结算（spec/06 §3.3）。
 	m := &meter{src: protocol.UsageNone}
-	if actualPages > 0 {
-		m = &meter{usage: pricing.Usage{UnitRequests: 1, UnitPages: actualPages}, src: protocol.UsageUpstream}
+	if pages > 0 {
+		m = &meter{usage: pricing.Usage{UnitRequests: 1, UnitPages: pages}, src: protocol.UsageUpstream}
 	}
-
 	return &protocol.Response{
 		Kind:   protocol.ResponseBuffered,
-		Status: resResp.StatusCode,
-		Header: h,
-		Body:   resultBody,
+		Status: http.StatusOK,
+		Header: http.Header{"Content-Type": {"text/markdown; charset=utf-8"}},
+		Body:   md,
 		Meter:  m,
 	}, nil
+}
+
+// fetchZip 下载结果压缩包（MU-05）：只允许 https 或与 base_url 同源的地址；
+// 只有与 base_url 同源（即上游本身）时才带上游 Key，第三方 CDN 永远拿不到 Key。
+func (e Egress) fetchZip(ctx context.Context, up protocol.Upstream, raw string) (*http.Response, error) {
+	u, err := url.Parse(raw)
+	base, berr := url.Parse(up.BaseURL)
+	sameOrigin := err == nil && berr == nil && u.Scheme == base.Scheme && u.Host == base.Host
+	if err != nil || berr != nil || u.Host == "" || (u.Scheme != "https" && !sameOrigin) {
+		return nil, &protocol.AttemptError{
+			Outcome: protocol.Outcome{Kind: protocol.OutcomeServerError, Status: http.StatusBadGateway},
+			Err:     errors.New("upstream returned an unsupported result url"),
+		}
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", e.userAgent())
+	req.Header.Set("Accept", "*/*")
+	if sameOrigin {
+		req.Header.Set("Authorization", "Bearer "+string(up.Secret))
+	}
+	return protocol.Send(up, req)
+}
+
+// readResultZip 从结果包中取出 full.md；页数取 layout.json 的 pdf_info 长度（0 = 未知）。
+// 解压后的内容同样受 limit 约束（防压缩炸弹）。
+func readResultZip(b []byte, limit int64) (md []byte, pages int64, err error) {
+	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
+	if err != nil {
+		return nil, 0, fmt.Errorf("open result zip: %w", err)
+	}
+	var mdFile, layoutFile *zip.File
+	for _, f := range zr.File {
+		switch {
+		case f.Name == "full.md" || strings.HasSuffix(f.Name, "/full.md"):
+			if mdFile == nil {
+				mdFile = f
+			}
+		case f.Name == "layout.json" || strings.HasSuffix(f.Name, "/layout.json"):
+			if layoutFile == nil {
+				layoutFile = f
+			}
+		}
+	}
+	if mdFile == nil {
+		return nil, 0, errors.New("result zip has no full.md")
+	}
+	md, err = readZipFile(mdFile, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	if layoutFile != nil {
+		if lb, lerr := readZipFile(layoutFile, limit); lerr == nil {
+			var layout struct {
+				PdfInfo []json.RawMessage `json:"pdf_info"`
+			}
+			if json.Unmarshal(lb, &layout) == nil {
+				pages = int64(len(layout.PdfInfo))
+			}
+		}
+	}
+	return md, pages, nil
+}
+
+func readZipFile(f *zip.File, limit int64) ([]byte, error) {
+	rc, err := f.Open()
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", f.Name, err)
+	}
+	defer rc.Close() // 只读，关闭错误无意义
+	b, err := io.ReadAll(io.LimitReader(rc, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", f.Name, err)
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("%s exceeds %d bytes", f.Name, limit)
+	}
+	return b, nil
+}
+
+func maxBuffered(up protocol.Upstream) int64 {
+	if up.MaxBufferedBytes > 0 {
+		return up.MaxBufferedBytes
+	}
+	return 64 << 20
+}
+
+// businessError 解析 v4 的业务码（HTTP 200 + {"code": ...}），非 0 时按 MU-04 分类为 *AttemptError。
+// 响应不是 JSON 或没有 code 字段时返回 nil，由调用方按内容判断。
+func (e Egress) businessError(body []byte) error {
+	var r struct {
+		Code json.RawMessage `json:"code"`
+		Msg  string          `json:"msg"`
+	}
+	if json.Unmarshal(body, &r) != nil || len(r.Code) == 0 {
+		return nil
+	}
+	code := strings.Trim(string(r.Code), `"`)
+	if code == "0" || code == "null" {
+		return nil
+	}
+	return &protocol.AttemptError{
+		Outcome: businessOutcome(code, e.now()),
+		Body:    body,
+		Header:  http.Header{"Content-Type": {"application/json"}},
+		Err:     fmt.Errorf("mineru error %s: %s", code, r.Msg),
+	}
+}
+
+// businessOutcome 是 MU-04 的业务码分类。
+func businessOutcome(code string, now time.Time) protocol.Outcome {
+	switch code {
+	case "A0202", "A0211": // Token 错误 / 过期
+		return protocol.Outcome{Kind: protocol.OutcomeAuthFailed, Status: http.StatusUnauthorized}
+	case "-60018", "-60019": // 每日额度用完：冷却到北京时间次日 0 点（受池的 cooldown_max 约束）
+		return protocol.Outcome{Kind: protocol.OutcomeRateLimited, Status: http.StatusTooManyRequests, RetryAfter: untilQuotaReset(now)}
+	case "-60009", "-60007", "-10001": // 队列已满 / 模型服务不可用 / 服务异常
+		return protocol.Outcome{Kind: protocol.OutcomeOverloaded, Status: http.StatusServiceUnavailable}
+	case "-60012", "-60013": // 找不到任务 / 无权访问该任务
+		return protocol.Outcome{Kind: protocol.OutcomeClientError, Status: http.StatusNotFound}
+	default:
+		return protocol.Outcome{Kind: protocol.OutcomeClientError, Status: http.StatusBadRequest}
+	}
+}
+
+// quotaZone 是 MinerU 日额度的重置时区（北京时间，固定 UTC+8，无夏令时）。
+var quotaZone = time.FixedZone("UTC+8", 8*3600)
+
+func untilQuotaReset(now time.Time) time.Duration {
+	t := now.In(quotaZone)
+	next := time.Date(t.Year(), t.Month(), t.Day()+1, 0, 1, 0, 0, quotaZone)
+	return next.Sub(now)
 }
 
 // paidSubmission 不包含可转发的部分结果。页数已知时按实际计费，否则按预留估算。
@@ -389,11 +548,24 @@ func afterSubmit(taskID string, err error) error {
 	return &out
 }
 
+func (e Egress) setHeaders(req *http.Request, secret []byte) {
+	req.Header.Set("Authorization", "Bearer "+string(secret))
+	req.Header.Set("User-Agent", e.userAgent())
+	req.Header.Set("Accept", "application/json")
+}
+
 func (e Egress) userAgent() string {
 	if e.UserAgent != "" {
 		return e.UserAgent
 	}
 	return "universal-ai-gateway"
+}
+
+func (e Egress) now() time.Time {
+	if e.Now != nil {
+		return e.Now()
+	}
+	return time.Now()
 }
 
 func (e Egress) initialPollInterval() time.Duration {
@@ -408,92 +580,6 @@ func (e Egress) maxPollInterval() time.Duration {
 		return e.MaxPollInterval
 	}
 	return 10 * time.Second
-}
-
-func makeBodyReader(call *protocol.Call) io.Reader {
-	if call.BodyStream != nil {
-		return call.BodyStream
-	}
-	if len(call.Body) > 0 {
-		return bytes.NewReader(call.Body)
-	}
-	if u := call.Params["url"]; u != "" {
-		b, err := json.Marshal(map[string]string{"url": u})
-		if err == nil { // map[string]string 的 Marshal 不会失败
-			return bytes.NewReader(b)
-		}
-	}
-	return http.NoBody
-}
-
-func setupRequestHeaders(req *http.Request, call *protocol.Call, secret []byte, ua string) {
-	req.Header.Set("Authorization", "Bearer "+string(secret))
-	req.Header.Set("User-Agent", ua)
-	req.Header.Set("Accept", "application/json")
-
-	if call.Header != nil && call.Header.Get("Content-Type") != "" {
-		req.Header.Set("Content-Type", call.Header.Get("Content-Type"))
-	} else if (call.Params != nil && call.Params["url"] != "") || bytes.HasPrefix(bytes.TrimSpace(call.Body), []byte("{")) {
-		req.Header.Set("Content-Type", "application/json")
-	} else if call.BodyStream != nil {
-		req.Header.Set("Content-Type", "application/octet-stream")
-	}
-
-	if call.Header != nil && call.Header.Get("Content-Length") != "" {
-		if cl, err := strconv.ParseInt(call.Header.Get("Content-Length"), 10, 64); err == nil && cl > 0 {
-			req.ContentLength = cl
-		}
-	}
-}
-
-func extractTaskID(body []byte) string {
-	paths := [][]string{
-		{"id"},
-		{"task_id"},
-		{"taskId"},
-		{"data", "task_id"},
-		{"data", "id"},
-		{"data", "taskId"},
-	}
-	for _, p := range paths {
-		if s, ok := jsonx.GetString(body, p...); ok && s != "" {
-			return s
-		}
-	}
-	return ""
-}
-
-func extractTaskStatus(body []byte) string {
-	paths := [][]string{
-		{"status"},
-		{"state"},
-		{"data", "status"},
-		{"data", "state"},
-		{"task_status"},
-	}
-	for _, p := range paths {
-		if s, ok := jsonx.GetString(body, p...); ok && s != "" {
-			return strings.ToLower(strings.TrimSpace(s))
-		}
-	}
-	return ""
-}
-
-func extractPages(body []byte) int64 {
-	paths := [][]string{
-		{"pages"},
-		{"page_count"},
-		{"data", "pages"},
-		{"data", "page_count"},
-		{"result", "pages"},
-		{"usage", "pages"},
-	}
-	for _, p := range paths {
-		if n, ok := jsonx.GetInt64(body, p...); ok && n > 0 {
-			return n
-		}
-	}
-	return 0
 }
 
 // meter 报告 MinerU 调用的用量。
