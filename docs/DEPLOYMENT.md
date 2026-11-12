@@ -109,7 +109,7 @@ server:
 | 请求体上限 | 代理的上限要和 `limits.max_request_body_bytes` 一致（默认 32 MiB）。Caddy 写 `32MiB`（`MB` 是十进制），nginx 写 `32m` |
 | 流式输出（SSE） | Caddy 设 `flush_interval -1`；nginx 设 `proxy_buffering off` |
 | `/mcp` | 原样转发 `Authorization`、`MCP-Protocol-Version`、`Origin` 头（两个示例默认都会转发）。浏览器类 MCP 客户端不受支持 |
-| 文件上传（流式请求体的路由） | 只对这些路径把上限放宽到 `limits.max_stream_body_bytes`（默认 512 MiB）；nginx 还要关闭 `proxy_request_buffering`。网关的 `server.read_timeout` 按「文件大小 ÷ 最低上行带宽」调大。MinerU 的 `/v1/parse`、`/v1/tasks` 自 T59 起只接受带文件 URL 的 JSON（≤ 64 KiB），示例配置中对它们的放宽保留无害 |
+| 文件上传（流式请求体的路由） | 只对这些路径把上限放宽到 `limits.max_stream_body_bytes`（默认 512 MiB）；nginx 还要关闭 `proxy_request_buffering`。网关的 `server.read_timeout` 按「文件大小 ÷ 最低上行带宽」调大。MinerU 的本地文件上传端点是 `/v1/parse/file`、`/v1/tasks/file`（单文件上限 200 MiB）；`/v1/parse`、`/v1/tasks` 只接受带文件 URL 的 JSON（≤ 64 KiB），不需要放宽 |
 | 同步封装的长任务 | 代理的读超时必须 ≥ 该池的 `timeouts.response_header_base`，否则代理先断开，而上游照样收费 |
 
 ### 3.1 对外前检查清单
@@ -674,3 +674,49 @@ models:
 4. **无会话亲和**：通用 REST 转发不做状态维持和会话亲和。
 5. **无路径白名单**：网关不做请求路径与方法的内容过滤，安全控制依赖上游 Key 最小权限与模型访问列表（`allowed_models`）。接口声明（9.6）也不改变这一点。
 
+## 10. MinerU 文档解析
+
+网关对接 MinerU 官方的精准解析 API v4（spec/08 §8.2.1）。配置：
+
+```yaml
+pools:
+  - name: mineru
+    protocol: mineru
+    base_url: "https://mineru.net"
+    pin_ttl: 48h                       # 异步任务固定到创建它的 Key
+    timeouts: { response_header_base: 10m }
+    cooldown: { max: 24h }             # 日额度用完的 Key 冷却到北京时间次日
+models:
+  - name: mineru-parse
+    pool: mineru
+    price: { pages: "0.01", requests: "0" }
+    reserve: { pages: 600 }
+```
+
+Key 用 `gateway keys import --pool mineru ...` 导入，写原始 Token（不加 `bearer:`）。
+
+### 10.1 调用方式
+
+| 用途 | 请求 | 响应 |
+|:--|:--|:--|
+| 在线文件，同步 | `POST /v1/parse`，JSON `{"url": "...", "is_ocr": false, ...}` | Markdown |
+| 本地文件，同步 | `POST /v1/parse/file?name=report.pdf`，请求体是文件本身 | Markdown |
+| 在线文件，异步 | `POST /v1/tasks`，JSON 同上 | `{"data":{"task_id":"..."}}` |
+| 本地文件，异步 | `POST /v1/tasks/file?name=report.pdf` | `{"data":{"task_id":"batch-..."}}` |
+| 查询 / 下载结果 | `GET /v1/tasks/{task_id}`、`GET /v1/tasks/{task_id}/result` | 状态 JSON / 结果 zip（未完成时 409） |
+| AI 调用 | MCP 工具 `mineru_parse`（参数 `url`） | Markdown |
+
+```bash
+# 本地文件同步解析（--data-binary 会带上 Content-Length）
+curl -sS -X POST "https://gateway.example.com/v1/parse/file?name=report.pdf&is_ocr=true" \
+  -H "Authorization: Bearer $UAIG_TOKEN" --data-binary @report.pdf -o report.md
+```
+
+本地文件的解析选项放在查询串里：`name`（必填，带扩展名）、`is_ocr`、`enable_formula`、`enable_table`、`language`、`page_ranges`、`model_version`、`data_id`、`extra_formats`（逗号分隔），`pages`（预计页数，用于预留与异步计费）。
+
+### 10.2 注意事项
+
+1. **计费**：同步解析按实际页数结算；异步提交按 `?pages=` 给出的页数结算，没给时按预留（600 页）结算，需要精确计费请用同步方式或给出页数。
+2. **上传不换 Key**：本地文件是流式请求体，只尝试一次；申请上传地址时 Key 失效会直接返回错误，客户端重试即可（调度器已把那把 Key 冷却或隔离）。
+3. **必须定长上传**：不支持分块传输（`Transfer-Encoding: chunked`），请求必须带 `Content-Length`。
+4. **任务固定在内存里**：网关重启后，重启前创建的异步任务查询会返回 404，需要重新提交。

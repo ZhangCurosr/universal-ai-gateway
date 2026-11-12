@@ -2,6 +2,7 @@ package mineru
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -82,8 +83,29 @@ func TestIngressConformance(t *testing.T) {
 				WantEstimate: zeroUsage,
 				WantParams:   map[string]string{"id": "task_123"},
 			},
+			{
+				Name:         "parse.file with name and options",
+				Op:           OpParseFile,
+				Query:        "name=report.pdf&is_ocr=true&pages=3&language=en",
+				Header:       http.Header{"Content-Type": {"application/pdf"}},
+				Body:         []byte("%PDF-1.7 sample"),
+				WantModel:    ModelParse,
+				WantEstimate: pricing.Usage{UnitPages: 3, UnitRequests: 1},
+				WantParams:   map[string]string{"name": "report.pdf", "is_ocr": "true", "language": "en", "size": "15"},
+			},
+			{
+				Name:         "task.upload",
+				Op:           OpTaskUpload,
+				Query:        "name=slides.pptx",
+				Header:       http.Header{"Content-Type": {"application/octet-stream"}},
+				Body:         []byte("pptx bytes"),
+				WantModel:    ModelParse,
+				WantEstimate: pricing.Usage{UnitRequests: 1},
+				WantParams:   map[string]string{"name": "slides.pptx", "size": "10"},
+			},
 		},
 		Invalid: []adaptertest.IngressCase{
+			{Name: "parse.file without body", Op: OpParseFile, Query: "name=a.pdf"},
 			{Name: "parse negative pages", Op: OpParse, Query: "pages=-5"},
 			{Name: "task.create non-numeric pages", Op: OpTaskCreate, Query: "pages=abc"},
 			{Name: "task.create zero pages", Op: OpTaskCreate, Query: "pages=0"},
@@ -169,6 +191,28 @@ func TestEgressConformance(t *testing.T) {
 				WantClient: getResp,
 			},
 			{
+				Name:          "parse.file uploads then polls the batch",
+				Envelope:      protocol.Envelope{Op: OpParseFile, Model: ModelParse, Params: map[string]string{"name": "a.pdf", "size": "11"}},
+				NewBodyStream: func() io.Reader { return strings.NewReader("hello pdf!!") },
+				Upstream:      uploadUpstream(t, zipBytes),
+				WantKind:      protocol.ResponseBuffered,
+				WantUsage:     pricing.Usage{UnitPages: 4, UnitRequests: 1},
+				WantSource:    protocol.UsageUpstream,
+				WantClient:    []byte(md),
+			},
+			{
+				Name: "task.upload returns batch id pin",
+				Envelope: protocol.Envelope{Op: OpTaskUpload, Model: ModelParse, Params: map[string]string{"name": "a.pdf", "size": "11"},
+					Estimate: pricing.Usage{UnitPages: 9, UnitRequests: 1}},
+				NewBodyStream: func() io.Reader { return strings.NewReader("hello pdf!!") },
+				Upstream:      uploadUpstream(t, zipBytes),
+				WantKind:      protocol.ResponseBuffered,
+				WantUsage:     pricing.Usage{UnitPages: 9, UnitRequests: 1},
+				WantSource:    protocol.UsageEstimated,
+				WantPins:      []string{"batch-b1"},
+				WantClient:    []byte(`{"code":0,"data":{"batch_id":"b1","task_id":"batch-b1"},"msg":"ok"}`),
+			},
+			{
 				Name:     "task result downloads zip",
 				Envelope: protocol.Envelope{Op: OpTaskResult, Params: map[string]string{"id": "task_9"}},
 				Upstream: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -187,10 +231,46 @@ func TestEgressConformance(t *testing.T) {
 			},
 		},
 		InvalidRequests: []protocol.Envelope{
+			{Op: OpParseFile, Params: map[string]string{"size": "5"}},
+			{Op: OpTaskUpload, Params: map[string]string{"name": "noext", "size": "5"}},
+			{Op: OpTaskUpload, Params: map[string]string{"name": "a.pdf", "size": "5", "is_ocr": "maybe"}},
 			{Op: "unsupported_op"},
 			{Op: OpTaskGet, Params: map[string]string{}},
 			{Op: OpParse, Body: []byte(`[1]`)},
 			{Op: OpParse, Body: []byte(`{"is_ocr":true}`)},
 		},
+	})
+}
+
+// uploadUpstream 模拟 v4 本地上传：申请地址 → PUT（同源，校验长度与内容）→ 批次查询（第 1 次为空，之后完成）→ 结果包。
+func uploadUpstream(t *testing.T, zipBytes []byte) http.Handler {
+	var polls int32
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, adaptertest.UpstreamPrefix)
+		base := "http://" + r.Host + adaptertest.UpstreamPrefix
+		switch {
+		case r.Method == http.MethodPost && path == "/api/v4/file-urls/batch":
+			_, _ = fmt.Fprintf(w, `{"code":0,"data":{"batch_id":"b1","file_urls":[%q]}}`, base+"/oss/a.pdf?sig=1")
+		case r.Method == http.MethodPut && path == "/oss/a.pdf":
+			b, _ := io.ReadAll(r.Body)
+			if string(b) != "hello pdf!!" || r.ContentLength != 11 || r.Header.Get("Content-Type") != "" {
+				t.Errorf("upload got %q len=%d ctype=%q", b, r.ContentLength, r.Header.Get("Content-Type"))
+			}
+			atomic.StoreInt32(&polls, 0)
+		case r.Method == http.MethodGet && path == "/api/v4/extract-results/batch/b1":
+			switch atomic.AddInt32(&polls, 1) {
+			case 1:
+				_, _ = io.WriteString(w, `{"code":0,"data":{"batch_id":"b1","extract_result":[]}}`)
+				return
+			case 2:
+				_, _ = io.WriteString(w, `{"code":0,"data":{"batch_id":"b1","extract_result":[{"file_name":"a.pdf","state":"running","extract_progress":{"extracted_pages":1,"total_pages":4}}]}}`)
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"code":0,"data":{"batch_id":"b1","extract_result":[{"file_name":"a.pdf","state":"done","full_zip_url":%q}]}}`, base+"/files/b1.zip")
+		case r.Method == http.MethodGet && path == "/files/b1.zip":
+			_, _ = w.Write(zipBytes)
+		default:
+			http.NotFound(w, r)
+		}
 	})
 }

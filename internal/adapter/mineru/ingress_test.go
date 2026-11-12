@@ -15,8 +15,8 @@ import (
 func TestIngressRoutes(t *testing.T) {
 	in := Ingress{}
 	routes := in.Routes()
-	if len(routes) != 4 {
-		t.Fatalf("Routes() count = %d, want 4", len(routes))
+	if len(routes) != 6 {
+		t.Fatalf("Routes() count = %d, want 6", len(routes))
 	}
 
 	ops := map[string]protocol.Route{}
@@ -40,6 +40,12 @@ func TestIngressRoutes(t *testing.T) {
 		t.Errorf("missing route for %s", OpTaskCreate)
 	} else if rt.Method != http.MethodPost || rt.Path != "/v1/tasks" || rt.Body != protocol.BodyBuffered || rt.MaxBodyBytes != 64<<10 {
 		t.Errorf("unexpected route for %s: %+v", OpTaskCreate, rt)
+	}
+
+	for op, path := range map[string]string{OpParseFile: "/v1/parse/file", OpTaskUpload: "/v1/tasks/file"} {
+		if rt, ok := ops[op]; !ok || rt.Method != http.MethodPost || rt.Path != path || rt.Body != protocol.BodyStream || rt.MaxBodyBytes != 200<<20 {
+			t.Errorf("unexpected route for %s: %+v", op, rt)
+		}
 	}
 
 	if rt, ok := ops[OpTaskGet]; !ok {

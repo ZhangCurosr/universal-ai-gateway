@@ -29,7 +29,13 @@ func (Ingress) Protocol() protocol.Protocol { return Protocol }
 // maxRequestBody 是提交类请求体的上限（MU-01）：只含文档 URL 与解析选项。
 const maxRequestBody = 64 << 10
 
-// Routes 声明 MinerU 的 4 个端点（spec/08 §8.2）。无目录路由。
+// maxUploadBody 是本地文件上传的上限（MU-07）：上游单文件上限 200 MB。
+const maxUploadBody = 200 << 20
+
+// uploadOptions 是本地文件上传时从查询串读取的解析选项（MU-07）。
+var uploadOptions = []string{"name", "is_ocr", "enable_formula", "enable_table", "language", "page_ranges", "model_version", "data_id", "extra_formats"}
+
+// Routes 声明 MinerU 的 6 个端点（spec/08 §8.2）。无目录路由。
 func (Ingress) Routes() []protocol.Route {
 	return []protocol.Route{
 		{
@@ -47,6 +53,22 @@ func (Ingress) Routes() []protocol.Route {
 			Op:           OpTaskCreate,
 			Body:         protocol.BodyBuffered,
 			MaxBodyBytes: maxRequestBody,
+		},
+		{
+			Method:       http.MethodPost,
+			Path:         "/v1/parse/file",
+			Kind:         protocol.RouteCall,
+			Op:           OpParseFile,
+			Body:         protocol.BodyStream, // MU-07：请求体是文件本身，流式上传，不重试
+			MaxBodyBytes: maxUploadBody,
+		},
+		{
+			Method:       http.MethodPost,
+			Path:         "/v1/tasks/file",
+			Kind:         protocol.RouteCall,
+			Op:           OpTaskUpload,
+			Body:         protocol.BodyStream,
+			MaxBodyBytes: maxUploadBody,
 		},
 		{
 			Method: http.MethodGet,
@@ -71,7 +93,7 @@ func (Ingress) Claims(*http.Request) bool { return false }
 // Parse 实现 IN-G01 ~ IN-G07 与 spec/08 §8.2。
 func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol.Envelope, error) {
 	switch rt.Op {
-	case OpParse, OpTaskCreate:
+	case OpParse, OpTaskCreate, OpParseFile, OpTaskUpload:
 		model := r.Header.Get("X-UAIG-Model")
 		if model == "" {
 			model = ModelParse
@@ -96,6 +118,18 @@ func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol
 		params := map[string]string{}
 		if u := r.URL.Query().Get("url"); u != "" {
 			params["url"] = u
+		}
+		if rt.Op == OpParseFile || rt.Op == OpTaskUpload {
+			// MU-07：上游签名地址只接受定长上传
+			if r.ContentLength <= 0 {
+				return nil, apperr.New(apperr.CodeInvalidRequest, "Content-Length is required: send the file as the raw request body (chunked uploads are not supported)")
+			}
+			params["size"] = strconv.FormatInt(r.ContentLength, 10)
+			for _, k := range uploadOptions {
+				if v := r.URL.Query().Get(k); v != "" {
+					params[k] = v
+				}
+			}
 		}
 		if q := r.URL.RawQuery; q != "" {
 			params["query"] = q

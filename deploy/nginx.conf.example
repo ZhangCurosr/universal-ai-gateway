@@ -34,7 +34,7 @@ server {
     # 与 limits.max_stream_body_bytes（默认 512 MiB）一致；proxy_request_buffering off
     # 避免 nginx 先把整个文件落盘再转发：
     #
-    # location ~ ^/v1/(parse|tasks)$ {   # MinerU 的两个上传端点
+    # location ~ ^/v1/(parse|tasks)/file$ {   # MinerU 的两个本地文件上传端点
     #     proxy_pass http://127.0.0.1:8080;
     #     proxy_http_version 1.1;
     #     proxy_set_header Connection "";

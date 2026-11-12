@@ -34,7 +34,7 @@ gateway.example.com {
 # gateway.example.com {
 # 	@upload {
 # 		method POST
-# 		path /v1/parse /v1/tasks
+# 		path /v1/parse/file /v1/tasks/file
 # 	}
 # 	handle @upload {
 # 		request_body {

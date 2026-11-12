@@ -343,7 +343,9 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | 用法 | 入站路由 | 行为 |
 |:--|:--|:--|
 | 同步封装 | `POST /v1/parse`（Op `parse`，`BodyBuffered`，上限 64 KiB） | `Do` 内提交并轮询直到完成，返回结果（`ResponseBuffered` 的 Markdown）。整个过程受池的 `timeouts.response_header_base` 约束，该池应配置为分钟级 |
+| 同步封装（本地文件） | `POST /v1/parse/file?name=<文件名>`（Op `parse.file`，`BodyStream`，上限 200 MiB，请求体是文件本身，T60） | 上传后同 `parse`（MU-07） |
 | 异步透传 | `POST /v1/tasks`（Op `task.create`，`BodyBuffered`，上限 64 KiB，JSON 中给文件 URL） | 返回任务 ID，`Response.Pins = [任务 ID]` |
+| 异步（本地文件） | `POST /v1/tasks/file?name=<文件名>`（Op `task.upload`，`BodyStream`，上限 200 MiB，T60） | 返回任务 ID `batch-<batch_id>`，`Response.Pins = [该 ID]`（MU-08） |
 | | `GET /v1/tasks/{id}`（Op `task.get`，`BodyNone`） | `Affinity = {AffinityPin, id, Strict}`；任务完成时 Meter 报告 `pages` |
 | | `GET /v1/tasks/{id}/result`（Op `task.result`，`BodyNone`） | `Affinity` 同上；`ResponseRaw`（结果 zip 原样流式转发），`Content-Type`、`Content-Length` 可转发 |
 
@@ -353,7 +355,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | 估计用量 | 提交类操作：`pages` 取查询参数或请求中声明的页数上限，没有则不填（由 `reserve` 决定） |
 | 计费时点 | 同步封装：完成时按上游报告的实际页数结算（`UsageUpstream`）。异步透传：同一任务会被查询多次，而适配器无状态、无法判断「第一次看到完成」，所以**提交时按估计页数结算**（`UsageEstimated`）；查询与下载的 `Estimate` 写 `{pages: 0, requests: 0}`，Meter 返回 `(nil, UsageUpstream)`，不计费。需要精确按页计费的部署应使用同步封装 |
 | 任务固定 | 任务只存在于创建它的上游账号下；`pin_ttl` 应不短于结果在上游的保存时长。网关重启会丢失固定记录（内存），此时查询返回 404 `not_found`，客户端需重新提交 |
-| 上传 | 不支持（T59）：上游 v4 的本地文件上传要先申请签名地址再上传，暂未实现；客户端给出可公开访问的文件 URL |
+| 上传 | 本地文件走 `/v1/parse/file`、`/v1/tasks/file`（T60，MU-07）：文件请求体直接流式转发给上游的签名地址（EG-07），不进内存，不重试 |
 | 任务提交后重试与结算 | 提交返回 2xx 后即进入付费阶段。后续读取、轮询、下载失败或客户端取消都**不可重试**；同时返回 Meter 与错误（CORE-12），页数已知时按上游实际页数结算，否则按提交估计与预留补齐。任务 ID 已知时保留在内部错误原因中；网关对外只输出安全的协议错误，不转发部分结果 |
 
 配置：`price: { pages: "0.01", requests: "0" }`，`reserve: { pages: 600 }`；池：`pin_ttl: 48h`、`timeouts: { response_header_base: 10m }`、`cooldown: { max: 24h }`（日额度用完的 Key 冷却到次日，见 MU-04）。
@@ -365,10 +367,12 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | 编号 | 规则 |
 |:--|:--|
 | MU-01 | `parse`、`task.create` 的请求体是 JSON 对象（`BodyBuffered`，上限 64 KiB），内容为 v4 的提交参数（`url` 必填，其余如 `is_ocr`、`enable_formula`、`enable_table`、`language`、`page_ranges`、`model_version`、`data_id` 原样透传）。因为请求体已缓冲，提交前的失败可以换 Key 重试（spec/07 §6） |
-| MU-02 | `Prepare`：请求体为空或是 JSON 对象；查询参数 `url` 在请求体没有 `url` 时补入；最终没有非空字符串 `url` → `CodeInvalidRequest`（消息说明不支持文件上传）。非 JSON 对象（数组、二进制、坏 JSON）→ `CodeInvalidRequest` |
+| MU-02 | `Prepare`：请求体为空或是 JSON 对象；查询参数 `url` 在请求体没有 `url` 时补入；最终没有非空字符串 `url` → `CodeInvalidRequest`（消息提示本地文件改用 `/v1/parse/file`、`/v1/tasks/file`）。非 JSON 对象（数组、二进制、坏 JSON）→ `CodeInvalidRequest` |
 | MU-03 | 提交 `POST /api/v4/extract/task`，任务 ID 取 `data.task_id`；查询 `GET /api/v4/extract/task/{id}`，状态取 `data.state`：`done` 完成（结果包地址 `data.full_zip_url`），`failed` 失败（原因 `data.err_msg`，`OutcomeClientError` 400，带查询响应体），其余（`waiting-file`、`pending`、`running`、`converting`）继续轮询。同步封装从结果包中取 `full.md`（可以在子目录中）作为响应体，`Content-Type: text/markdown; charset=utf-8`。页数：轮询中见过的 `data.extract_progress.total_pages`，没有时取结果包中 `layout.json` 的 `pdf_info` 长度，仍没有时按 `UsageNone`（由预留结算） |
 | MU-04 | 上游以 HTTP 200 + 业务码 `code` 报错（`code` 为 0 表示成功）。分类：`A0202`、`A0211`（Token 错误 / 过期）→ `OutcomeAuthFailed`（401）；`-60018`、`-60019`（日额度用完）→ `OutcomeRateLimited`（429），`RetryAfter` = 到北京时间（UTC+8）次日 00:01 的时长（实际冷却受池的 `cooldown.max` 约束）；`-60009`、`-60007`、`-10001`（队列满、模型服务不可用、服务异常）→ `OutcomeOverloaded`（503）；`-60012`、`-60013`（找不到任务 / 无权访问）→ `OutcomeClientError`（404）；其他 → `OutcomeClientError`（400）。都带上游响应体（同协议原样转发给客户端）。提交被拒时任务没有创建，不计费；提交成功之后的失败仍按 §8.2 不重试并保留计量 |
 | MU-05 | 结果包：`task.result` 先查询任务，未完成 → `OutcomeClientError` 409，JSON 体含 `state`；完成后下载 `full_zip_url` 原样转发，`Content-Disposition: attachment; filename="<任务 ID>.zip"`（文件名只保留字母、数字、`-`、`_`）。结果地址必须是 `https`，或与 `base_url` 同源；否则 `OutcomeServerError`（502）。只有与 `base_url` 同源时才带上游 Key，第三方 CDN 不带 Key |
+| MU-07 | 本地文件（T60）：`parse.file`、`task.upload` 的请求体是文件本身，必须带 `Content-Length`（> 0，不支持分块上传，否则 `CodeInvalidRequest`）。查询参数：`name`（必填，文件名，1~255 字节，不含 `/`、`\` 与控制字符，必须有扩展名，上游按扩展名识别格式）、`is_ocr`、`data_id`、`page_ranges`（放进 `files[0]`）、`enable_formula`、`enable_table`、`language`、`model_version`、`extra_formats`（逗号分隔，放在顶层）；布尔值按 `strconv.ParseBool`，不合法 → `CodeInvalidRequest`；`pages` 同 `parse`。步骤：① `POST /api/v4/file-urls/batch` 申请上传地址（`data.batch_id`、`data.file_urls[0]`；业务码按 MU-04）；② 把请求体 `PUT` 到 `file_urls[0]`：定长、不设 `Content-Type`；地址按 MU-05 的规则检查，只有与 `base_url` 同源时才带上游 Key（签名地址在第三方存储上，永远不带 Key）；③ 上游自动提交解析任务。PUT 成功之前的任何失败都不计费（任务没有创建）；之后同 MU-03 / §8.2 的提交后规则。流式请求体只有一次尝试（CORE-07），所以 Key 在第 ① 步失败时不会换 Key 重试 |
+| MU-08 | 上传任务的 ID 是 `batch-<batch_id>`。`task.get` / `task.result` 遇到这个前缀时查询 `GET /api/v4/extract-results/batch/{batch_id}`，取 `data.extract_result[0]`，转换为与单任务相同的形状：`{"code":0,"msg":"ok","data":{"task_id","batch_id","file_name","state","full_zip_url","err_msg","data_id","extract_progress"}}`（空字段省略）；结果列表为空（刚上传）时 `state` 为 `waiting-file`。同步封装用同样的查询轮询 |
 | MU-06 | 解压读取 `full.md`、`layout.json` 时，单个文件解压后的大小以池的缓冲上限（缺省 64 MiB）为上限，超过 → 失败（防压缩炸弹）；结果包本身的下载同样受此上限 |
 
 ### 8.3 通用 REST 转发（`rest`，任务卡 T51）
