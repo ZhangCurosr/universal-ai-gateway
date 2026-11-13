@@ -187,3 +187,13 @@ Register-ScheduledTask -TaskName "UniversalAIGateway" -Action $action -Trigger $
 | REL-06 | 发布工具不创建标签、不推送、不上传。打标签与发布由用户手动完成 |
 | REL-07 | 构建完成后，对与当前机器 `GOOS/GOARCH` 相同的产物执行 `<产物> version`，输出必须等于 REL-02 的版本号，否则失败；当前平台不在 REL-03 清单内时跳过并打印说明 |
 | REL-08 | 发布工具调用的每个外部命令都有超时：`tools/check` 最长 15 分钟，单个平台构建最长 5 分钟 |
+
+## 8. 离线加密备份与恢复（T61）
+
+先正常停止网关，等待计费及运行时状态刷盘。设置 `UAIG_BACKUP_PASSWORD`（至少 16 字节），再运行 BK-01 / BK-02 的命令。口令与备份分开保管；丢失口令无法恢复。归档含主密钥及配置，必须加密，不能按普通日志分发。
+
+格式固定为 48 字节头 + AES-256-GCM 密文与 16 字节 tag。头依次为 ASCII `UAIGBK01`（8 字节）、大端 uint32 PBKDF2 迭代数 600000、大端 uint64 明文归档大小、随机 16 字节 salt、随机 12 字节 nonce；整个头为 AAD。派生为 PBKDF2-HMAC-SHA256，32 字节密钥。解密前严格校验 magic、固定 KDF 参数与长度，解密后只接受 USTAR 普通成员 `manifest.json`、`gateway.db`、`gateway.yaml`、`master.key`、可选 `unflushed_usage.jsonl`。manifest 含版本 1、schema 和各负载文件的大小 / SHA-256；拒绝重复成员、未知成员、路径穿越、链接及非零尾随内容。
+
+恢复到新目录；数据目录、密钥路径、配置路径的父目录须事先创建，数据目录本身不能存在。恢复后先手动调整原配置中的数据和主密钥路径，运行 `check-config`，再启动并核对 Token、Key 与用量。首版限制及退出码见 spec/03 §9。只支持离线，不提供自动调度、远端上传或口令轮换。
+
+Linux 上有恢复演练与权限测试；Windows 只能在完成独立实测后声称已验证，交叉构建成功不代表 Windows 的权限、硬链接和发布行为已实测。

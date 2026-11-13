@@ -193,3 +193,11 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 
 - 哨兵错误定义在 `store` 包：`ErrNotFound`、`ErrConflict`、`ErrInvalidArgument`。SQLite 唯一约束冲突（错误信息含 `UNIQUE constraint failed`，扩展错误码 2067）需转换为 `ErrConflict`——这是本仓库**唯一允许**检查驱动错误信息的地方，封装在 `sqlite.isUniqueViolation(err)` 中。
 - 批量插入：每条记录一条 `INSERT`，复用同一个 `tx.PrepareContext` 语句。不要拼接多行 `VALUES`（参数个数上限与可读性问题）。
+
+## 5. 离线一致性备份（T61）
+
+BK-01 / BK-02：持有 `data_dir/gateway.lock`，通过 `mode=ro` 的 SQLite 连接检查 schema 与 `PRAGMA integrity_check`，使用参数化 `VACUUM INTO ?` 生成私有临时数据库，涵盖 WAL 中已经提交的页。不得通过只复制正在运行的 SQLite 主文件制作备份，不 checkpoint 或迁移来源。归档不含 `gateway.lock`、`-wal`、`-shm`。
+
+恢复要求 schema 不高于当前程序已知的版本、归档 manifest 的 schema 与数据库一致、integrity_check 为 ok。只读取与写入控制面文件，数据面行为不变。运行时冷却、鉴权失败计数、任务固定以及客户端索引和计费记录都随完整数据库保留；未刷盘计费文件仍由正常启动恢复逻辑处理。
+
+多文件发布不是跨目录的断电原子事务。正常报错会清理本次文件；若进程被强制结束或机器断电，可能遗留新目标的部分文件或 `.restore-lock` 目录，需要在确认没有运行实例后人工检查，再换一个新目录重试。不得自动删除不明来源的目标。

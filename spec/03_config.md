@@ -278,3 +278,14 @@ func (t clientip.Trusted) From(r *http.Request) netip.Addr
 | HR-18 | 记录：每次重载按 §2.5 记 Info 日志，并追加到内存中的最近 20 条记录（`status`：`applied`、`restarting`、`failed`、`rolled_back`、`noop`）。dry-run 只记日志（`dry_run: true`），不追加记录。错误原文只放进记录，不写日志（可能引用配置中的值） |
 | HR-19 | 删除或重命名池：池里的 Key 保留在数据库中，不再被调度；管理 API 的 Key 列表对池不在当前配置中的 Key 显示 `state: "orphaned"`（只是展示，不写库；库中的状态原样保留在 `stored_state` 字段）。同名的池恢复后，这些 Key 自动重新被调度。 |
 | HR-30 | DEPLOYMENT.md 新增「修改配置后生效」一节：热重载与进程内重启的字段对照表、`gateway reload` 用法与 dry-run、`data_dir` 变化会生成新管理员 Token 的提示、主密钥变更的限制（待定 5）、重载失败后的行为（待定 6）、`GET /admin/api/reload` 的记录。 |
+
+## 9. 离线备份与恢复（T61，已批准）
+
+| 编号 | 规则 |
+|:--|:--|
+| BK-01 | `gateway backup --config FILE --output FILE [--max-bytes N]`：必须先停止网关。获取既有数据目录锁后，备份 SQLite 一致性快照、原配置、32 字节主密钥，以及存在时的 `unflushed_usage.jsonl`。不调用会迁移来源的 `sqlite.Open`。 |
+| BK-02 | `gateway restore --file FILE --data-dir DIR --master-key-file FILE --config-output FILE`：完整认证、校验归档及 SQLite 后，只向不存在的目标发布；所有父目录必须已存在且不包含符号链接。不能覆盖已有目录或文件，没有 `--force`。 |
+| BK-03 | 两个命令仅从 `UAIG_BACKUP_PASSWORD` 读取口令（至少 16 字节），不提供口令命令行参数。成功为 0，参数错误为 2，执行失败为 1。错误输出采用固定、不包含底层配置/SQL/文件内容的消息。 |
+| BK-04 | 明文归档上限 268435456 字节（256 MiB）；`--max-bytes` 只能降低此值。源库与 WAL / SHM 合计受同一上限限制（约束快照临时文件规模）；配置上限 1 MiB，manifest 上限 64 KiB，外层加密头 48 字节、GCM tag 16 字节。整体有界 AEAD，峰值内存可接近 1 GiB；更大的库不在首版范围内。每次操作带 2 分钟 context 上限。 |
+| BK-05 | 恢复保留原配置字节，不自动改写 YAML。成功输出提示手工修改 `server.data_dir`、`server.master_key_file` 并执行 `check-config`；恢复不启动网关、不调用上游。原 Token 仍可用，但不能重新显示其明文。 |
+| BK-06 | 备份输出使用同目录私有临时文件，检查 Write / Sync / Close 后用不覆盖目标的方式发布；恢复先暂存并校验，再发布。并发恢复同一目录只能有一次成功；失败清理本次创建的路径，不删除既有目标。符号链接、非普通源文件、目标别名、超限文件、损坏或不支持的格式都拒绝。 |

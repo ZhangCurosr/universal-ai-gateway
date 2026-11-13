@@ -869,3 +869,26 @@ curl -sS -X POST "https://gateway.example.com/v1/parse/file?name=report.pdf&is_o
 2. **上传不换 Key**：本地文件是流式请求体，只尝试一次；申请上传地址时 Key 失效会直接返回错误，客户端重试即可（调度器已把那把 Key 冷却或隔离）。
 3. **必须定长上传**：不支持分块传输（`Transfer-Encoding: chunked`），请求必须带 `Content-Length`。
 4. **重启不影响进行中的任务**：任务固定记录与 Key 的冷却状态会保存到数据库（T68），重启（含配置热重载触发的进程内重启）后仍落在创建任务的 Key 上；进程崩溃时最多丢最近 5 秒的变化。
+
+## 10. 离线备份与恢复（T61）
+
+先正常停止网关。命令会检查数据目录锁；网关运行中无法备份。归档包含数据库、原配置、主密钥及未刷盘计费文件，整体加密，口令只从 `UAIG_BACKUP_PASSWORD` 环境变量读取（至少 16 字节）。口令与备份分开保管。
+
+```bash
+# 通过当前 shell 安全设置 UAIG_BACKUP_PASSWORD，避免写入口令历史。
+read -rs UAIG_BACKUP_PASSWORD
+export UAIG_BACKUP_PASSWORD
+gateway backup --config gateway.yaml --output backup.uaig
+
+# 仅创建父目录；恢复的数据目录本身必须不存在。
+mkdir -p restored/secrets
+gateway restore --file backup.uaig --data-dir restored/data \
+  --master-key-file restored/secrets/master.key --config-output restored/gateway.yaml
+unset UAIG_BACKUP_PASSWORD
+```
+
+恢复保留原配置，随后手工修改 `restored/gateway.yaml` 的 `server.data_dir` 与 `server.master_key_file`，再运行 `gateway check-config --config restored/gateway.yaml`。确认路径指向新实例后才启动。已有 Token 和 Key 随库保留；原 Token 的明文不会重新显示。
+
+不覆盖已有输出，所有父路径须存在且不得是符号链接。明文归档最多 256 MiB，可用 `--max-bytes` 降低；整体认证加密的峰值内存可接近 1 GiB。失败清理正常流程中本次新建的文件；断电或强制杀进程可能留下部分新文件或 `.restore-lock`，应人工确认后改用新目录恢复。备份命令不改变来源配置、主密钥或数据库逻辑数据，不自动迁移或 checkpoint。
+
+恢复演练应核对客户端鉴权、上游 Key 解密、用量金额与运行时状态。Windows 尚未实测；不要把交叉构建当作权限与发布行为已验证。

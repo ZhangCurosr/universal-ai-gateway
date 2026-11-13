@@ -54,7 +54,7 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		default:
 			return cmdMCP(ctx, getenv, stdin, stdout, stderr)
 		}
-	case "reload", "keys", "admin-mcp":
+	case "reload", "keys", "admin-mcp", "backup", "restore":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		switch args[0] {
@@ -62,6 +62,10 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			return cmdReload(ctx, args[1:], getenv, stdout, stderr)
 		case "keys":
 			return cmdKeys(ctx, args[1:], getenv, stdout, stderr)
+		case "backup":
+			return cmdBackup(ctx, args[1:], getenv, stdout, stderr)
+		case "restore":
+			return cmdRestore(ctx, args[1:], getenv, stdout, stderr)
 		default:
 			return cmdAdminMCP(ctx, getenv, stdin, stdout, stderr)
 		}
@@ -118,4 +122,8 @@ admin commands (env UAIG_ADMIN_URL, UAIG_ADMIN_TOKEN):
   gateway reload [--dry-run] [--json]          re-read the config file of the running gateway
   gateway keys import --pool P --file F ...     add upstream keys from a local file (keys never printed)
   gateway admin-mcp                            run the admin MCP server on stdio`)
+	fmt.Fprintln(w, `
+offline commands (env UAIG_BACKUP_PASSWORD, at least 16 bytes):
+  gateway backup --config FILE --output FILE [--max-bytes N]
+  gateway restore --file FILE --data-dir DIR --master-key-file FILE --config-output FILE`)
 }

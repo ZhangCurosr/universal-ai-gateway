@@ -340,7 +340,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 
 | 卡 | 内容 | 前置 | 需审批 | 状态 |
 |:--|:--|:--|:--|:--|
-| T61 | 打底：Linux 竞态检测、24 小时稳定性基线、离线备份与恢复命令（沿用 [T46 步骤](../docs/handoff/T46_race_verify_linux.md)） | — | 否（备份命令需审批） | `TODO` |
+| T61 | 打底：Linux 竞态检测、24 小时稳定性基线、离线备份与恢复命令（[说明](../docs/handoff/T61_baseline_and_backup.md)，竞态沿用 [T46 步骤](../docs/handoff/T46_race_verify_linux.md)） | — | 备份方案与文件范围已批准（2026-11-13） | `DOING` |
 | T62 | Key 元数据：过期时间与来源标签，导入时读取，过期 Key 不参与调度（[说明](../docs/handoff/T62_key_metadata.md)） | — | 是（已批准） | `DONE` |
 | T66 | 声明式 API 能力 A：业务错误映射、用量提取、异步任务固定；用配置接入 MinerU 异步任务与 Tavily 搜索验证（[说明](../docs/handoff/T66_declarative_api.md)） | T61 建议先做 | 是（已批准） | `DONE` |
 | T67 | 声明式 API 能力 B：同步等待（提交 → 轮询 → 取结果）与预签名上传；验收为只用配置重写 MinerU 的同步解析与本地文件上传（[说明](../docs/handoff/T67_declarative_flows.md)） | T66 | 是（已批准） | `DONE` |
