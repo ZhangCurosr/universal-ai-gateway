@@ -191,3 +191,19 @@ func AffinityKey(clientID int64, h http.Header, hint protocol.AffinityHint) stri
 3. 查询任务的请求，入站适配器给出 `AffinityHint{Source: AffinityPin, Value: 任务 ID, Strict: true}`（spec/08 IN-G07）；内核以 `Strict` 调用 `Acquire`（SCH-17），该请求不换 Key 重试。
 4. 亲和键包含 clientID，因此客户端 A 创建的任务，客户端 B 无法查询（返回 404）。
 5. 固定记录只在内存中：网关重启或条目过期后查询返回 404，客户端需要重新提交。
+
+### 7.2 运行时状态的持久化（任务卡 T68）
+
+冷却截止时间、连续鉴权失败次数与任务固定记录跨重启保留（含 T55 的进程内重启）。隔离状态本来就写库（ST-06）；熔断器状态与普通会话亲和不保留。
+
+| 编号 | 规则 |
+|:--|:--|
+| RT-01 | 亲和缓存的条目带 `pinned` 标记：`Lease.Pin` 写入的为 true，普通会话亲和为 false；普通亲和覆盖同一条目时不取消标记 |
+| RT-02 | `Scheduler.RuntimeSnapshot() RuntimeState`：冷却截止时间晚于现在或失败计数 > 0 的 Key，以及未过期的 `pinned` 条目；按 Key ID、亲和键升序。只读内存，逐个分片短暂加锁，不阻塞 `Acquire` |
+| RT-03 | `Scheduler.RestoreRuntime(RuntimeState) (cooling, pins int)`：只恢复当前存在的 Key；冷却截止时间已过的忽略，未过的不晚于「现在 + 池当前的 `cooldown.max`」，只延长不缩短；失败计数取较大值；固定记录按剩余有效期写回并标记为固定 |
+| RT-04 | 快照与恢复都不访问数据库；读写数据库由装配代码负责 |
+| RT-10 | 启动时在 `SetKeys` 之后、开始服务之前读取并恢复，记一条 Info（只有数量）；读取失败记 Warn 并照常启动 |
+| RT-11 | 后台 worker `runtime_snapshot` 每 5 秒取一次快照，与上次成功写入的内容不同才写库；写库失败记 Warn，下次重试 |
+| RT-12 | 关闭时在数据面排空之后（与计费刷盘同一阶段）总是写最后一次快照 |
+| RT-13 | 进程崩溃时最多丢失最近 5 秒的变化 |
+| RT-14 | 快照与相关日志中不出现任务 ID、Key 明文或客户端 Token；亲和键本身是哈希 |

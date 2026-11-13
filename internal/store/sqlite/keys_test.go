@@ -193,3 +193,49 @@ func TestUpstreamKeyMetadataDefaults(t *testing.T) {
 		t.Fatalf("legacy row = %+v", keys)
 	}
 }
+
+// STO-18、STO-19：运行时状态整体替换，读取时过滤已结束的冷却与过期的固定记录
+func TestRuntimeState(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	now := fixedNow
+	keys := []store.KeyRuntime{
+		{KeyID: 1, CooldownUntil: now.Add(time.Hour)},
+		{KeyID: 2, CooldownUntil: now.Add(-time.Minute)}, // 已结束
+		{KeyID: 3, AuthFailures: 1},
+		{KeyID: 4, CooldownUntil: now.Add(-time.Minute), AuthFailures: 1},
+	}
+	pins := []store.TaskPin{
+		{AffinityKey: "c1:j:aaaa", KeyID: 1, ExpiresAt: now.Add(48 * time.Hour)},
+		{AffinityKey: "c1:j:bbbb", KeyID: 2, ExpiresAt: now.Add(-time.Second)},
+	}
+	if err := db.SaveRuntimeState(ctx, keys, pins); err != nil {
+		t.Fatal(err)
+	}
+	gotK, gotP, err := db.LoadRuntimeState(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotK) != 3 || gotK[0].KeyID != 1 || !gotK[0].CooldownUntil.Equal(now.Add(time.Hour)) ||
+		gotK[1].KeyID != 3 || !gotK[1].CooldownUntil.IsZero() || gotK[1].AuthFailures != 1 ||
+		gotK[2].KeyID != 4 || !gotK[2].CooldownUntil.IsZero() {
+		t.Fatalf("keys = %+v", gotK)
+	}
+	if len(gotP) != 1 || gotP[0].AffinityKey != "c1:j:aaaa" || gotP[0].KeyID != 1 || !gotP[0].ExpiresAt.Equal(now.Add(48*time.Hour)) {
+		t.Fatalf("pins = %+v", gotP)
+	}
+	// 整体替换：第二次保存覆盖第一次；空快照清空
+	if err := db.SaveRuntimeState(ctx, []store.KeyRuntime{{KeyID: 9, AuthFailures: 1}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	gotK, gotP, _ = db.LoadRuntimeState(ctx, now)
+	if len(gotK) != 1 || gotK[0].KeyID != 9 || len(gotP) != 0 {
+		t.Fatalf("after replace = %+v %+v", gotK, gotP)
+	}
+	if err := db.SaveRuntimeState(ctx, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotK, gotP, _ = db.LoadRuntimeState(ctx, now); len(gotK)+len(gotP) != 0 {
+		t.Fatalf("after clear = %+v %+v", gotK, gotP)
+	}
+}

@@ -145,6 +145,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		return fmt.Errorf("load upstream keys: %w", err)
 	}
 	sched.SetKeys(keys)
+	restoreRuntimeState(ctx, db, sched, logger) // RT-10：开始服务之前恢复冷却与任务固定
 
 	// 8. 沿用的组件与第一代（注册表、内核、MCP、数据面路由；spec/13 §6、spec/03 §8）
 	auditPipe := audit.NewPipeline(cfg.Audit.QueueCapacity)
@@ -189,6 +190,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		sweepLimiters(ctx, sweepInterval, limiter, ipLimiter)
 		return nil
 	})
+	startWorker("runtime_snapshot", runtimeSnapshotter(db, sched, logger, runtimeSnapshotInterval)) // RT-11、RT-12
 	startWorker("key_quarantine", func(ctx context.Context) error {
 		persistQuarantines(ctx, db, quarantines, logger)
 		return nil

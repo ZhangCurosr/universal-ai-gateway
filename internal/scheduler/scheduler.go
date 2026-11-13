@@ -385,7 +385,7 @@ func (l *Lease) Pin(affinityKey string, ttl time.Duration) {
 	if affinityKey == "" || ttl <= 0 {
 		return
 	}
-	l.s.affinity.Put(affinityKey, l.Key.ID, ttl, l.s.opts.Now())
+	l.s.affinity.pin(affinityKey, l.Key.ID, ttl, l.s.opts.Now())
 }
 
 // PinnedPool 返回 affinityKey 当前固定到的 Key 所在的池（SCH-19）；未命中、已过期或该 Key 已不存在返回 ok=false。

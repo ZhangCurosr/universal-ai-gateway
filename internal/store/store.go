@@ -81,6 +81,20 @@ type UpstreamKeyUpdate struct {
 	Label       *string
 }
 
+// KeyRuntime 是一把 Key 的运行时状态（T68）：冷却截止时间（零值 = 没有冷却）与连续鉴权失败次数。
+type KeyRuntime struct {
+	KeyID         int64
+	CooldownUntil time.Time
+	AuthFailures  int
+}
+
+// TaskPin 是一条任务固定记录（T68）。AffinityKey 是内核算出的亲和键（哈希），不含任务 ID 明文。
+type TaskPin struct {
+	AffinityKey string
+	KeyID       int64
+	ExpiresAt   time.Time
+}
+
 // SealFunc 在插入事务中、拿到自增 id 之后被调用，返回该行的密文（STO-06）。
 type SealFunc func(id int64) (crypto.Sealed, error)
 
@@ -152,6 +166,11 @@ type Store interface {
 
 	InsertAuditRecords(ctx context.Context, recs []AuditRecord) error
 	DeleteAuditBefore(ctx context.Context, before time.Time) (int64, error)
+
+	// SaveRuntimeState 用一个事务整体替换调度器运行时状态的快照（STO-18，T68）。
+	SaveRuntimeState(ctx context.Context, keys []KeyRuntime, pins []TaskPin) error
+	// LoadRuntimeState 返回快照中在 now 时仍有效的部分（STO-19，T68）。
+	LoadRuntimeState(ctx context.Context, now time.Time) ([]KeyRuntime, []TaskPin, error)
 
 	GetSetting(ctx context.Context, key string) (string, bool, error)
 	PutSetting(ctx context.Context, key, value string) error

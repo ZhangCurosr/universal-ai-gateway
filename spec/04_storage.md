@@ -71,6 +71,19 @@ CREATE INDEX idx_upstream_keys_pool ON upstream_keys(pool);
 ALTER TABLE upstream_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0; -- Unix 秒；0 = 不过期
 ALTER TABLE upstream_keys ADD COLUMN label      TEXT    NOT NULL DEFAULT '';  -- 来源标签，可空
 
+-- 0003_runtime_state.sql（T68）：调度器运行时状态的快照，由控制面整体替换
+CREATE TABLE key_runtime (
+    key_id         INTEGER PRIMARY KEY,
+    cooldown_until INTEGER NOT NULL,   -- Unix 毫秒；0 = 没有冷却
+    auth_failures  INTEGER NOT NULL,
+    updated_at     INTEGER NOT NULL
+);
+CREATE TABLE task_pins (
+    affinity_key TEXT    PRIMARY KEY,  -- 内核算出的亲和键（哈希），不含任务 ID 明文
+    key_id       INTEGER NOT NULL,
+    expires_at   INTEGER NOT NULL      -- Unix 毫秒
+);
+
 CREATE TABLE usage_events (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id         TEXT    NOT NULL UNIQUE,  -- 幂等键
@@ -167,6 +180,8 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 | STO-07 | `ListUpstreamKeys` | 按 `id` 升序返回全部，包含密文字段 |
 | STO-08 | `UpdateUpstreamKeyMeta` | 只更新 `UpstreamKeyUpdate` 中非 nil 的字段（`Name`、`Weight`、`MaxInFlight`、`ExpiresAt`、`Label`；`ExpiresAt` 指向零值表示清除过期时间）；不存在返回 `ErrNotFound` |
 | STO-17 | 过期时间与标签（T62） | `UpstreamKey.ExpiresAt` 零值表示不过期，库中存 0；非零值按 Unix 秒存取（读出为 UTC，精度到秒）。`Label` 原样存取。过期只是元数据：仓储不据此修改 `state` |
+| STO-18 | `SaveRuntimeState`（T68） | 单个事务内清空 `key_runtime`、`task_pins` 后批量插入（整体替换快照）；任一步失败回滚并返回错误。空输入表示清空 |
+| STO-19 | `LoadRuntimeState(now)`（T68） | 返回 `cooldown_until > now` 或 `auth_failures > 0` 的行（冷却已结束的 `CooldownUntil` 为零值）与 `expires_at > now` 的固定记录；不修改数据 |
 | STO-09 | `SetUpstreamKeyState` | `state` 不在 `ready/quarantined/disabled` 中返回 `ErrInvalidArgument`；不存在返回 `ErrNotFound` |
 | STO-10 | `InsertUsageEvents` | 单个事务批量插入；使用 `INSERT OR IGNORE`，重复 `request_id` 静默跳过（幂等）；空切片直接返回 nil |
 | STO-11 | `SumCostByClient` | `SELECT client_id, SUM(cost_nano_usd) ... GROUP BY client_id` |

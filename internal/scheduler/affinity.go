@@ -29,6 +29,7 @@ type affinityEntry struct {
 	keyID    int64
 	ttl      time.Duration
 	expireAt time.Time
+	pinned   bool // 由 Lease.Pin 写入的任务固定（RT-01）；只有它会被持久化
 }
 
 // newAffinityCache 创建缓存；capacity <= 0 时使用默认容量。
@@ -83,12 +84,22 @@ func (c *affinityCache) lookup(key string, now time.Time, touch bool) (int64, bo
 
 // Put 实现 AFF-02、AFF-05：写入或覆盖；分片满时淘汰最久未使用的条目。
 func (c *affinityCache) Put(key string, keyID int64, ttl time.Duration, now time.Time) {
+	c.put(key, keyID, ttl, now, false)
+}
+
+// pin 与 Put 相同，并把条目标记为任务固定（RT-01）。
+func (c *affinityCache) pin(key string, keyID int64, ttl time.Duration, now time.Time) {
+	c.put(key, keyID, ttl, now, true)
+}
+
+func (c *affinityCache) put(key string, keyID int64, ttl time.Duration, now time.Time, pinned bool) {
 	sh := c.shard(key)
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if el, ok := sh.items[key]; ok {
 		e := el.Value.(*affinityEntry)
 		e.keyID, e.ttl, e.expireAt = keyID, ttl, now.Add(ttl)
+		e.pinned = e.pinned || pinned // 普通亲和覆盖时不取消固定标记
 		sh.lru.MoveToFront(el)
 		return
 	}
@@ -97,7 +108,23 @@ func (c *affinityCache) Put(key string, keyID int64, ttl time.Duration, now time
 		sh.lru.Remove(oldest)
 		delete(sh.items, oldest.Value.(*affinityEntry).key)
 	}
-	sh.items[key] = sh.lru.PushFront(&affinityEntry{key: key, keyID: keyID, ttl: ttl, expireAt: now.Add(ttl)})
+	sh.items[key] = sh.lru.PushFront(&affinityEntry{key: key, keyID: keyID, ttl: ttl, expireAt: now.Add(ttl), pinned: pinned})
+}
+
+// pinnedEntries 返回全部未过期的固定条目（RT-02）。逐个分片短暂加锁。
+func (c *affinityCache) pinnedEntries(now time.Time) []PinRecord {
+	var out []PinRecord
+	for i := range c.shards {
+		sh := &c.shards[i]
+		sh.mu.Lock()
+		for el := sh.lru.Front(); el != nil; el = el.Next() {
+			if e := el.Value.(*affinityEntry); e.pinned && now.Before(e.expireAt) {
+				out = append(out, PinRecord{AffinityKey: e.key, KeyID: e.keyID, ExpiresAt: e.expireAt})
+			}
+		}
+		sh.mu.Unlock()
+	}
+	return out
 }
 
 // Delete 删除条目。
