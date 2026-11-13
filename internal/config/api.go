@@ -52,6 +52,164 @@ type APIEndpoint struct {
 	PinnedBy string `yaml:"pinned_by"` // 路径占位符名（DA-09）
 	// Usage 为 nil 表示未声明（按次计费）；非 nil 的空映射表示不计费（DA-07）。
 	Usage map[string]APIUsage `yaml:"usage"`
+	// Flow 非 nil 时 match 是网关上的虚拟路径，执行多步上游请求（FL-01，T67）。
+	Flow *APIFlow `yaml:"flow"`
+}
+
+// APIFlow 是虚拟端点的多步请求（FL-01 ~ FL-11）。Submit 与 Upload 恰好一个。
+type APIFlow struct {
+	Submit *APIFlowSubmit `yaml:"submit"`
+	Upload *APIFlowUpload `yaml:"upload"`
+	Poll   *APIFlowPoll   `yaml:"poll"`
+	Result *APIFlowResult `yaml:"result"`
+}
+
+// APIFlowSubmit 转发客户端请求体（FL-02）。
+type APIFlowSubmit struct {
+	Request string `yaml:"request"` // "METHOD /upstream/path"
+	TaskID  string `yaml:"task_id"` // 字段路径
+}
+
+// APIFlowUpload 申请上传地址并把客户端请求体 PUT 过去（FL-03、FL-04）。
+type APIFlowUpload struct {
+	Request   string                  `yaml:"request"`
+	Body      map[string]APIBodyField `yaml:"body"` // 目标字段路径 → 来源
+	UploadURL string                  `yaml:"upload_url"`
+	TaskID    string                  `yaml:"task_id"`
+}
+
+// APIBodyField 是申请上传地址请求体中一个字段的来源（FL-04）。
+type APIBodyField struct {
+	Query    string `yaml:"query"`
+	Type     string `yaml:"type"` // string（缺省）、bool、int、list
+	Required bool   `yaml:"required"`
+}
+
+// APIFlowPoll 是轮询（FL-05）。
+type APIFlowPoll struct {
+	Request string        `yaml:"request"` // 路径必须含 {task_id}
+	State   string        `yaml:"state"`
+	Done    []string      `yaml:"done"`
+	Failed  []string      `yaml:"failed"`
+	Timeout time.Duration `yaml:"timeout"` // 缺省 10 分钟，上限 1 小时
+}
+
+// APIFlowResult 是同步结果（FL-06）。
+type APIFlowResult struct {
+	URL         string `yaml:"url"`
+	ZipEntry    string `yaml:"zip_entry"`
+	ContentType string `yaml:"content_type"`
+}
+
+// APIBodyTypes 是 FL-04 的字段类型。
+var APIBodyTypes = map[string]bool{"": true, "string": true, "bool": true, "int": true, "list": true}
+
+// MaxFlowPollTimeout 是 poll.timeout 的上限（FL-05）。
+const MaxFlowPollTimeout = time.Hour
+
+// validateFlow 实现 CFG-20 对 flow 的静态校验。
+func validateFlow(ep string, method string, e APIEndpoint) error {
+	f := e.Flow
+	if (f.Submit == nil) == (f.Upload == nil) {
+		return fieldErr(ep+".flow", "needs exactly one of submit or upload")
+	}
+	if e.TaskID != "" || e.PinnedBy != "" {
+		return fieldErr(ep, "task_id and pinned_by cannot be used with flow (put task_id inside the flow step)")
+	}
+	stepRequest := func(fp, req string) error {
+		_, segs, err := ParseAPIMatch(req)
+		if err != nil {
+			return fieldErr(fp+".request", "%v", err)
+		}
+		for _, s := range segs {
+			if strings.HasPrefix(s, "{") {
+				return fieldErr(fp+".request", "placeholders are only allowed in poll.request")
+			}
+		}
+		return nil
+	}
+	taskID := ""
+	if s := f.Submit; s != nil {
+		if err := stepRequest(ep+".flow.submit", s.Request); err != nil {
+			return err
+		}
+		taskID = s.TaskID
+	}
+	if u := f.Upload; u != nil {
+		up := ep + ".flow.upload"
+		if method != "POST" && method != "PATCH" {
+			return fieldErr(ep+".match", "an upload flow needs POST or PATCH (the file is the request body)")
+		}
+		if err := stepRequest(up, u.Request); err != nil {
+			return err
+		}
+		if _, err := ParseFieldPath(u.UploadURL); err != nil {
+			return fieldErr(up+".upload_url", "%v", err)
+		}
+		for target, src := range u.Body {
+			if _, err := ParseFieldPath(target); err != nil {
+				return fieldErr(up+".body", "%v", err)
+			}
+			if src.Query == "" {
+				return fieldErr(up+".body."+target+".query", "must not be empty")
+			}
+			if !APIBodyTypes[src.Type] {
+				return fieldErr(up+".body."+target+".type", "must be string, bool, int or list, got %q", src.Type)
+			}
+		}
+		taskID = u.TaskID
+	}
+	if taskID != "" {
+		if _, err := ParseFieldPath(taskID); err != nil {
+			return fieldErr(ep+".flow", "task_id: %v", err)
+		}
+	}
+	if p := f.Poll; p != nil {
+		pp := ep + ".flow.poll"
+		if taskID == "" {
+			return fieldErr(ep+".flow", "poll needs task_id in submit or upload")
+		}
+		_, segs, err := ParseAPIMatch(p.Request)
+		if err != nil {
+			return fieldErr(pp+".request", "%v", err)
+		}
+		hasTask := false
+		for _, s := range segs {
+			if strings.HasPrefix(s, "{") {
+				if s != "{task_id}" {
+					return fieldErr(pp+".request", "only the {task_id} placeholder is allowed, got %s", s)
+				}
+				hasTask = true
+			}
+		}
+		if !hasTask {
+			return fieldErr(pp+".request", "must contain {task_id}")
+		}
+		if _, err := ParseFieldPath(p.State); err != nil {
+			return fieldErr(pp+".state", "%v", err)
+		}
+		if len(p.Done) == 0 {
+			return fieldErr(pp+".done", "must not be empty")
+		}
+		if p.Timeout < 0 || p.Timeout > MaxFlowPollTimeout {
+			return fieldErr(pp+".timeout", "must be between 0 (default 10m) and 1h")
+		}
+	}
+	if r := f.Result; r != nil {
+		rp := ep + ".flow.result"
+		if f.Poll == nil {
+			return fieldErr(rp, "needs poll")
+		}
+		if r.URL != "" {
+			if _, err := ParseFieldPath(r.URL); err != nil {
+				return fieldErr(rp+".url", "%v", err)
+			}
+		}
+		if r.ZipEntry != "" && (r.URL == "" || strings.ContainsAny(r.ZipEntry, "/\\") || r.ZipEntry == "." || r.ZipEntry == "..") {
+			return fieldErr(rp+".zip_entry", "needs url and must be a plain file name")
+		}
+	}
+	return nil
 }
 
 // APIUsage 是一个计量单位的取值规则（DA-07）。
@@ -61,6 +219,14 @@ type APIUsage struct {
 	RequestQuery string           `yaml:"request_query"`
 	Map          map[string]int64 `yaml:"map"`
 	Default      *int64           `yaml:"default"`
+	// ZipJSON 从 flow 下载的结果包中读取（FL-09a，T67）：只用于 result 有 zip_entry 的 flow。
+	ZipJSON *APIZipJSON `yaml:"zip_json"`
+}
+
+// APIZipJSON 是「结果包中某个 JSON 文件的某个字段」：数组取长度，数字取原值（FL-09a）。
+type APIZipJSON struct {
+	Entry string `yaml:"entry"` // 文件名（不含目录）
+	Count string `yaml:"count"` // 字段路径
 }
 
 // APIOutcomes 是 outcome 的合法取值（DA-04）。
@@ -212,9 +378,14 @@ func validateAPI(path string, m ModelConfig) error {
 	}
 	for i, e := range a.Endpoints {
 		ep := fmt.Sprintf("%s.api.endpoints[%d]", path, i)
-		_, segs, err := ParseAPIMatch(e.Match)
+		method, segs, err := ParseAPIMatch(e.Match)
 		if err != nil {
 			return fieldErr(ep+".match", "%v", err)
+		}
+		if e.Flow != nil {
+			if err := validateFlow(ep, method, e); err != nil {
+				return err
+			}
 		}
 		if e.TaskID != "" {
 			if _, err := ParseFieldPath(e.TaskID); err != nil {
@@ -251,8 +422,19 @@ func validateAPI(path string, m ModelConfig) error {
 					}
 				}
 			}
-			if u.JSON == "" && u.RequestJSON == "" && u.RequestQuery == "" && u.Default == nil {
-				return fieldErr(up, "needs json, request_json, request_query or default")
+			if u.JSON == "" && u.RequestJSON == "" && u.RequestQuery == "" && u.Default == nil && u.ZipJSON == nil {
+				return fieldErr(up, "needs json, request_json, request_query, zip_json or default")
+			}
+			if z := u.ZipJSON; z != nil {
+				if e.Flow == nil || e.Flow.Result == nil || e.Flow.Result.ZipEntry == "" {
+					return fieldErr(up+".zip_json", "only applies to a flow whose result has zip_entry")
+				}
+				if z.Entry == "" || strings.ContainsAny(z.Entry, "/\\") || z.Entry == "." || z.Entry == ".." {
+					return fieldErr(up+".zip_json.entry", "must be a plain file name")
+				}
+				if _, err := ParseFieldPath(z.Count); err != nil {
+					return fieldErr(up+".zip_json.count", "%v", err)
+				}
 			}
 			if len(u.Map) > 0 && u.RequestJSON == "" && u.RequestQuery == "" {
 				return fieldErr(up+".map", "only applies to request_json or request_query")

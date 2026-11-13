@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
@@ -75,6 +76,12 @@ func (in Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*proto
 	if ep, vars := in.apis.lookup(service).match(r.Method, subpath); ep != nil {
 		if ep.Usage != nil {
 			env.Estimate = pricing.Usage{} // 声明了用量：预留由 reserve 决定（DA-07）
+		}
+		if ep.Flow != nil && ep.Flow.Upload != nil && rt.Body == protocol.BodyStream { // FL-03：签名地址只接受定长上传
+			if r.ContentLength <= 0 {
+				return nil, apperr.New(apperr.CodeInvalidRequest, "Content-Length is required (chunked uploads are not supported)")
+			}
+			env.Params["size"] = strconv.FormatInt(r.ContentLength, 10)
 		}
 		if ep.PinnedBy != "" { // DA-09：只用创建任务的 Key，不换 Key
 			env.Affinity = protocol.AffinityHint{Source: protocol.AffinityPin, Value: []byte(pinValue(service, vars[ep.PinnedBy])), Strict: true}

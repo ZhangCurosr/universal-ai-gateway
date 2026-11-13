@@ -462,6 +462,25 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | DA-13 | `rest` 的 `Units()` 是所有声明中出现的单位加 `requests`。每个服务必须给自己声明的单位定价（CFG-20）；装配时为 rest 服务补齐其他单位的价格 `"0"`（只给内核使用，管理面展示的仍是原配置）。服务永远不会报告别的服务声明的单位，补 0 不会少计费 |
 | DA-14 | 日志与错误信息中不出现响应体、请求体的内容；任务 ID 只写进固定记录（内存） |
 
+#### 8.3.7 声明式多步请求：同步等待与预签名上传（任务卡 T67）
+
+§8.3.6 的端点可以写 `flow`（spec/03 CFG-20）：这时 `match` 是网关上的虚拟路径，客户端一次请求，网关在一次尝试内用同一把 Key 执行几步上游请求。配置示例见 DEPLOYMENT.md §9.8 与 [T67 说明](../docs/handoff/T67_declarative_flows.md)。
+
+| 编号 | 规则 |
+|:--|:--|
+| FL-01 | 有 `flow` 的端点不转发到上游的同名路径。flow 由 `submit` 或 `upload`（恰好一个）、可选的 `poll`、可选的 `result`（需要 `poll`）组成。没有 `poll` 时第一步成功就返回：`submit` 返回上游响应原文；`upload` 只返回 `{"task_id": "..."}`（申请地址的响应含签名上传地址，不交给客户端） |
+| FL-02 | `submit`：按 `request`（方法 + 上游路径，不允许占位符）发送客户端请求体，客户端查询串原样转发。只能用于缓冲请求体的路由（`/rest-idem/`），在 `/rest/` 下调用返回 400 并提示改用 `/rest-idem/` |
+| FL-03 | `upload`：① 按 `request` 发送由 `body` 组成的 JSON；② 从响应的 `upload_url` 字段取地址，把客户端请求体 `PUT` 过去：定长（客户端必须带 `Content-Length` > 0，入站检查，否则 400）、不设 `Content-Type`、流式转发不进内存；③ `task_id` 取任务 ID。只能用于 `/rest/` 下的 `POST` / `PATCH`。地址必须是 `https`，或与 `base_url` 同源，否则 502；只有同源时才带上游 Key。存储返回的错误不转发错误体（可能含签名信息），401 / 403 视为 `server_error`（签名地址被拒不是 Key 的问题） |
+| FL-04 | `body` 是「目标字段路径 → 来源」：来源只有 `query`，`type` 取 `string`（缺省）、`bool`、`int`、`list`（逗号分隔，去掉空项）；值不合法 → 400 并指明参数名；缺失时省略，`required: true` 时缺失 → 400。目标路径中的数字段创建数组，必须从 0 依次出现（构造时用全部字段试组装一次，不合法拒绝启动）；路径互相冲突（一个是值、一个是对象）→ 400 |
+| FL-05 | `poll`：先等待再查询，间隔 2 秒起、每次 ×1.5、最长 15 秒；`request` 必须含且只含 `{task_id}` 占位符（按单个路径段转义）。`state` 字段的文本值在 `done` 中 → 完成；在 `failed` 中 → `client_error` 400，带该次查询的响应体（截断到 8 KiB）；其他值或取不到 → 继续。超过 `timeout`（缺省 10 分钟，上限 1 小时）或请求被取消 → 结束 |
+| FL-06 | `result`：没有 `url` 时返回完成时的查询响应（JSON 原文）。有 `url` 时下载该地址（规则同 FL-03，只有同源才带 Key）；有 `zip_entry` 时把下载内容当作 zip，返回第一个文件名（不含目录）等于 `zip_entry` 的文件，`Content-Type` 取 `content_type`（缺省 `application/octet-stream`）；没有 `zip_entry` 时原样流式转发，`Content-Type` 取 `content_type` 或上游的值 |
+| FL-07 | zip 下载与解出的单个文件都以 `MaxBufferedBytes`（64 MiB）为上限（防压缩炸弹），超过 → `local_error`；不是 zip、找不到 `zip_entry`、地址不可用 → 502 |
+| FL-08 | T66 的错误规则对每一步上游请求都生效（含 2xx 业务错误；flow 中每一步的响应都必须是 JSON，否则 502）。第一步（提交成功，或上传的 `PUT` 成功）之前的失败按结果分类处理，可以换 Key（只在缓冲请求体的路由上，DA-12）。第一步成功之后：任何失败都不重试；可重试的分类改写为 `local_error`（不惩罚 Key），并按 CORE-12 同时返回计量结果与错误 |
+| FL-09 | 计费：端点的 `usage` 中 `json` 来源依次对每次查询响应求值，取最后一次取到的值；没有 `poll` 时只对第一步的响应求值；取不到时依次用 `zip_json`（FL-09a）、请求来源与 `default`（同 DA-07）。全部取不到时 `UsageNone`（按预留结算）。失败时（FL-08）也按已见到的值结算 |
+| FL-09a | `zip_json: { entry, count }`（只用于 `result` 有 `zip_entry` 的 flow）：轮询中没有取到该单位时，读取结果包中第一个文件名等于 `entry` 的 JSON 文件，`count` 字段是数组时取长度、是非负整数时取原值，来源为 `UsageUpstream`。文件不存在、超过大小上限或字段取不到时视为没有；不是 JSON 或值不合法时记 Warn。用于小文件直接完成、轮询中从未出现页数的情况（例如 MinerU 的 `layout.json` 中 `pdf_info` 的长度） |
+| FL-10 | 取到任务 ID 时放进 `Response.Pins`（值同 DA-08），之后可以用 `pinned_by` 端点查询同一任务。有 `poll` 而取不到任务 ID → 502，保留计量 |
+| FL-11 | 日志只写服务名、状态码与原因，不写请求体、上传地址、下载地址的查询串或结果内容；URL 错误一律去掉查询串（RS-17） |
+
 ## 9. OpenAI Responses API（`openai_responses`，任务卡 T09C）
 
 `internal/adapter/openairesp`。Codex CLI 等新客户端使用的 OpenAI 接口。与 Chat Completions 的关键区别是**有状态**：`store` 缺省为 true，响应保存在上游账号下，之后的 `previous_response_id` 与按 ID 的操作都只能在同一个上游账号上执行——所以本协议依赖任务固定（spec/07 §7.1）。

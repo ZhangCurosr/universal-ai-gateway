@@ -1,6 +1,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -232,5 +234,114 @@ func TestWithRestUnitPrices(t *testing.T) {
 	}
 	if _, ok := cfg.Models[1].Price["pages"]; ok {
 		t.Fatal("original config modified")
+	}
+}
+
+// T67：同步等待 flow 经完整网关：一次请求拿到结果包中的 full.md，按轮询中的页数计费；
+// 提交成功后任务失败时不换 Key 重试，计费保留（FL-08、CORE-12）。
+func TestE2E_REST_DeclaredFlow(t *testing.T) {
+	var mu sync.Mutex
+	submits := 0
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, _ := zw.Create("out/full.md")
+	_, _ = io.WriteString(w, "# Parsed\n")
+	_ = zw.Close() // 写入内存，不会失败
+	zipBytes := buf.Bytes()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/submit":
+			submits++
+			body, _ := io.ReadAll(r.Body)
+			id := "ok"
+			if strings.Contains(string(body), "broken") {
+				id = "bad"
+			}
+			_, _ = io.WriteString(w, `{"code":0,"data":{"task_id":"`+id+`"}}`)
+		case r.URL.Path == "/task/ok":
+			_, _ = io.WriteString(w, `{"code":0,"data":{"state":"done","pages":7,"zip":"http://`+r.Host+`/zip"}}`)
+		case r.URL.Path == "/task/bad":
+			_, _ = io.WriteString(w, `{"code":0,"data":{"state":"failed","pages":3,"err":"unsupported file"}}`)
+		case r.URL.Path == "/zip":
+			w.Header().Set("Content-Type", "application/zip")
+			_, _ = w.Write(zipBytes)
+		}
+	}))
+	defer upstream.Close()
+
+	g := startRESTGateway(t, func(c *config.Config) {
+		c.Pools = append(c.Pools, config.PoolConfig{Name: "flow-rest", Protocol: "rest", BaseURL: upstream.URL, MaxAttempts: 3})
+		c.Models = append(c.Models, config.ModelConfig{
+			Name: "flow-api", Pool: "flow-rest",
+			Price: map[string]string{"pages": "0.01", "requests": "0"}, Reserve: map[string]int64{"pages": 100},
+			API: &config.APIConfig{Endpoints: []config.APIEndpoint{{
+				Match: "POST /parse",
+				Usage: map[string]config.APIUsage{"pages": {JSON: "data.pages"}},
+				Flow: &config.APIFlow{
+					Submit: &config.APIFlowSubmit{Request: "POST /submit", TaskID: "data.task_id"},
+					Poll:   &config.APIFlowPoll{Request: "GET /task/{task_id}", State: "data.state", Done: []string{"done"}, Failed: []string{"failed"}},
+					Result: &config.APIFlowResult{URL: "data.zip", ZipEntry: "full.md", ContentType: "text/markdown; charset=utf-8"},
+				},
+			}}},
+		})
+		c.Normalize()
+	})
+	admin := "http://" + g.admin + "/admin/api"
+	var cl struct {
+		Token string `json:"token"`
+	}
+	doJSON(t, "POST", admin+"/clients", g.adminToken, map[string]any{"name": "flow", "role": "user", "quota_nano_usd": int64(1e12)}, &cl)
+	for _, k := range []string{"fk1-secret-aaaa", "fk2-secret-bbbb"} {
+		doJSON(t, "POST", admin+"/keys", g.adminToken, map[string]any{"pool": "flow-rest", "name": k[:3], "secret": k}, nil)
+	}
+	post := func(body string) (int, string, string) {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+g.data+"/rest-idem/flow-api/parse", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+cl.Token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, resp.Header.Get("Content-Type"), string(b)
+	}
+	if st, ct, body := post(`{"url":"https://example.com/a.pdf"}`); st != 200 || ct != "text/markdown; charset=utf-8" || body != "# Parsed\n" {
+		t.Fatalf("sync parse: %d %q %q", st, ct, body)
+	}
+	if st, _, body := post(`{"url":"https://example.com/broken.pdf"}`); st != 400 || !strings.Contains(body, "unsupported file") {
+		t.Fatalf("failed task: %d %q", st, body)
+	}
+	mu.Lock()
+	n := submits
+	mu.Unlock()
+	if n != 2 {
+		t.Fatalf("submits = %d, want 2 (a failed task must not be resubmitted on another key)", n)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var u struct {
+			Items []struct {
+				Model string           `json:"model"`
+				Usage map[string]int64 `json:"usage"`
+			} `json:"items"`
+		}
+		doJSON(t, "GET", admin+"/usage", g.adminToken, nil, &u)
+		pages := int64(0)
+		for _, it := range u.Items {
+			if it.Model == "flow-api" {
+				pages += it.Usage["pages"]
+			}
+		}
+		if pages == 10 { // 7（完成）+ 3（失败前见到的页数，保留计费）
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("billed pages = %d, want 10", pages)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

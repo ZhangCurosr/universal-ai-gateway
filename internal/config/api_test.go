@@ -146,3 +146,82 @@ func TestParseTZAndClock(t *testing.T) {
 		t.Error("empty path accepted")
 	}
 }
+
+const goodFlow = `      endpoints:
+        - match: "POST /parse"
+          flow:
+            submit: { request: "POST /api/v4/extract/task", task_id: data.task_id }
+            poll:
+              request: "GET /api/v4/extract/task/{task_id}"
+              state: data.state
+              done: [done]
+              failed: [failed]
+              timeout: 20m
+            result: { url: data.full_zip_url, zip_entry: full.md, content_type: "text/markdown" }
+          usage: { pages: { json: data.extract_progress.total_pages, zip_json: { entry: layout.json, count: pdf_info } } }
+        - match: "POST /parse/file"
+          flow:
+            upload:
+              request: "POST /api/v4/file-urls/batch"
+              body:
+                files.0.name: { query: name, required: true }
+                files.0.is_ocr: { query: is_ocr, type: bool }
+              upload_url: data.file_urls.0
+              task_id: data.batch_id
+`
+
+// T67：flow 的解析与 CFG-20 校验
+func TestAPIFlowConfig(t *testing.T) {
+	cfg, err := Parse([]byte(apiCfg(goodFlow)))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	f := cfg.Models[0].API.Endpoints[0].Flow
+	if z := cfg.Models[0].API.Endpoints[0].Usage["pages"].ZipJSON; z == nil || z.Entry != "layout.json" || z.Count != "pdf_info" {
+		t.Fatalf("zip_json = %+v", z)
+	}
+	if f.Submit.TaskID != "data.task_id" || f.Poll.Timeout.Minutes() != 20 || f.Result.ZipEntry != "full.md" {
+		t.Fatalf("flow = %+v", f)
+	}
+	up := cfg.Models[0].API.Endpoints[1].Flow.Upload
+	if !up.Body["files.0.name"].Required || up.Body["files.0.is_ocr"].Type != "bool" {
+		t.Fatalf("upload = %+v", up)
+	}
+
+	flow := func(match, body string) string {
+		return "      endpoints:\n        - match: \"" + match + "\"\n          flow:\n" + body
+	}
+	sub := "            submit: { request: \"POST /x\", task_id: id }\n"
+	poll := "            poll: { request: \"GET /x/{task_id}\", state: s, done: [ok] }\n"
+	tests := []struct{ name, api, want string }{
+		{"no first step", flow("POST /p", poll), "exactly one of submit or upload"},
+		{"both steps", flow("POST /p", sub+"            upload: { request: \"POST /u\", upload_url: u }\n"), "exactly one"},
+		{"endpoint task_id", "      endpoints:\n        - match: \"POST /p\"\n          task_id: id\n          flow:\n" + sub, "cannot be used with flow"},
+		{"placeholder in submit", flow("POST /p", "            submit: { request: \"POST /x/{id}\" }\n"), "only allowed in poll"},
+		{"bad step request", flow("POST /p", "            submit: { request: \"FETCH /x\" }\n"), "submit.request"},
+		{"upload with GET", flow("GET /p", "            upload: { request: \"POST /u\", upload_url: u }\n"), "POST or PATCH"},
+		{"upload without url", flow("POST /p", "            upload: { request: \"POST /u\" }\n"), "upload_url"},
+		{"body without query", flow("POST /p", "            upload: { request: \"POST /u\", upload_url: u, body: { a: { type: bool } } }\n"), "query"},
+		{"body bad type", flow("POST /p", "            upload: { request: \"POST /u\", upload_url: u, body: { a: { query: q, type: float } } }\n"), "string, bool, int or list"},
+		{"poll without task id", flow("POST /p", "            submit: { request: \"POST /x\" }\n"+poll), "poll needs task_id"},
+		{"poll without placeholder", flow("POST /p", sub+"            poll: { request: \"GET /x\", state: s, done: [ok] }\n"), "must contain {task_id}"},
+		{"poll other placeholder", flow("POST /p", sub+"            poll: { request: \"GET /x/{id}\", state: s, done: [ok] }\n"), "only the {task_id}"},
+		{"poll without done", flow("POST /p", sub+"            poll: { request: \"GET /x/{task_id}\", state: s }\n"), "done"},
+		{"poll timeout too long", flow("POST /p", sub+"            poll: { request: \"GET /x/{task_id}\", state: s, done: [ok], timeout: 2h }\n"), "1h"},
+		{"result without poll", flow("POST /p", sub+"            result: { url: u }\n"), "needs poll"},
+		{"zip without url", flow("POST /p", sub+poll+"            result: { zip_entry: a.md }\n"), "zip_entry"},
+		{"zip entry with dir", flow("POST /p", sub+poll+"            result: { url: u, zip_entry: a/b.md }\n"), "plain file name"},
+		{"zip_json without flow", "      endpoints:\n        - match: \"GET /x\"\n          usage: { pages: { zip_json: { entry: l.json, count: n } } }\n", "zip_entry"},
+		{"zip_json without zip result", flow("POST /p", sub+poll+"            result: { url: u }\n") + "          usage: { pages: { zip_json: { entry: l.json, count: n } } }\n", "zip_entry"},
+		{"zip_json bad entry", flow("POST /p", sub+poll+"            result: { url: u, zip_entry: a.md }\n") + "          usage: { pages: { zip_json: { entry: d/l.json, count: n } } }\n", "plain file name"},
+		{"zip_json bad count", flow("POST /p", sub+poll+"            result: { url: u, zip_entry: a.md }\n") + "          usage: { pages: { zip_json: { entry: l.json, count: \"a..b\" } } }\n", "zip_json.count"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(apiCfg(tt.api)))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("Parse() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}

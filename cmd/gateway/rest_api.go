@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"maps"
+	"strings"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/adapter/rest"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
@@ -90,8 +91,22 @@ func restAPIDefs(cfg *config.Config) ([]rest.APIDef, error) {
 							return nil, fmt.Errorf("config: models[%d].api.endpoints[%d].usage.%s.request_json: %w", i, j, unit, err)
 						}
 					}
+					if z := u.ZipJSON; z != nil {
+						count, err := config.ParseFieldPath(z.Count)
+						if err != nil {
+							return nil, fmt.Errorf("config: models[%d].api.endpoints[%d].usage.%s.zip_json.count: %w", i, j, unit, err)
+						}
+						r.ZipJSON = &rest.ZipCount{Entry: z.Entry, Count: count}
+					}
 					ep.Usage[unit] = r
 				}
+			}
+			if e.Flow != nil {
+				fl, err := restFlowDef(e.Flow)
+				if err != nil {
+					return nil, fmt.Errorf("config: models[%d].api.endpoints[%d].flow: %w", i, j, err)
+				}
+				ep.Flow = fl
 			}
 			d.Endpoints = append(d.Endpoints, ep)
 		}
@@ -139,4 +154,73 @@ func restUnits(reg *protocol.Registry) []string {
 		return eg.Units()
 	}
 	return nil
+}
+
+// restFlowDef 转换 flow（FL-01 ~ FL-06）。配置已经过 CFG-20 的静态校验。
+func restFlowDef(f *config.APIFlow) (*rest.FlowDef, error) {
+	step := func(req, taskID string) (rest.FlowStep, error) {
+		m, segs, err := config.ParseAPIMatch(req)
+		if err != nil {
+			return rest.FlowStep{}, err
+		}
+		st := rest.FlowStep{Method: m, Path: "/" + strings.Join(segs, "/")}
+		if taskID != "" {
+			if st.TaskID, err = config.ParseFieldPath(taskID); err != nil {
+				return rest.FlowStep{}, err
+			}
+		}
+		return st, nil
+	}
+	out := &rest.FlowDef{}
+	if s := f.Submit; s != nil {
+		st, err := step(s.Request, s.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("submit: %w", err)
+		}
+		out.Submit = &st
+	}
+	if u := f.Upload; u != nil {
+		st, err := step(u.Request, u.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("upload: %w", err)
+		}
+		up := &rest.FlowUpload{FlowStep: st}
+		if up.UploadURL, err = config.ParseFieldPath(u.UploadURL); err != nil {
+			return nil, fmt.Errorf("upload.upload_url: %w", err)
+		}
+		for target, src := range u.Body {
+			segs, err := config.ParseFieldPath(target)
+			if err != nil {
+				return nil, fmt.Errorf("upload.body: %w", err)
+			}
+			typ := src.Type
+			if typ == "" {
+				typ = "string"
+			}
+			up.Body = append(up.Body, rest.BodyField{Target: segs, Query: src.Query, Type: typ, Required: src.Required})
+		}
+		out.Upload = up
+	}
+	if p := f.Poll; p != nil {
+		m, segs, err := config.ParseAPIMatch(p.Request)
+		if err != nil {
+			return nil, fmt.Errorf("poll: %w", err)
+		}
+		state, err := config.ParseFieldPath(p.State)
+		if err != nil {
+			return nil, fmt.Errorf("poll.state: %w", err)
+		}
+		out.Poll = &rest.FlowPoll{Method: m, Path: "/" + strings.Join(segs, "/"), State: state, Done: p.Done, Failed: p.Failed, Timeout: p.Timeout}
+	}
+	if r := f.Result; r != nil {
+		res := &rest.FlowResult{ZipEntry: r.ZipEntry, ContentType: r.ContentType}
+		if r.URL != "" {
+			var err error
+			if res.URL, err = config.ParseFieldPath(r.URL); err != nil {
+				return nil, fmt.Errorf("result.url: %w", err)
+			}
+		}
+		out.Result = res
+	}
+	return out, nil
 }

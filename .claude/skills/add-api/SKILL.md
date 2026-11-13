@@ -104,6 +104,8 @@ models:
 - 需要失败自动换 Key 或按请求体字段计费的 `POST` 接口，工具声明写 `idempotent: true`（走 `/rest-idem/`）；
 - 不确定错误码含义时不要猜，宁可不写这条规则（未命中的 2xx 照常当作成功）。
 
+文档要求「提交任务 → 轮询 → 下载结果」或「先申请上传地址再上传文件」时，用 `flow` 声明一个虚拟端点（DEPLOYMENT.md §9.8 后半部分，spec/08 §8.3.7），让 AI 一次调用拿到结果：`submit`（转发 JSON 请求体，走 `/rest-idem/`）或 `upload`（请求体是文件，走 `/rest/`），`poll` 写清状态字段与完成、失败的取值，`result` 写下载地址字段（结果是 zip 时加 `zip_entry`）。同步等待需要在池上加 `timeouts: { response_header_base: 10m }`。
+
 ### 5. 校验并预览
 
 ```bash

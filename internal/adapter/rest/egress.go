@@ -32,8 +32,9 @@ type Egress struct {
 	preserveClassifyHTTP bool
 
 	state *egressState
-	apis  *apiTable        // 声明式 API 能力（T66）；nil = 没有声明
-	now   func() time.Time // 仅测试使用；nil = time.Now
+	apis  *apiTable                                  // 声明式 API 能力（T66）；nil = 没有声明
+	now   func() time.Time                           // 仅测试使用；nil = time.Now
+	sleep func(context.Context, time.Duration) error // 仅测试使用：flow 轮询的等待；nil = 真实计时器
 }
 
 type egressState struct {
@@ -157,6 +158,11 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 		return nil, err
 	}
 
+	st, _ := call.State.(*callState)
+	if st != nil && st.ep != nil && st.ep.Flow != nil { // 虚拟端点（FL-01）
+		return e.doFlow(ctx, up, call, st, parsedKey)
+	}
+
 	// 3. 构造上游 URL（RS-10、RS-14）
 	subpath := ""
 	query := ""
@@ -247,32 +253,9 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	}
 
 	// 6. 发送上游请求
-	st, _ := call.State.(*callState)
 	resp, err := protocol.Send(up, req)
 	if err != nil {
-		var attErr *protocol.AttemptError
-		if errors.As(err, &attErr) {
-			sanitizeAttemptErrorURL(attErr)
-			matched := false
-			if st != nil && attErr.Outcome.Status != 0 { // DA-03：非 2xx 也检查错误规则
-				doc, isJSON := decodeJSON(attErr.Body)
-				if rule := st.def.matchError(attErr.Outcome.Status, doc, isJSON && isJSONType(attErr.Header.Get("Content-Type"))); rule != nil {
-					rule.apply(&attErr.Outcome, e.clock())
-					matched = true
-				}
-			}
-			// RS-16: 403 改写为 OutcomeClientError，保留 403 状态码；规则映射为 permission_denied 时同样处理（DA-04）
-			if !e.preserveClassifyHTTP && ((!matched && attErr.Outcome.Status == http.StatusForbidden) || attErr.Outcome.Kind == protocol.OutcomePermissionDenied) {
-				attErr.Outcome.Kind = protocol.OutcomeClientError
-				e.log403Warn(ctx, req.URL.Host, req.URL.Path, string(up.Secret))
-			}
-			return nil, attErr
-		}
-		var urlErr *url.Error
-		if errors.As(err, &urlErr) {
-			sanitizeURLError(urlErr)
-		}
-		return nil, err
+		return nil, e.classifyError(ctx, st, err, req.URL.Host, req.URL.Path, up.Secret)
 	}
 
 	// 7. 2xx 响应处理（RS-15、RS-18）
@@ -505,4 +488,33 @@ func (e Egress) warnUsage(ctx context.Context, st *callState, u usageResult) {
 	for _, unit := range u.warn {
 		e.logger().WarnContext(ctx, "rest: usage value is not a non-negative integer; ignored", "service", st.service, "unit", unit)
 	}
+}
+
+// classifyError 处理 protocol.Send 的错误：去掉 URL 中的查询串（RS-17），按声明的错误规则改写分类（DA-03），
+// 并执行 RS-16（403 不隔离 Key；规则映射为 permission_denied 时同样处理，DA-04）。
+func (e Egress) classifyError(ctx context.Context, st *callState, err error, host, path string, secret []byte) error {
+	var attErr *protocol.AttemptError
+	if !errors.As(err, &attErr) {
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			sanitizeURLError(urlErr)
+		}
+		return err
+	}
+	sanitizeAttemptErrorURL(attErr)
+	var rule *ErrorRule
+	if st != nil && attErr.Outcome.Status != 0 {
+		doc, isJSON := decodeJSON(attErr.Body)
+		if rule = st.def.matchError(attErr.Outcome.Status, doc, isJSON && isJSONType(attErr.Header.Get("Content-Type"))); rule != nil {
+			rule.apply(&attErr.Outcome, e.clock()) // permission_denied 在 apply 中改写为 403 客户端错误
+		}
+	}
+	switch {
+	case rule != nil && rule.Outcome == protocol.OutcomePermissionDenied:
+		e.log403Warn(ctx, host, path, string(secret))
+	case rule == nil && !e.preserveClassifyHTTP && attErr.Outcome.Status == http.StatusForbidden:
+		attErr.Outcome.Kind = protocol.OutcomeClientError
+		e.log403Warn(ctx, host, path, string(secret))
+	}
+	return attErr
 }

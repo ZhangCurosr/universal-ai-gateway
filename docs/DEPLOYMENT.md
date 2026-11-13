@@ -751,6 +751,78 @@ curl -sS "https://gateway.example.com/rest/mineru-api/api/v4/extract/task/<task_
 - **任务固定记录在内存里**：网关重启后，重启前创建的任务查询返回 404（T68 会解决）。
 - 声明了需要读响应体的规则时，JSON 响应会先缓冲再转发（上限 64 MiB）；文件下载等非 JSON 响应仍是流式。
 
+#### 一次请求完成「提交 → 等待 → 取结果」，以及本地文件上传（spec/08 §8.3.7）
+
+端点写 `flow` 时，`match` 是网关上的**虚拟路径**：客户端请求一次，网关用同一把 Key 依次提交、轮询、下载结果。下面三个虚拟端点只用配置实现了 MinerU 的同步解析、本地文件同步解析与本地文件异步上传：
+
+```yaml
+pools:
+  - name: mineru-rest
+    protocol: rest
+    base_url: "https://mineru.net"
+    pin_ttl: 48h
+    timeouts: { response_header_base: 10m }   # 同步等待在发出响应头之前会等很久
+    cooldown: { max: 24h }
+models:
+  - name: mineru-api
+    pool: mineru-rest
+    price: { pages: "0.01", requests: "0" }
+    reserve: { pages: 600 }
+    api:
+      errors: [ ... ]                           # 同上
+      endpoints:
+        - match: "POST /parse"                  # POST /rest-idem/mineru-api/parse，请求体 {"url": "..."}
+          flow:
+            submit: { request: "POST /api/v4/extract/task", task_id: data.task_id }
+            poll:
+              request: "GET /api/v4/extract/task/{task_id}"
+              state: data.state
+              done: [done]
+              failed: [failed]
+            result: { url: data.full_zip_url, zip_entry: full.md, content_type: "text/markdown; charset=utf-8" }
+          usage: { pages: { json: data.extract_progress.total_pages, zip_json: { entry: layout.json, count: pdf_info } } }   # 按真实页数计费
+        - match: "POST /parse/file"             # POST /rest/mineru-api/parse/file?name=a.pdf，请求体是文件
+          flow:
+            upload:
+              request: "POST /api/v4/file-urls/batch"
+              body:
+                files.0.name: { query: name, required: true }
+                files.0.is_ocr: { query: is_ocr, type: bool }
+                language: { query: language }
+              upload_url: data.file_urls.0
+              task_id: data.batch_id
+            poll:
+              request: "GET /api/v4/extract-results/batch/{task_id}"
+              state: data.extract_result.0.state
+              done: [done]
+              failed: [failed]
+            result: { url: data.extract_result.0.full_zip_url, zip_entry: full.md, content_type: "text/markdown; charset=utf-8" }
+          usage: { pages: { json: data.extract_result.0.extract_progress.total_pages, zip_json: { entry: layout.json, count: pdf_info } } }
+        - match: "POST /tasks/file"             # 只上传，返回 {"task_id": "..."}，之后用下面的端点查询
+          flow:
+            upload: { request: "POST /api/v4/file-urls/batch", body: { files.0.name: { query: name, required: true } }, upload_url: data.file_urls.0, task_id: data.batch_id }
+          usage: { pages: { request_query: pages, default: 600 } }
+        - match: "GET /api/v4/extract-results/batch/{batch}"
+          pinned_by: batch
+          usage: {}
+```
+
+```bash
+# 在线文件：一次请求拿到 Markdown（提交 JSON 的 flow 必须走 /rest-idem/）
+curl -sS -X POST "https://gateway.example.com/rest-idem/mineru-api/parse" -H "Authorization: Bearer $UAIG_TOKEN" \
+  -H "Content-Type: application/json" -d '{"url":"https://example.com/a.pdf"}' -o a.md
+# 本地文件：请求体就是文件（上传 flow 必须走 /rest/，--data-binary 会带上 Content-Length）
+curl -sS -X POST "https://gateway.example.com/rest/mineru-api/parse/file?name=report.pdf&is_ocr=true" \
+  -H "Authorization: Bearer $UAIG_TOKEN" --data-binary @report.pdf -o report.md
+```
+
+- **只尝试一次的边界**：提交（或上传完成）之前失败可以换 Key；之后任务已经在上游创建，失败不重试，已见到的页数照常计费。
+- **上传**：签名地址只接受定长上传，不支持分块；第三方存储不会收到上游 Key；申请地址的响应（含签名地址）不会返回给客户端。
+- **结果**：可以直接返回最后一次查询的 JSON、原样转发下载内容，或从 zip 里取一个文件（单个文件与 zip 都不超过 64 MiB）。
+- **页数取不到时**：小文件可能直接完成，轮询中从未出现页数；`zip_json` 从结果包里的文件数出页数（例如 `layout.json` 中 `pdf_info` 的长度），否则按 `reserve` 结算。
+- 轮询间隔固定为 2 秒起、每次 ×1.5、最长 15 秒；`poll.timeout` 缺省 10 分钟，最长 1 小时。
+- 把虚拟端点声明为工具（9.6）时，`POST /parse` 这类提交 JSON 的接口写 `idempotent: true`，AI 一次调用就能拿到结果。
+
 ## 10. MinerU 文档解析
 
 网关对接 MinerU 官方的精准解析 API v4（spec/08 §8.2.1）。配置：

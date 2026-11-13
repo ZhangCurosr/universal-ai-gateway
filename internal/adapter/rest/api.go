@@ -52,6 +52,8 @@ type EndpointDef struct {
 	PinnedBy string   // 占位符名；空 = 不固定
 	// Usage 为 nil 表示未声明（{requests: 1}）；非 nil 的空映射表示不计费。
 	Usage map[string]UsageRule
+	// Flow 非 nil 时这是虚拟端点（FL-01，T67）。
+	Flow *FlowDef
 }
 
 // UsageRule 是一个计量单位的取值规则（DA-07）。
@@ -61,6 +63,13 @@ type UsageRule struct {
 	RequestQuery string
 	Map          map[string]int64
 	Default      *int64
+	ZipJSON      *ZipCount // 只在 flow 的 zip 结果上求值（FL-09a）
+}
+
+// ZipCount 是结果包中某个 JSON 文件的某个字段：数组取长度，非负整数取原值（FL-09a）。
+type ZipCount struct {
+	Entry string
+	Count []string
 }
 
 // apiTable 按服务名索引声明。
@@ -88,6 +97,11 @@ func newAPITable(defs []APIDef) (*apiTable, error) {
 		for _, e := range d.Endpoints {
 			for u := range e.Usage {
 				units[u] = true
+			}
+			if e.Flow != nil {
+				if err := validateFlowDef(d.Service, e.Flow); err != nil {
+					return nil, err
+				}
 			}
 		}
 		t.byService[d.Service] = d
@@ -308,7 +322,9 @@ func (c *Cooldown) next(now time.Time) time.Time {
 // apply 把命中的规则写进 Outcome（DA-04、DA-05）。
 func (r *ErrorRule) apply(o *protocol.Outcome, now time.Time) {
 	o.Kind = r.Outcome
-	if r.Outcome == protocol.OutcomeClientError {
+	if r.Outcome == protocol.OutcomePermissionDenied { // RS-16：403 不隔离 Key，按客户端错误处理
+		o.Kind, o.Status = protocol.OutcomeClientError, http.StatusForbidden
+	} else if r.Outcome == protocol.OutcomeClientError {
 		o.Status = r.Client
 		if o.Status == 0 {
 			o.Status = http.StatusBadRequest
