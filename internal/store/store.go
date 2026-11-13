@@ -66,6 +66,8 @@ type UpstreamKey struct {
 	MaxInFlight int
 	State       string
 	StateReason string
+	ExpiresAt   time.Time // 零值 = 不过期（T62）
+	Label       string    // 来源标签，可空（T62）
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -75,6 +77,8 @@ type UpstreamKeyUpdate struct {
 	Name        *string
 	Weight      *int
 	MaxInFlight *int
+	ExpiresAt   *time.Time // 指向零值表示清除过期时间（T62）
+	Label       *string
 }
 
 // SealFunc 在插入事务中、拿到自增 id 之后被调用，返回该行的密文（STO-06）。

@@ -105,7 +105,9 @@ gateway keys import --pool weather-pool --file /path/to/accounts.jsonl \
   --field api_key --where status=ok --secret-prefix bearer: --name-prefix weather --dry-run
 ```
 
-先 `--dry-run` 看计数，确认无误再去掉 `--dry-run` 执行。输出只有计数与行号，例如 `imported 12, duplicate 0, skipped 1 (filtered or invalid), failed 0`。每行一个密钥的文本文件用 `--format lines`。
+先 `--dry-run` 看计数，确认无误再去掉 `--dry-run` 执行。输出只有计数与行号，例如 `imported 12, duplicate 0, skipped 1 (filtered or invalid), failed 0, updated 0, expired 0`。每行一个密钥的文本文件用 `--format lines`。
+
+账号文件里有过期时间字段时（只看字段名，不看值），加 `--expires-field <字段名>`，必要时加 `--tz +08:00`；过期账号会被跳过。可以用 `--label <来源>` 标记这一批 Key。账号续期后加 `--update` 重新运行。
 
 用户只有一两把 Key、不想用文件时，请用户自己在管理页面（`http://127.0.0.1:8081/admin/ui/` → 上游 Key → 新建）粘贴，不要让用户把 Key 发给你。
 

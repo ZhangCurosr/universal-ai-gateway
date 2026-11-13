@@ -151,11 +151,14 @@ type ClientView struct {
 }
 type CreateKeyRequest struct {
     Pool string; Name string; Secret string; Weight *int; MaxInFlight *int
+    ExpiresAt string; Label string // T62：RFC 3339 / 来源标签，均可空
 }
-type UpdateKeyRequest struct { Name *string; Weight *int; MaxInFlight *int; State *string } // State: "ready" | "disabled"
+type UpdateKeyRequest struct { Name *string; Weight *int; MaxInFlight *int; State *string // State: "ready" | "disabled"
+    ExpiresAt json.RawMessage; Label *string } // T62：expires_at 省略 = 不改，null = 清除，字符串 = RFC 3339
 type KeyView struct {
-    ID int64; Pool, Name, SecretHint, State, StateReason string; Weight, MaxInFlight int
+    ID int64; Pool, Name, SecretHint, State, StoredState, StateReason string; Weight, MaxInFlight int
     InFlight int; CooldownSeconds int; Breaker string // closed | open | half_open
+    ExpiresAt string; Label string // T62：expires_at 不过期时省略
     CreatedAt, UpdatedAt string
 }
 type UsageItem struct {
@@ -170,10 +173,11 @@ type UsageItem struct {
 | ADM-10 | 创建/修改客户端成功后，同步执行：`auth.Reloader.Reload` 与 `ledger.UpsertAccount`。两者任一失败返回 500，但数据库修改已生效（记录 `Error` 日志） |
 | ADM-11 | `ClientView.SpentNanoUSD` / `ReservedNanoUSD` 取自 `ledger.Snapshot` |
 | ADM-12 | `rotate-token`：生成新 Token，更新 `token_hash`/`token_display`，旧 Token 立即失效（Reload 之后） |
-| ADM-13 | 创建 Key：`pool` 必须在配置中存在（否则 400）；`secret` 非空、≤ 4096 字节；`fingerprint = HashToken(pepper, secret)`；重复返回 409 `conflict` |
+| ADM-13 | 创建 Key：`pool` 必须在配置中存在（否则 400）；`secret` 非空、≤ 4096 字节；`fingerprint = HashToken(pepper, secret)`；重复返回 409 `conflict`，错误体增加已存在 Key 的 `key_id`（T62，供导入命令更新元数据） |
 | ADM-14 | 创建/修改 Key 后，同步执行 `scheduler.LoadKeys` + `Scheduler.SetKeys`（保留同 ID Key 的运行时状态） |
 | ADM-15 | `PATCH keys` 的 `state` 只接受 `ready` / `disabled`；设为 `ready` 会清除 `quarantined` 状态与 `state_reason` |
 | ADM-16 | 响应中**永远不出现** `secret`、`token_hash`、`wrapped_dek`、`ciphertext` |
+| ADM-22 | Key 的过期时间与标签（T62）：`expires_at` 必须是 RFC 3339（不接受 Unix 纪元 0），否则 400；`label` ≤ 64 字节，否则 400。列表中库内状态为 `ready` 且已过期（以调度器的 `KeyStatus.Expired` 为准）的 Key，`state` 显示 `expired`，库中状态放进 `stored_state`（同 HR-19）；停用、隔离的 Key 照常显示原状态；孤立优先于过期（`stored_state` 保留库中状态）。过期不写库 |
 | ADM-17 | `usage` 查询：`from`/`to` 缺省为「最近 24 小时」；`from >= to` 返回 400 |
 | ADM-18 | `POST /admin/api/reload`，仅管理员角色。请求体可选 `{"dry_run": bool}`。响应 `{"mode": "none"\|"hot"\|"restart", "applied": bool, "changes": {"pools": {"added", "removed", "changed"}, "services": {"added", "removed", "changed"}, "settings": [...], "restart_fields": [...]}, "warnings": [...]}`；`settings` 列出变化的其他热重载字段（如 `mcp`、`server.log_level`），`restart_fields` 列出需要重启的字段（如 `limits.max_in_flight_requests`）。状态码：200（none 或 hot 已应用，或 dry-run）、202（restart 已开始）、400（配置错误）、409（重载进行中）、422（构造或预检失败）。错误体使用管理 API 现有的错误格式。 |
 | ADM-19 | `GET /admin/api/reload`，仅管理员角色。返回 `{"records": [...]}`，最近 20 次重载，新的在前，每条 `{time, actor_client_id, mode, status, changes, error?}`。 |
@@ -262,5 +266,6 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | 编号 | 规则 |
 |:--|:--|
 | UI-30 | Key 的 `state` 为 `orphaned` 时显示「孤立」（灰色），原因「池已从配置中删除」，不提供启用 / 禁用按钮；概览把它计入已停用。 |
+| UI-33 | Key 页（T62）：表格增加「过期时间」列（本地时间，`title` 为原始值；没有时显示「不过期」）；名称下方显示标签；`expired` 显示「已过期」（灰色），原因「已于 … 过期」，仍提供「停用」按钮；有两种以上标签时页头显示标签筛选；新增与编辑表单增加过期时间（`datetime-local`，本机时区，留空 = 不过期）与标签。 |
 | UI-31 | 「配置」页：按钮「预览重载」（`dry_run: true`）与「应用重载」（二次确认）；显示模式、增删改的池与服务、变化的设置、需要重启的字段、警告；收到 202 时显示「正在重启」，每秒查询 `GET reload` 直到该记录不再是 `restarting`（最多 2 分钟；重启期间的请求失败视为尚未就绪）；错误按 UI-16 显示。下方是最近 20 次重载记录。 |
 | UI-32 | 「配置」页的服务与工具：按 `GET config` 列出池与服务，按 `GET tools` 列出工具（名称、所属服务、只读与否、说明首行）与当前的 `tool_mode`。全部用 `textContent` 写入（UI-12）。 |

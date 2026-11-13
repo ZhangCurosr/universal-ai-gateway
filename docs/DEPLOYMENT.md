@@ -558,7 +558,7 @@ export UAIG_ADMIN_TOKEN=<管理员 Token>
 # JSONL：每行一个 JSON 对象，取 api_key 字段，只导入 status 为 ok 的行；先 --dry-run 看计数
 gateway keys import --pool bivia-pool --file accounts.jsonl --field api_key --where status=ok   --secret-prefix bearer: --name-prefix bivia --dry-run
 gateway keys import --pool bivia-pool --file accounts.jsonl --field api_key --where status=ok   --secret-prefix bearer: --name-prefix bivia
-# 输出：imported 84, duplicate 0, skipped 2 (filtered or invalid), failed 0
+# 输出：imported 84, duplicate 0, skipped 2 (filtered or invalid), failed 0, updated 0, expired 0
 
 # 纯文本：每行一个密钥，忽略空行与 # 注释
 gateway keys import --pool weather-pool --file keys.txt --format lines --secret-prefix "header:X-Api-Key:"
@@ -567,6 +567,22 @@ gateway keys import --pool weather-pool --file keys.txt --format lines --secret-
 - Key 的名称是 `--name-prefix` 加三位序号（`bivia-001`、`bivia-002`……），不取自文件（文件里常有个人信息）。
 - 已经存在的 Key（同一密钥）计为 `duplicate`，可以放心重复运行。
 - 被 `--where` 过滤、缺少字段或不是 JSON 的行计为 `skipped`，stderr 中只写行号与原因。
+
+##### 过期时间与标签
+
+账号有过期时间时，让导入命令直接读取，过期的 Key 不会再被调度（管理页面显示「已过期」），也不需要先用脚本过滤文件：
+
+```bash
+# 读取 expires_at 字段；不带时区的时间按北京时间解释；所有 Key 打上来源标签
+gateway keys import --pool mineru --file mineru_accounts.jsonl --expires-field expires_at --tz +08:00 --label signup-2026-11
+# 账号续期后重新运行，加 --update 更新已存在 Key 的过期时间与标签
+gateway keys import --pool mineru --file mineru_accounts.jsonl --expires-field expires_at --tz +08:00 --label signup-2026-11 --update
+```
+
+- 时间格式：RFC 3339、Unix 秒或毫秒、`2026-12-01 16:30:00`、`2026-12-01`（当天 0 点）。字段为空表示不过期；无法识别的时间跳过该行。
+- 文件中已经过期的账号默认跳过，计入 `expired`；确实要导入时加 `--include-expired`。
+- `--label-field batch` 用文件中的字段作为标签；管理页面可以按标签筛选。
+- 过期只在内存中判断，不改库中状态：在管理页面或用 `--update` 把过期时间改到将来，Key 立即恢复。
 
 ### 9.3 自定义请求头转发（`X-UAIG-Forward-*`）
 

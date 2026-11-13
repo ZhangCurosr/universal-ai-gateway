@@ -1,6 +1,8 @@
 // Package admin 实现管理面 HTTP API（spec/09 §4，任务卡 T12）。
 package admin
 
+import "encoding/json"
+
 // CreateClientRequest 是 POST /admin/api/clients 的请求体。
 type CreateClientRequest struct {
 	Name           string   `json:"name"`
@@ -46,6 +48,8 @@ type CreateKeyRequest struct {
 	Secret      string `json:"secret"`
 	Weight      *int   `json:"weight"`
 	MaxInFlight *int   `json:"max_in_flight"`
+	ExpiresAt   string `json:"expires_at"` // RFC 3339，可空（T62）
+	Label       string `json:"label"`      // 来源标签，可空（T62）
 }
 
 // UpdateKeyRequest 是 PATCH /admin/api/keys/{id} 的请求体；State 只接受 "ready" | "disabled"。
@@ -54,6 +58,9 @@ type UpdateKeyRequest struct {
 	Weight      *int    `json:"weight"`
 	MaxInFlight *int    `json:"max_in_flight"`
 	State       *string `json:"state"`
+	// ExpiresAt 省略 = 不改；null = 清除；字符串 = RFC 3339（T62）
+	ExpiresAt json.RawMessage `json:"expires_at,omitempty"`
+	Label     *string         `json:"label"`
 }
 
 // KeyView 是上游 Key 的对外表示。永远不包含 secret 与密文（ADM-16）。
@@ -70,6 +77,8 @@ type KeyView struct {
 	InFlight        int    `json:"in_flight"`
 	CooldownSeconds int    `json:"cooldown_seconds"`
 	Breaker         string `json:"breaker"`
+	ExpiresAt       string `json:"expires_at,omitempty"` // RFC 3339；不过期时省略（T62）
+	Label           string `json:"label"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 }

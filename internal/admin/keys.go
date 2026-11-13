@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -68,6 +69,20 @@ func (s *server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		maxInFlight = *req.MaxInFlight
 	}
 
+	var expiresAt time.Time
+	if req.ExpiresAt != "" {
+		t, err := parseExpiresAt(req.ExpiresAt)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		expiresAt = t
+	}
+	if err := validLabel(req.Label); err != nil {
+		writeError(w, err)
+		return
+	}
+
 	if s.d.Keyring == nil {
 		writeError(w, apperr.New(apperr.CodeInternal, "keyring not available"))
 		return
@@ -90,12 +105,14 @@ func (s *server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 		Weight:      weight,
 		MaxInFlight: maxInFlight,
 		State:       store.KeyStateReady,
+		ExpiresAt:   expiresAt,
+		Label:       req.Label,
 	}
 
 	id, err := s.d.Store.InsertUpstreamKey(r.Context(), k, seal)
 	if err != nil {
 		if errors.Is(err, store.ErrConflict) {
-			writeError(w, apperr.New(apperr.CodeConflict, "upstream key conflict"))
+			s.writeKeyConflict(w, r, fingerprint)
 			return
 		}
 		writeError(w, err)
@@ -192,11 +209,38 @@ func (s *server) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if req.Name != nil || req.Weight != nil || req.MaxInFlight != nil {
+	var expiresAt *time.Time
+	if len(req.ExpiresAt) > 0 {
+		var raw *string
+		if err := json.Unmarshal(req.ExpiresAt, &raw); err != nil {
+			writeError(w, apperr.New(apperr.CodeInvalidRequest, "expires_at must be an RFC 3339 string or null"))
+			return
+		}
+		t := time.Time{} // null 或空字符串：清除过期时间
+		if raw != nil && *raw != "" {
+			parsed, err := parseExpiresAt(*raw)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			t = parsed
+		}
+		expiresAt = &t
+	}
+	if req.Label != nil {
+		if err := validLabel(*req.Label); err != nil {
+			writeError(w, err)
+			return
+		}
+	}
+
+	if req.Name != nil || req.Weight != nil || req.MaxInFlight != nil || expiresAt != nil || req.Label != nil {
 		err := s.d.Store.UpdateUpstreamKeyMeta(r.Context(), id, store.UpstreamKeyUpdate{
 			Name:        req.Name,
 			Weight:      req.Weight,
 			MaxInFlight: req.MaxInFlight,
+			ExpiresAt:   expiresAt,
+			Label:       req.Label,
 		})
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -291,7 +335,9 @@ func (s *server) configuredPools() map[string]bool {
 // markOrphaned 实现 HR-19：池不在配置中时 state 显示为 orphaned，库中的状态放进 stored_state。
 func markOrphaned(v KeyView, pools map[string]bool) KeyView {
 	if pools != nil && !pools[v.Pool] {
-		v.StoredState = v.State
+		if v.StoredState == "" { // 已过期的 Key 已经记下了库中状态
+			v.StoredState = v.State
+		}
 		v.State = KeyStateOrphaned
 	}
 	return v
@@ -308,6 +354,7 @@ func buildKeyViewWithStatus(k *store.UpstreamKey, st *scheduler.KeyStatus) KeyVi
 		Weight:      k.Weight,
 		MaxInFlight: k.MaxInFlight,
 		Breaker:     "closed",
+		Label:       k.Label,
 		CreatedAt:   k.CreatedAt.UTC().Format(time.RFC3339),
 		UpdatedAt:   k.UpdatedAt.UTC().Format(time.RFC3339),
 	}
@@ -318,5 +365,55 @@ func buildKeyViewWithStatus(k *store.UpstreamKey, st *scheduler.KeyStatus) KeyVi
 		}
 		v.Breaker = st.Breaker.String()
 	}
+	if !k.ExpiresAt.IsZero() {
+		v.ExpiresAt = k.ExpiresAt.UTC().Format(time.RFC3339)
+		// T62：过期只在内存中判断；只有库中为 ready 的 Key 显示为 expired，库中状态放进 stored_state
+		if st != nil && st.Expired && v.State == store.KeyStateReady {
+			v.StoredState = v.State
+			v.State = KeyStateExpired
+		}
+	}
 	return v
+}
+
+// KeyStateExpired 是已过期 Key 的展示状态（T62）；不写库，延长过期时间后立即恢复。
+const KeyStateExpired = "expired"
+
+// maxLabelLen 是来源标签的最大长度（字节）。
+const maxLabelLen = 64
+
+func validLabel(l string) error {
+	if len(l) > maxLabelLen {
+		return apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("label must be at most %d bytes", maxLabelLen))
+	}
+	return nil
+}
+
+// parseExpiresAt 解析 RFC 3339 时间（T62）。
+func parseExpiresAt(s string) (time.Time, error) {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, apperr.New(apperr.CodeInvalidRequest, "expires_at must be an RFC 3339 time, e.g. 2026-12-31T23:59:59+08:00")
+	}
+	if t.Unix() == 0 {
+		return time.Time{}, apperr.New(apperr.CodeInvalidRequest, "expires_at must not be the Unix epoch")
+	}
+	return t, nil
+}
+
+// writeKeyConflict 返回 409，并带上已存在 Key 的 id，供导入命令更新元数据（T62）。查不到时省略 id。
+func (s *server) writeKeyConflict(w http.ResponseWriter, r *http.Request, fingerprint string) {
+	e := apperr.New(apperr.CodeConflict, "upstream key conflict")
+	body := map[string]any{"code": string(e.Code), "message": e.Message}
+	if keys, err := s.d.Store.ListUpstreamKeys(r.Context()); err == nil {
+		for _, k := range keys {
+			if k.Fingerprint == fingerprint {
+				body["key_id"] = k.ID
+				break
+			}
+		}
+	} else {
+		s.d.Logger.Warn("admin: list keys for conflict lookup failed", "error", err)
+	}
+	apperr.WriteJSON(w, e, map[string]any{"error": body})
 }

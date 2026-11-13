@@ -50,6 +50,7 @@ Key 在时刻 `now` 可被选中，当且仅当以下**全部**成立：
 | SCH-03 | `cooldownUntil <= now` |
 | SCH-04 | 熔断器允许放行：`closed`；或 `half_open` 且当前没有进行中的探测请求 |
 | SCH-05 | `inFlight < MaxInFlight` |
+| SCH-21 | 未过期：没有过期时间，或 `now < ExpiresAt`（T62；到期时刻本身即视为过期） |
 
 ## 3. 选择顺序（`Acquire`）
 
@@ -73,6 +74,7 @@ Key 在时刻 `now` 可被选中，当且仅当以下**全部**成立：
 | SCH-18 | `Lease.Pin(key, ttl)`：把 `key` 绑定到本 Lease 的 Key，TTL 为 `ttl`（池的 `pin_ttl`）；与普通亲和共用同一个缓存。缓存满时 LRU 淘汰可能淘汰固定条目——这是已知限制，写进部署文档（固定条目数 ≈ 并发未完成任务数，远小于默认容量 65536） |
 | SCH-19 | `PinnedPool(key)`：亲和缓存命中且未过期、且该 Key 仍存在时返回其池名；不刷新 TTL。供内核为不带服务名的严格亲和请求确定路由（CORE-11） |
 | SCH-20 | `SetPools(pools)`：新池加入；已有池更新参数，Key 及其运行时状态保留（熔断参数按新配置重新设置），已发出的租约按发出时的池参数结束；不在 `pools` 中的池停止调度，`Acquire` 视为不存在，其中的 Key 从调度器移除（`KeyStatus` 不再包含）。并发安全，与 `Acquire`、`Lease.Finish`、`SetKeys` 可以同时调用；`Acquire` 不加全局锁。 |
+| SCH-21 | 过期时间（T62）：`Key.SetExpiresAt(t)` / `Key.ExpiresAt()`，零值表示不过期，由 `LoadKeys` 从 `UpstreamKey.ExpiresAt` 设置。过期是计算出来的状态，不写回数据库，延长过期时间后立即可用。过期时间不属于 SCH-16 的身份字段：`SetKeys` 复用旧对象时同时更新过期时间，冷却、熔断与 `inFlight` 保留。过期的 Key 也不服务严格亲和（SCH-17，返回 `CodeUpstreamUnavailable`）。§3.1 的错误消息在有过期 Key 时附加 `(N expired)`（只有数量），过期 Key 不参与 `Retry-After` 计算。`KeyStatus` 增加 `ExpiresAt` 与 `Expired` |
 | SCH-16 | `SetKeys` 对同 ID 的 Key：若 `Pool/Name/Secret/Weight/MaxInFlight` 全部不变，**继续使用旧的 `*Key` 对象**，只更新持久化状态；若有任一改变，使用新对象，并从旧对象复制 `cooldownUntil` 与 `authFailures`，熔断器重新从 closed 开始，`inFlight` 从 0 开始（旧租约在旧对象上结束，过渡期内并发可能短暂超过上限，这是可接受的）。导出字段在对象被放入池后永不修改，因此读取它们不需要加锁 |
 
 ### 3.1 无可用 Key

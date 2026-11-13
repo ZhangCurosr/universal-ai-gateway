@@ -55,6 +55,7 @@ type Key struct {
 	inFlight      atomic.Int32
 	persisted     atomic.Int32 // PersistedState
 	cooldownUntil atomic.Int64 // UnixNano；0 = 无冷却
+	expiresAt     atomic.Int64 // UnixNano；0 = 不过期（T62）
 	authFailures  atomic.Int32
 	swrrCurrent   int64 // SWRR 当前权重，由池级 mutex 保护
 	breaker       breaker
@@ -86,6 +87,30 @@ func (k *Key) CooldownUntil() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, n)
+}
+
+// SetExpiresAt 设置过期时间，零值表示不过期（T62，SCH-21）。可以在 SetKeys 之前或之后调用。
+func (k *Key) SetExpiresAt(t time.Time) {
+	if t.IsZero() {
+		k.expiresAt.Store(0)
+		return
+	}
+	k.expiresAt.Store(t.UnixNano())
+}
+
+// ExpiresAt 返回过期时间；不过期返回零值。
+func (k *Key) ExpiresAt() time.Time {
+	n := k.expiresAt.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
+}
+
+// expired 报告 Key 在 now 时是否已过期（SCH-21）。
+func (k *Key) expired(now time.Time) bool {
+	n := k.expiresAt.Load()
+	return n != 0 && now.UnixNano() >= n
 }
 
 // tryAcquire 以 CAS 循环占用一个并发槽位，保证 inFlight 永不超过 MaxInFlight（SCH-14）。

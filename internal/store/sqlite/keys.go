@@ -6,17 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
 
-const upstreamKeyColumns = `id, pool, name, fingerprint, secret_hint, kek_version, wrapped_dek, ciphertext, weight, max_in_flight, state, state_reason, created_at, updated_at`
+const upstreamKeyColumns = `id, pool, name, fingerprint, secret_hint, kek_version, wrapped_dek, ciphertext, weight, max_in_flight, state, state_reason, expires_at, label, created_at, updated_at`
 
 func scanUpstreamKey(s rowScanner) (*store.UpstreamKey, error) {
 	var (
 		k           store.UpstreamKey
 		createdAtMs int64
 		updatedAtMs int64
+		expiresAt   int64
 	)
 	err := s.Scan(
 		&k.ID,
@@ -31,12 +33,15 @@ func scanUpstreamKey(s rowScanner) (*store.UpstreamKey, error) {
 		&k.MaxInFlight,
 		&k.State,
 		&k.StateReason,
+		&expiresAt,
+		&k.Label,
 		&createdAtMs,
 		&updatedAtMs,
 	)
 	if err != nil {
 		return nil, err
 	}
+	k.ExpiresAt = fromUnixSeconds(expiresAt)
 	k.CreatedAt = fromMillis(createdAtMs)
 	k.UpdatedAt = fromMillis(updatedAtMs)
 	return &k, nil
@@ -69,8 +74,8 @@ func (d *DB) InsertUpstreamKey(ctx context.Context, k *store.UpstreamKey, seal s
 			pool, name, fingerprint, secret_hint,
 			kek_version, wrapped_dek, ciphertext,
 			weight, max_in_flight, state, state_reason,
-			created_at, updated_at
-		) VALUES (?, ?, ?, ?, 0, x'', x'', ?, ?, ?, ?, ?, ?)`
+			expires_at, label, created_at, updated_at
+		) VALUES (?, ?, ?, ?, 0, x'', x'', ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	res, err := tx.ExecContext(ctx, insertQuery,
 		k.Pool,
@@ -81,6 +86,8 @@ func (d *DB) InsertUpstreamKey(ctx context.Context, k *store.UpstreamKey, seal s
 		maxInFlight,
 		state,
 		k.StateReason,
+		toUnixSeconds(k.ExpiresAt),
+		k.Label,
 		now,
 		now,
 	)
@@ -175,6 +182,14 @@ func (d *DB) UpdateUpstreamKeyMeta(ctx context.Context, id int64, upd store.Upst
 		setClauses = append(setClauses, "max_in_flight = ?")
 		args = append(args, *upd.MaxInFlight)
 	}
+	if upd.ExpiresAt != nil {
+		setClauses = append(setClauses, "expires_at = ?")
+		args = append(args, toUnixSeconds(*upd.ExpiresAt))
+	}
+	if upd.Label != nil {
+		setClauses = append(setClauses, "label = ?")
+		args = append(args, *upd.Label)
+	}
 
 	setClauses = append(setClauses, "updated_at = ?")
 	args = append(args, d.now().UnixMilli())
@@ -219,4 +234,20 @@ func (d *DB) SetUpstreamKeyState(ctx context.Context, id int64, state, reason st
 		return store.ErrNotFound
 	}
 	return nil
+}
+
+// toUnixSeconds 把过期时间转成库中的 Unix 秒；零值存 0（不过期）。
+func toUnixSeconds(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// fromUnixSeconds 是 toUnixSeconds 的逆运算；0 还原为零值。
+func fromUnixSeconds(sec int64) time.Time {
+	if sec == 0 {
+		return time.Time{}
+	}
+	return time.Unix(sec, 0).UTC()
 }

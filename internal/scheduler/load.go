@@ -28,7 +28,9 @@ func LoadKeys(ctx context.Context, st KeyLister, kr *crypto.Keyring, log *slog.L
 			log.Error("scheduler: cannot decrypt upstream key; skipped", "key_id", k.ID, "pool", k.Pool, "name", k.Name, "error", err)
 			continue
 		}
-		keys = append(keys, NewKey(k.ID, k.Pool, k.Name, secret, k.Weight, k.MaxInFlight, ParsePersistedState(k.State)))
+		key := NewKey(k.ID, k.Pool, k.Name, secret, k.Weight, k.MaxInFlight, ParsePersistedState(k.State))
+		key.SetExpiresAt(k.ExpiresAt)
+		keys = append(keys, key)
 	}
 	return keys, nil
 }

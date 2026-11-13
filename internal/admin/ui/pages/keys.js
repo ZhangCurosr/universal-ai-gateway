@@ -1,7 +1,7 @@
-// 上游 Key 页：按池分组、每 10 秒刷新运行时状态（UI-17）、新增、编辑、停用 / 恢复。
+// 上游 Key 页：按池分组、每 10 秒刷新运行时状态（UI-17）、新增、编辑、停用 / 恢复；过期时间与标签（T62）。
 
 import { h } from '../dom.js';
-import { t, fmtInt } from '../i18n.js';
+import { t, fmtInt, fmtTime } from '../i18n.js';
 import { api } from '../api.js';
 import { errorBox, notice, pill, tableWrap, pageHeader, loading, bar, field, input, select, openDialog, confirmDialog } from '../ui.js';
 
@@ -26,11 +26,30 @@ export async function render(main, ctx) {
 
   let stopped = false;
   let timer = null;
+  const ALL = '*all*'; // 下拉框中「全部标签」的取值
+  let lastKeys = [];
+  let labelFilter = null; // null = 全部标签；'' = 无标签
+  const labelSelect = h('select', { class: 'input', 'aria-label': t('k.filterLabel') });
+  labelSelect.addEventListener('change', () => {
+    labelFilter = labelSelect.value === ALL ? null : labelSelect.value;
+    drawList(lastKeys);
+  });
+
+  function drawLabelFilter(keys) {
+    const labels = [...new Set(keys.map((k) => k.label || ''))].sort();
+    if (labelFilter !== null && !labels.includes(labelFilter)) labelFilter = null;
+    const cur = labelFilter === null ? ALL : labelFilter;
+    const opts = [{ value: ALL, label: t('k.allLabels') }].concat(labels.map((l) => ({ value: l, label: l || t('k.noLabel') })));
+    labelSelect.replaceChildren(...opts.map((o) => h('option', { value: o.value, text: o.label, selected: cur === o.value })));
+    labelSelect.hidden = labels.length < 2;
+  }
 
   async function load() {
     try {
       const { keys } = await api('GET', '/admin/api/keys');
       if (stopped) return;
+      lastKeys = keys;
+      drawLabelFilter(keys);
       drawList(keys);
       status.replaceChildren(h('span', { class: 'dot dot-ok' }), t('k.auto', { time: new Date().toLocaleTimeString([], { hour12: false }) }));
     } catch (e) {
@@ -56,7 +75,8 @@ export async function render(main, ctx) {
     }
   }
 
-  function drawList(keys) {
+  function drawList(all) {
+    const keys = labelFilter === null ? all : all.filter((k) => (k.label || '') === labelFilter);
     const pools = new Map();
     for (const k of keys) {
       if (!pools.has(k.pool)) pools.set(k.pool, []);
@@ -78,7 +98,7 @@ export async function render(main, ctx) {
         h('div', { class: 'row-wrap' }, h('h2', { text: pool }), h('span', { class: 'tag mono', text: protoOf.get(pool) || '?' })),
         h('span', { class: 'muted small', text: t('k.poolSummary', { n: list.length, ready, inflight }) })),
       tableWrap(h('table', { class: 'table table-wide' },
-        h('thead', {}, h('tr', {}, th(t('k.name')), th(t('k.secret')), th(t('k.state')), th(t('k.breaker')), th(t('k.load')), th(t('k.weight'), 'num'), th(t('k.actions'), 'num'))),
+        h('thead', {}, h('tr', {}, th(t('k.name')), th(t('k.secret')), th(t('k.state')), th(t('k.expires')), th(t('k.breaker')), th(t('k.load')), th(t('k.weight'), 'num'), th(t('k.actions'), 'num'))),
         h('tbody', {}, list.map(keyRow)))));
   }
 
@@ -88,12 +108,13 @@ export async function render(main, ctx) {
     if (k.state === 'orphaned') { state = pill(t('k.orphaned'), 'off'); reason = t('k.orphanedReason'); } // UI-30
     else if (k.state === 'disabled') state = pill(t('k.disabled'), 'off');
     else if (k.state === 'quarantined') state = pill(t('k.quarantined'), 'bad');
+    else if (k.state === 'expired') { state = pill(t('k.expired'), 'off'); reason = t('k.expiredReason', { time: fmtTime(k.expires_at) }); } // T62
     else if (k.cooldown_seconds > 0) { state = pill(t('k.cooling'), 'warn'); reason = reason || t('k.coolingReason', { s: k.cooldown_seconds }); }
     else state = pill(t('k.ready'), 'ok');
 
     const br = { closed: t('k.brClosed'), open: t('k.brOpen'), half_open: t('k.brHalf') }[k.breaker] || k.breaker;
     const frac = k.max_in_flight > 0 ? (k.in_flight || 0) / k.max_in_flight : 0;
-    const off = k.state !== 'ready';
+    const off = (k.stored_state || k.state) !== 'ready'; // 已过期的 Key 库中仍是 ready：提供停用
     const toggle = h('button', {
       type: 'button',
       class: off ? 'link-btn' : 'link-btn link-danger',
@@ -101,9 +122,11 @@ export async function render(main, ctx) {
       onClick: () => setState(k, off ? 'ready' : 'disabled'),
     });
     return h('tr', {},
-      h('td', {}, h('div', { class: 'stack-xs' }, h('span', { class: 'strong', text: k.name }), h('span', { class: 'muted small', text: '#' + k.id }))),
+      h('td', {}, h('div', { class: 'stack-xs' }, h('span', { class: 'strong', text: k.name }),
+        h('span', { class: 'muted small' }, '#' + k.id + ' ', k.label ? h('span', { class: 'tag mono', text: k.label }) : null))),
       h('td', { class: 'mono small', text: k.secret_hint }),
       h('td', {}, h('div', { class: 'stack-xs' }, state, reason ? h('span', { class: 'muted small', text: reason }) : null)),
+      k.expires_at ? h('td', { class: 'small mono', title: k.expires_at, text: fmtTime(k.expires_at) }) : h('td', { class: 'small muted', text: t('k.never') }),
       h('td', { class: 'small' + (k.breaker === 'open' ? ' tone-bad' : ''), text: br }),
       h('td', {}, h('div', { class: 'load' }, bar(frac), h('span', { class: 'mono small', text: fmtInt(k.in_flight || 0) + ' / ' + fmtInt(k.max_in_flight) }))),
       h('td', { class: 'num mono', text: fmtInt(k.weight) }),
@@ -130,9 +153,13 @@ export async function render(main, ctx) {
     const name = input({ type: 'text', value: k.name });
     const weight = input({ type: 'number', min: '1', step: '1', value: String(k.weight) });
     const mif = input({ type: 'number', min: '1', step: '1', value: String(k.max_in_flight) });
+    const exp = input({ type: 'datetime-local', step: '1', value: toLocalInput(k.expires_at) });
+    const label = input({ type: 'text', maxlength: '64', value: k.label || '' });
     const body = h('div', { class: 'stack' }, err,
       field('ke-name', t('k.name'), name),
-      h('div', { class: 'grid-2' }, field('ke-w', t('k.weight'), weight), field('ke-m', t('k.maxInFlight'), mif)));
+      h('div', { class: 'grid-2' }, field('ke-w', t('k.weight'), weight), field('ke-m', t('k.maxInFlight'), mif)),
+      field('ke-exp', t('k.expires'), exp, t('k.expiresHint')),
+      field('ke-label', t('k.label'), label, t('k.labelHint')));
     const save = h('button', { type: 'button', class: 'btn btn-primary', text: t('common.save') });
     const cancel = h('button', { type: 'button', class: 'btn', text: t('common.cancel') });
     const { close } = openDialog(t('k.formEdit', { name: k.name }), body, [cancel, save]);
@@ -147,7 +174,8 @@ export async function render(main, ctx) {
       }
       save.disabled = true;
       try {
-        await api('PATCH', '/admin/api/keys/' + k.id, { name: name.value.trim(), weight: w, max_in_flight: m });
+        await api('PATCH', '/admin/api/keys/' + k.id, { name: name.value.trim(), weight: w, max_in_flight: m,
+          expires_at: fromLocalInput(exp.value), label: label.value.trim() });
         close();
         await load();
       } catch (e) {
@@ -166,6 +194,8 @@ export async function render(main, ctx) {
   const fSecret = input({ type: 'password', autocomplete: 'new-password', spellcheck: 'false', placeholder: t('k.secretPh'), class: 'input mono' });
   const fWeight = input({ type: 'number', min: '1', step: '1', value: '1' });
   const fMif = input({ type: 'number', min: '1', step: '1', value: '8' });
+  const fExp = input({ type: 'datetime-local', step: '1' });
+  const fLabel = input({ type: 'text', maxlength: '64' });
   const addBtn = h('button', { type: 'submit', class: 'btn btn-primary btn-block', text: t('k.add') });
   const form = h('form', { class: 'card form-card stack', 'aria-labelledby': 'k-new-h', novalidate: true },
     h('h2', { id: 'k-new-h', text: t('k.new') }),
@@ -175,6 +205,8 @@ export async function render(main, ctx) {
     field('k-name', t('k.name'), fName),
     field('k-secret', t('k.secret'), fSecret, t('k.secretHint')),
     h('div', { class: 'grid-2' }, field('k-w', t('k.weight'), fWeight), field('k-m', t('k.maxInFlight'), fMif)),
+    field('k-exp', t('k.expires'), fExp, t('k.expiresHint')),
+    field('k-label', t('k.label'), fLabel, t('k.labelHint')),
     addBtn);
   form.addEventListener('submit', async (ev) => {
     ev.preventDefault();
@@ -189,7 +221,8 @@ export async function render(main, ctx) {
     addBtn.disabled = true;
     fSecret.value = ''; // UI-11：无论成功失败都清空
     try {
-      const res = await api('POST', '/admin/api/keys', { pool: fPool.value, name: fName.value.trim(), secret, weight: w, max_in_flight: m });
+      const res = await api('POST', '/admin/api/keys', { pool: fPool.value, name: fName.value.trim(), secret, weight: w, max_in_flight: m,
+        expires_at: fromLocalInput(fExp.value) || '', label: fLabel.value.trim() });
       fName.value = '';
       formErr.append(notice(t('k.added', { name: res.key.name })));
       await load();
@@ -204,7 +237,7 @@ export async function render(main, ctx) {
   refreshBtn.addEventListener('click', () => { load().then(schedule); });
 
   main.replaceChildren(
-    pageHeader(t('k.title'), '', refreshBtn),
+    pageHeader(t('k.title'), '', labelSelect, refreshBtn),
     h('div', { class: 'live-row' }, status),
     msg,
     h('div', { class: 'split' }, h('div', { class: 'split-main' }, listBox), h('div', { class: 'split-side' }, form)));
@@ -218,6 +251,22 @@ export async function render(main, ctx) {
     clearTimeout(timer);
     document.removeEventListener('visibilitychange', onVisibility);
   };
+}
+
+// toLocalInput 把 RFC 3339 时间转成 datetime-local 输入框的本地时间值；没有时返回空串。
+function toLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + 'T' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+// fromLocalInput 把 datetime-local 的本地时间转成 RFC 3339（UTC）；空值返回 null（PATCH 时清除过期时间）。
+function fromLocalInput(v) {
+  if (!v) return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
 function th(text, cls) {

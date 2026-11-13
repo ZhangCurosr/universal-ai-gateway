@@ -33,6 +33,8 @@ type keyViewItem struct {
 	State           string `json:"state"`
 	StateReason     string `json:"state_reason"`
 	CooldownSeconds int    `json:"cooldown_seconds"`
+	ExpiresAt       string `json:"expires_at"`
+	Label           string `json:"label"`
 }
 
 type restGateway struct {

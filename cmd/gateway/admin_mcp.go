@@ -76,7 +76,7 @@ func adminTools() []adminTool {
 			desc:    "All gateway clients with role, quota, spend, RPM limit, allowed services and whether they are disabled. Tokens are never shown.",
 			request: noArgs(http.MethodGet, "/admin/api/clients")},
 		{name: "gateway_admin_list_keys", title: "List upstream keys", readOnly: true, schema: noArgsSchema,
-			desc:    "All upstream keys per pool with masked hint, state (ready, disabled, quarantined, orphaned), cooldown, breaker and in-flight load. Secrets are never shown.",
+			desc:    "All upstream keys per pool with masked hint, state (ready, disabled, quarantined, orphaned, expired), expiry time (expires_at, RFC 3339), source label, cooldown, breaker and in-flight load. Secrets are never shown.",
 			request: noArgs(http.MethodGet, "/admin/api/keys")},
 		{name: "gateway_admin_usage", title: "Query usage", readOnly: true,
 			desc:   "Usage and cost per client and service for a time range (default: last 24 hours). Times are RFC 3339 in UTC.",

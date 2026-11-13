@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"slices"
 	"sort"
@@ -55,6 +56,8 @@ type KeyStatus struct {
 	CooldownRemaining time.Duration
 	Breaker           BreakerState
 	AuthFailures      int
+	ExpiresAt         time.Time // 零值 = 不过期（T62）
+	Expired           bool
 }
 
 // pool 是一个池的运行时状态。
@@ -138,6 +141,7 @@ func (s *Scheduler) SetKeys(keys []*Key) {
 		if old, ok := s.byID[k.ID]; ok {
 			if sameIdentity(old, k) {
 				old.persisted.Store(k.persisted.Load())
+				old.expiresAt.Store(k.expiresAt.Load()) // 过期时间是元数据，不影响身份（SCH-21）
 				k = old
 			} else {
 				k.cooldownUntil.Store(old.cooldownUntil.Load())
@@ -166,7 +170,7 @@ func sameIdentity(a, b *Key) bool {
 
 // usable 实现 SCH-01 ~ SCH-05（SCH-01 的池判定由调用方保证）。
 func usable(k *Key, now time.Time, exclude []int64) bool {
-	if slices.Contains(exclude, k.ID) || k.Persisted() != PersistedReady {
+	if slices.Contains(exclude, k.ID) || k.Persisted() != PersistedReady || k.expired(now) {
 		return false
 	}
 	if until := k.cooldownUntil.Load(); until > now.UnixNano() {
@@ -297,15 +301,24 @@ func (s *Scheduler) pickSWRR(p *pool, c []*Key, now time.Time) *Lease {
 // noKey 实现 §3.1。
 func (s *Scheduler) noKey(all []*Key, now time.Time) error {
 	var earliest int64
+	expired := 0
 	for _, k := range all {
 		if k.Persisted() != PersistedReady {
+			continue
+		}
+		if k.expired(now) {
+			expired++
 			continue
 		}
 		if until := k.cooldownUntil.Load(); until > now.UnixNano() && (earliest == 0 || until < earliest) {
 			earliest = until
 		}
 	}
-	e := apperr.New(apperr.CodeUpstreamUnavailable, "no upstream key available")
+	msg := "no upstream key available"
+	if expired > 0 {
+		msg += fmt.Sprintf(" (%d expired)", expired)
+	}
+	e := apperr.New(apperr.CodeUpstreamUnavailable, msg)
 	if earliest > 0 {
 		wait := time.Duration(earliest - now.UnixNano())
 		secs := (wait + time.Second - 1) / time.Second
@@ -411,6 +424,7 @@ func (s *Scheduler) KeyStatus() []KeyStatus {
 			ID: k.ID, Pool: k.Pool, Name: k.Name, Persisted: k.Persisted(),
 			InFlight: int(k.inFlight.Load()), MaxInFlight: int(k.MaxInFlight),
 			CooldownRemaining: remaining, Breaker: k.breaker.current(now), AuthFailures: int(k.authFailures.Load()),
+			ExpiresAt: k.ExpiresAt(), Expired: k.expired(now),
 		})
 	}
 	return out

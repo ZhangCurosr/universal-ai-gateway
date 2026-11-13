@@ -333,6 +333,19 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T59 | MinerU 适配器对接官方精准解析 API v4，M3（[说明](../docs/handoff/T59_mineru_v4.md)） | T31 | 用户已要求 | `DONE` |
 | T60 | MinerU 本地文件上传，M3（[说明](../docs/handoff/T60_mineru_upload.md)） | T59 | 用户已要求 | `DONE` |
 
+### M4：Key 池运营
+
+> 目标：网关自己管理大量免费账号 Key 的生命周期（过期、周期额度、补充、告警），不再靠上游报错才发现 Key 不可用。
+> 总览与依赖见 [`docs/handoff/M4_key_pool_ops.md`](../docs/handoff/M4_key_pool_ops.md)。
+
+| 卡 | 内容 | 前置 | 需审批 | 状态 |
+|:--|:--|:--|:--|:--|
+| T61 | Linux 竞态检测、24 小时稳定性基线、离线备份与恢复命令，M4（沿用 [T46 步骤](../docs/handoff/T46_race_verify_linux.md)） | — | 否（备份命令需审批） | `TODO` |
+| T62 | Key 元数据：过期时间与来源标签，导入时读取，过期 Key 不参与调度，M4（[说明](../docs/handoff/T62_key_metadata.md)） | — | 是（已批准） | `DONE` |
+| T63 | 按周期额度调度：池级额度声明、每 Key 周期用量、用满主动冷却到重置时刻、耗尽优先或平均分摊，M4 | T62 | 是 | `TODO` |
+| T64 | Key 补充与告警：`gateway keys sync` 同步账号文件，可用 Key 低于阈值时告警（指标、管理面 MCP、Web UI），M4 | T62 | 是 | `TODO` |
+| T65 | Key 视图：Web UI 与管理面 MCP 展示每 Key 用量、剩余额度、失败率、过期时间与池剩余容量，M4 | T63 | 是 | `TODO` |
+
 ---
 
 ## T43 响应转换经过 IR（流式 IR） — 状态：`DONE`

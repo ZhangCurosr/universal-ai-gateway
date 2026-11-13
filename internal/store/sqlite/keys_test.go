@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/crypto"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
@@ -130,5 +131,65 @@ func TestUpdateUpstreamKeyMetaAllFields(t *testing.T) {
 	}
 	if got.Name != "renamed" || got.MaxInFlight != 32 {
 		t.Fatalf("got name=%s max_in_flight=%d, want renamed, 32", got.Name, got.MaxInFlight)
+	}
+}
+
+// T62：过期时间与标签的插入、读取、更新与清除。
+func TestUpstreamKeyExpiryAndLabel(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	seal := func(int64) (crypto.Sealed, error) {
+		return crypto.Sealed{KEKVersion: 1, WrappedDEK: []byte("w"), Ciphertext: []byte("c")}, nil
+	}
+	exp := time.Date(2026, 12, 1, 16, 0, 0, 0, time.UTC)
+	k := sampleKey("fp-exp")
+	k.ExpiresAt = exp.In(time.FixedZone("UTC+8", 8*3600))
+	k.Label = "signup-2026-11"
+	id, err := db.InsertUpstreamKey(ctx, k, seal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.GetUpstreamKey(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ExpiresAt.Equal(exp) || got.Label != "signup-2026-11" {
+		t.Fatalf("inserted = %v %q", got.ExpiresAt, got.Label)
+	}
+
+	later, label := exp.Add(30*24*time.Hour), "renewed"
+	if err := db.UpdateUpstreamKeyMeta(ctx, id, store.UpstreamKeyUpdate{ExpiresAt: &later, Label: &label}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.GetUpstreamKey(ctx, id)
+	if !got.ExpiresAt.Equal(later) || got.Label != "renewed" || got.Weight != 1 {
+		t.Fatalf("after update = %+v", got)
+	}
+
+	var zero time.Time
+	if err := db.UpdateUpstreamKeyMeta(ctx, id, store.UpstreamKeyUpdate{ExpiresAt: &zero}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = db.GetUpstreamKey(ctx, id)
+	if !got.ExpiresAt.IsZero() || got.Label != "renewed" {
+		t.Fatalf("after clearing expiry = %v %q", got.ExpiresAt, got.Label)
+	}
+}
+
+// T62：迁移前写入的行（不带新列）取默认值：不过期、无标签。
+func TestUpstreamKeyMetadataDefaults(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	if _, err := db.db.ExecContext(ctx, `INSERT INTO upstream_keys
+		(pool, name, fingerprint, secret_hint, kek_version, wrapped_dek, ciphertext, created_at, updated_at)
+		VALUES ('p1', 'old', 'fp-old', 'h', 1, x'00', x'00', 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := db.ListUpstreamKeys(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || !keys[0].ExpiresAt.IsZero() || keys[0].Label != "" {
+		t.Fatalf("legacy row = %+v", keys)
 	}
 }

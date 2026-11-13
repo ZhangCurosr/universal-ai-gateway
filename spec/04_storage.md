@@ -67,6 +67,10 @@ CREATE TABLE upstream_keys (
 );
 CREATE INDEX idx_upstream_keys_pool ON upstream_keys(pool);
 
+-- 0002_key_metadata.sql（T62）：只加列，旧数据不变
+ALTER TABLE upstream_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0; -- Unix 秒；0 = 不过期
+ALTER TABLE upstream_keys ADD COLUMN label      TEXT    NOT NULL DEFAULT '';  -- 来源标签，可空
+
 CREATE TABLE usage_events (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id         TEXT    NOT NULL UNIQUE,  -- 幂等键
@@ -161,7 +165,8 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 | STO-05 | `CountAdmins` | 返回 `role='admin' AND disabled=0` 的行数 |
 | STO-06 | `InsertUpstreamKey` | **单个事务**内：① 插入一行，`wrapped_dek`/`ciphertext` 先写空 BLOB `x''`；② 用新 id 调用 `seal(id)`；③ `UPDATE` 写入 `kek_version, wrapped_dek, ciphertext`；④ 提交。`seal` 返回错误则回滚并原样返回该错误。`fingerprint` 重复返回 `ErrConflict` |
 | STO-07 | `ListUpstreamKeys` | 按 `id` 升序返回全部，包含密文字段 |
-| STO-08 | `UpdateUpstreamKeyMeta` | 只更新 `UpstreamKeyUpdate` 中非 nil 的字段（`Name`、`Weight`、`MaxInFlight`）；不存在返回 `ErrNotFound` |
+| STO-08 | `UpdateUpstreamKeyMeta` | 只更新 `UpstreamKeyUpdate` 中非 nil 的字段（`Name`、`Weight`、`MaxInFlight`、`ExpiresAt`、`Label`；`ExpiresAt` 指向零值表示清除过期时间）；不存在返回 `ErrNotFound` |
+| STO-17 | 过期时间与标签（T62） | `UpstreamKey.ExpiresAt` 零值表示不过期，库中存 0；非零值按 Unix 秒存取（读出为 UTC，精度到秒）。`Label` 原样存取。过期只是元数据：仓储不据此修改 `state` |
 | STO-09 | `SetUpstreamKeyState` | `state` 不在 `ready/quarantined/disabled` 中返回 `ErrInvalidArgument`；不存在返回 `ErrNotFound` |
 | STO-10 | `InsertUsageEvents` | 单个事务批量插入；使用 `INSERT OR IGNORE`，重复 `request_id` 静默跳过（幂等）；空切片直接返回 nil |
 | STO-11 | `SumCostByClient` | `SELECT client_id, SUM(cost_nano_usd) ... GROUP BY client_id` |
