@@ -15,6 +15,7 @@ import (
 // Ingress 是通用 REST 入站适配器（客户端 → 网关）。零值可用（没有接口声明）。
 type Ingress struct {
 	tools *toolTable // 配置声明的接口（RS-40）；构造后只读，nil = 没有工具
+	apis  *apiTable  // 声明式 API 能力（DA-09）；构造后只读，nil = 没有声明
 }
 
 var (
@@ -43,7 +44,7 @@ func (Ingress) Routes() []protocol.Route {
 func (Ingress) Claims(*http.Request) bool { return false }
 
 // Parse 实现 RS-02 ~ RS-06。
-func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol.Envelope, error) {
+func (in Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol.Envelope, error) {
 	service := strings.TrimSpace(r.PathValue("service"))
 	if service == "" {
 		return nil, apperr.New(apperr.CodeInvalidRequest, "service is required")
@@ -57,7 +58,7 @@ func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol
 		return nil, err
 	}
 
-	return &protocol.Envelope{
+	env := &protocol.Envelope{
 		Protocol: Protocol,
 		Op:       rt.Op,
 		Model:    service,
@@ -70,7 +71,16 @@ func (Ingress) Parse(r *http.Request, rt protocol.Route, body []byte) (*protocol
 		},
 		Body:   body,
 		Header: r.Header,
-	}, nil
+	}
+	if ep, vars := in.apis.lookup(service).match(r.Method, subpath); ep != nil {
+		if ep.Usage != nil {
+			env.Estimate = pricing.Usage{} // 声明了用量：预留由 reserve 决定（DA-07）
+		}
+		if ep.PinnedBy != "" { // DA-09：只用创建任务的 Key，不换 Key
+			env.Affinity = protocol.AffinityHint{Source: protocol.AffinityPin, Value: []byte(pinValue(service, vars[ep.PinnedBy])), Strict: true}
+		}
+	}
+	return env, nil
 }
 
 // extractSubpath 从 EscapedPath 中提取 /rest/{service} 或 /rest-idem/{service} 之后的部分（RS-04）。

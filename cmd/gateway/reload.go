@@ -510,7 +510,7 @@ func buildGeneration(cfg *config.Config, d genDeps, prev *generation) (*generati
 		return nil, fmt.Errorf("register adapters: %w", err)
 	}
 	kernel, err := core.New(core.Deps{
-		Config: cfg, Registry: registry, Ledger: d.mem, Scheduler: d.sched,
+		Config: withRestUnitPrices(cfg, restUnits(registry)), Registry: registry, Ledger: d.mem, Scheduler: d.sched,
 		Audit: d.auditPipe, HTTPClient: client, Logger: d.logger,
 	})
 	if err != nil {

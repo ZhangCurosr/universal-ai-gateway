@@ -37,6 +37,10 @@ func newRegistry(cfg *config.Config, log *slog.Logger) (*protocol.Registry, erro
 	if err != nil {
 		return nil, err
 	}
+	apis, err := restAPIDefs(cfg)
+	if err != nil {
+		return nil, err
+	}
 	opts := translate.Options{}
 	if cfg != nil {
 		opts.DropUnknownFields = (cfg.Translation.UnknownFields == "drop")
@@ -48,7 +52,7 @@ func newRegistry(cfg *config.Config, log *slog.Logger) (*protocol.Registry, erro
 			return nil, err
 		}
 	}
-	if err := rest.RegisterWithOptions(reg, rest.Options{Logger: log, Tools: tools}); err != nil {
+	if err := rest.RegisterWithOptions(reg, rest.Options{Logger: log, Tools: tools, APIs: apis}); err != nil {
 		return nil, err
 	}
 	if err := translate.Registrar(opts)(reg); err != nil {

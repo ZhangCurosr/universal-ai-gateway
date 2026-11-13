@@ -402,7 +402,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | RS-15 | 2xx 响应一律 `ResponseRaw`，`Status` = 上游状态码；响应头白名单：`Content-Type`、`Content-Length`、`Content-Disposition`、`Content-Range`、`Accept-Ranges`、`Cache-Control`、`ETag`、`Last-Modified`、`Location`、`Link`（分页）、`Retry-After`、`RateLimit`、`RateLimit-Policy`，以及名字以 `X-RateLimit-` 或 `RateLimit-` 开头的头（剩余额度）。上游是 `text/event-stream` 时同样按字节流转发，不解析 |
 | RS-16 | 非 2xx：用 `protocol.Send` 的分类，但上游 403 改写为 `OutcomeClientError`（Status 保持 403），使内核原样转发错误体而不隔离 Key。每次改写都记一条 Warn：`rest upstream returned 403; key not quarantined`，字段为上游主机、去掉查询串的路径、`obs.MaskSecret(Key 明文)`；同一掩码每分钟至多一条（内存表以掩码为键，上限 1024 项，满了整体清空；有锁，无 goroutine）。错误体超过 8 KiB（`MaxErrorBodyBytes`）时被截断，这是已知限制，写进部署文档 |
 | RS-17 | 网络错误：交给内核前，把 `*url.Error` 的 `URL` 字段替换为去掉查询串的 URL（无论 Key 放在哪里，一律去掉），避免日志泄露凭据或客户端参数 |
-| RS-18 | `Units() = ["requests"]`；Meter 在 2xx 时报告 `{requests: 1}`（`UsageUpstream`），`Fault()` 恒为无 |
+| RS-18 | `Units() = ["requests"]`（有 §8.3.6 的声明时见 DA-13）；Meter 在 2xx 时报告 `{requests: 1}`（`UsageUpstream`，有声明的服务见 DA-06、DA-07），`Fault()` 恒为无 |
 | RS-19 | `rest.post_idem` / `rest.patch_idem` 与 `PUT` 一样按 spec/07 §6 重试（429、5xx、超时、网络错误换 Key），同一请求体可能被上游收到多次。只应用于没有副作用的接口，由客户端负责选择；DEPLOYMENT.md 写明。计费仍是每个成功请求 `requests: 1`（失败的尝试不计费） |
 
 #### 8.3.3 Key 的放置方式（`Secret` 的格式）
@@ -439,6 +439,28 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | RS-43 | `ToolResult`：2xx 时，响应体为空 → 文本 `empty response (HTTP <status>)`；`Content-Type` 为 `application/json` 或 `*+json` 且是合法 JSON → 文本为响应体原文，顶层是对象时同时放进 `Structured`；`text/*` → 文本为响应体（必须是合法 UTF-8，否则同下）；没有 `Content-Type` → 按文本处理（不少 API 不设置它），是合法 JSON 对象时同样放进 `Structured`；其他类型 → `IsError`，文本 `binary response (<Content-Type>, <N> bytes) is not supported by tools`，不包含响应内容。非 2xx → `IsError`，文本 `HTTP <status>: ` + 响应体前 2000 字节（在 UTF-8 字符边界截断）。`ToolResult` 不返回 error |
 | RS-44 | 工具调用与直接调用同一路由，鉴权、白名单（TL-03 / TL-06）、计费、选 Key、重试、403 告警全部沿用 T51 规则，本卡不增加特殊路径 |
 | RS-45 | DEPLOYMENT.md §9 新增「把接口暴露给 AI」：配置示例（Bivia 的 POST 接口、带占位符的 GET 接口）、参数映射规则、`idempotent` 与 `read_only` 的含义、二进制响应不支持、修改后需重启；并醒目写明 §2.5：接口声明不是权限边界 |
+
+#### 8.3.6 声明式 API 能力（任务卡 T66）
+
+服务可以在配置中声明 `api`（spec/03 CFG-20），让通用转发处理业务错误码、按字段计费与异步任务，不需要为这类 API 写专用适配器。没有 `api` 的服务行为与 T51 / T54 完全相同。配置示例见 DEPLOYMENT.md §9.8 与 [T66 说明](../docs/handoff/T66_declarative_api.md)。
+
+| 编号 | 规则 |
+|:--|:--|
+| DA-01 | `api` 只允许出现在 `rest` 池的服务上，其他协议的服务出现时拒绝启动（装配代码检查） |
+| DA-02 | 字段路径只支持点分隔的对象键与数组下标（`data.task_id`、`items.0.id`），不支持通配、过滤、表达式。不存在、类型不符都视为「没有这个字段」 |
+| DA-03 | 错误规则按顺序匹配，第一条命中的生效；2xx 与非 2xx 响应都检查。`when` 可以写 `status`（状态码列表）、`json` 加 `in` / `not_in` / `exists`；全部满足才命中。值按 JSON 原值比较（`1` 与 `"1"` 不相等，数字按数值比较）。`not_in` 在字段不存在时不命中。响应体不是 JSON 时，所有 `json` 条件都不命中 |
+| DA-04 | `outcome` 取 `rate_limited`、`auth_failed`、`permission_denied`、`overloaded`、`server_error`、`client_error`，换 Key、冷却与隔离沿用 spec/07 §5。`permission_denied` 按 RS-16 改写为 `client_error`（状态 403），不隔离 Key。只有 `client_error` 会把上游错误体（截断到 8 KiB）连同 `status`（缺省 400）原样交给客户端；其他类别由内核在重试结束后输出统一错误 |
+| DA-05 | `cooldown_until`（只用于 `rate_limited`）计算到下一个满足条件的时刻（不含当前时刻）：只写 `time` 表示每天，加 `day_of_month`（1 ~ 28）表示每月；`tz` 为 `±HH:MM` 或 `UTC`（缺省）。结果作为 `RetryAfter` 交给调度器，仍受池的 `cooldown.max` 限制（缺省 10 分钟，日额度类 API 应设为 `24h`） |
+| DA-06 | 2xx 且没有命中错误规则才算成功。端点按顺序匹配「方法 + 路径模板」，`GET` 同时匹配 `HEAD`。成功时按命中的端点计费；没有命中任何端点时用量为 `{requests: 1}` |
+| DA-07 | 用量的每个单位按顺序取值：`json`（响应字段）→ `request_json`（请求体字段）或 `request_query`（查询参数），有 `map` 时按表换算（不在表里视为没有），没有 `map` 时取原值 → `default`。来自响应为 `UsageUpstream`；来自请求或缺省值为 `UsageEstimated`；一个单位都没有取到为 `UsageNone`（按预留结算）。值必须是非负整数，否则视为没有并记 Warn（只写服务名与单位名）。`usage: {}` 表示确定不计费。声明了用量的端点，`Estimate` 为空，预留由 `reserve` 决定 |
+| DA-07a | 异步任务在提交时计费（真实用量要跨请求记住任务状态，A 阶段不做）：由客户端在提交时给出 `?pages=` 之类的提示，或按 `default` 结算 |
+| DA-08 | `task_id`：成功响应中取到任务 ID（非空字符串或数字，≤ 256 字节）时放进 `Response.Pins`，记录值为 `<服务名>:<任务 ID>`；取不到时记 Warn，不固定 |
+| DA-09 | `pinned_by: <占位符>`：入站解析时按路径模板取出占位符的值，设置严格亲和（`AffinityPin`、`Strict`，值同 DA-08）：只用创建任务的 Key，不换 Key；未命中固定记录返回 404（SCH-17）。直接请求与工具调用相同 |
+| DA-10 | 路径模板的占位符必须独占一个路径段（`{id}`），按段解码后比较；不支持 `{path...}`、查询串与片段 |
+| DA-11 | 需要读响应体的请求（有 JSON 错误规则、响应字段用量或 `task_id`），2xx 且 `Content-Type` 为 JSON（`application/json`、`*+json`，或没有 `Content-Type`）时按 `MaxBufferedBytes` 缓冲读取后再转发（`ResponseBuffered`）；超过上限返回 `local_error`，不惩罚 Key。其他响应（文件下载等）仍是字节流，只检查状态码规则 |
+| DA-12 | 换 Key 重试只发生在请求体已缓冲的路由上（`GET`、`DELETE`、`PUT`、`/rest-idem/`，同 RS-19）。`/rest/` 下的 `POST` / `PATCH` 是流式请求体，命中 `rate_limited` 也只尝试一次（Key 照常冷却），`request_json` 也读不到（取下一个来源）。需要自动换 Key 或按请求体计费的接口用 `/rest-idem/`，工具声明写 `idempotent: true` |
+| DA-13 | `rest` 的 `Units()` 是所有声明中出现的单位加 `requests`。每个服务必须给自己声明的单位定价（CFG-20）；装配时为 rest 服务补齐其他单位的价格 `"0"`（只给内核使用，管理面展示的仍是原配置）。服务永远不会报告别的服务声明的单位，补 0 不会少计费 |
+| DA-14 | 日志与错误信息中不出现响应体、请求体的内容；任务 ID 只写进固定记录（内存） |
 
 ## 9. OpenAI Responses API（`openai_responses`，任务卡 T09C）
 

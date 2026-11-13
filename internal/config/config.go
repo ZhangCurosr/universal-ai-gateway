@@ -140,6 +140,8 @@ type ModelConfig struct {
 	Reserve map[string]int64 `yaml:"reserve"`
 	// Tools 是该服务声明的接口，作为工具交给 MCP 与命令行（CFG-17、CFG-18，spec/08 §8.3.5）。
 	Tools []ToolConfig `yaml:"tools"`
+	// API 是该服务的声明式 API 能力（CFG-20，spec/08 §8.3.6）；nil = 没有声明。
+	API *APIConfig `yaml:"api"`
 }
 
 // ToolConfig 是一个接口声明（CFG-17）。配置包只做与协议无关的校验；

@@ -149,4 +149,12 @@ models:
 #             city: { type: string, description: "城市名" }
 #             days: { type: integer, description: "天数 1-7" }
 #           required: [city]
+#     api:                              # 可选：业务错误码、按字段计费、异步任务（DEPLOYMENT.md 9.8）
+#       errors:
+#         - when: { json: code, in: [1001] }
+#           outcome: rate_limited
+#           cooldown_until: { time: "00:00", tz: "+08:00" }
+#       endpoints:
+#         - match: "GET /forecast/{city}"
+#           usage: { requests: { default: 1 } }
 

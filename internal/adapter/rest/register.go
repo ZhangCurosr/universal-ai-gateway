@@ -5,6 +5,7 @@
 //	ingress.go   客户端 → 网关：7 条 HTTP 方法路由、路径与参数提取、安全防穿越、错误格式
 //	secret.go    上游 Key 格式解析（bearer、header、query、basic）与请求注入
 //	egress.go    网关 → 上游：URL 拼接、请求头过滤、Key 注入、透明转发、403 改写、URL query 脱敏与按次计费
+//	api.go       声明式 API 能力：业务错误映射、用量提取、异步任务固定（T66）
 //
 // 本包不得导入其他适配器包（ARCH-03），也不得导入内核（ARCH-04）。
 package rest
@@ -53,6 +54,7 @@ func RegisterWithLogger(r *protocol.Registry, log *slog.Logger) error {
 type Options struct {
 	Logger *slog.Logger // 出站适配器的日志器；nil 时使用 slog.Default
 	Tools  []ToolDef    // 配置声明的接口，作为 MCP 工具提供
+	APIs   []APIDef     // 服务的声明式 API 能力（spec/08 §8.3.6，T66）
 }
 
 // RegisterWithOptions 把本包的入站与出站适配器注册到 r（RS-40）。接口声明不合法时返回错误。
@@ -65,9 +67,16 @@ func RegisterWithOptions(r *protocol.Registry, opts Options) error {
 		}
 		in.tools = t
 	}
+	apis, err := newAPITable(opts.APIs)
+	if err != nil {
+		return err
+	}
+	in.apis = apis
 	// RS-01: 注册优先级与 tavily 相同（10），不是 Fallback
 	if err := r.RegisterIngress(in, protocol.IngressOptions{Priority: 10}); err != nil {
 		return err
 	}
-	return r.RegisterEgress(NewEgressWithLogger(opts.Logger))
+	eg := NewEgressWithLogger(opts.Logger)
+	eg.apis = apis
+	return r.RegisterEgress(eg)
 }

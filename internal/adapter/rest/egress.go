@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -31,6 +32,8 @@ type Egress struct {
 	preserveClassifyHTTP bool
 
 	state *egressState
+	apis  *apiTable        // 声明式 API 能力（T66）；nil = 没有声明
+	now   func() time.Time // 仅测试使用；nil = time.Now
 }
 
 type egressState struct {
@@ -69,13 +72,20 @@ func (e *Egress) SetLogger(logger *slog.Logger) {
 // Protocol 返回 Protocol。
 func (Egress) Protocol() protocol.Protocol { return Protocol }
 
-// Units 返回计量单位清单（RS-18）。
-func (Egress) Units() []string {
-	return []string{UnitRequests}
+// Units 返回计量单位清单（RS-18、DA-13）。
+func (e Egress) Units() []string {
+	return e.apis.Units()
+}
+
+// callState 是 Prepare 交给 Do 的私有状态（Call.State）。
+type callState struct {
+	service string
+	def     *APIDef      // nil = 服务没有声明
+	ep      *EndpointDef // nil = 没有命中端点
 }
 
 // Prepare 实现同协议透传与参数校验（RS-11）。
-func (Egress) Prepare(env *protocol.Envelope, upstreamModel string) (*protocol.Call, error) {
+func (e Egress) Prepare(env *protocol.Envelope, upstreamModel string) (*protocol.Call, error) {
 	switch env.Op {
 	case OpGet, OpDelete, OpPut, OpPost, OpPatch, OpPostIdem, OpPatchIdem:
 	default:
@@ -96,7 +106,10 @@ func (Egress) Prepare(env *protocol.Envelope, upstreamModel string) (*protocol.C
 		Stream: env.Stream,
 		Params: env.Params,
 		Header: env.Header,
-		State:  env.Estimate,
+	}
+	if def := e.apis.lookup(env.Model); def != nil {
+		ep, _ := def.match(env.Params["method"], env.Params["path"])
+		call.State = &callState{service: env.Model, def: def, ep: ep}
 	}
 
 	switch env.Op {
@@ -234,13 +247,22 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	}
 
 	// 6. 发送上游请求
+	st, _ := call.State.(*callState)
 	resp, err := protocol.Send(up, req)
 	if err != nil {
 		var attErr *protocol.AttemptError
 		if errors.As(err, &attErr) {
 			sanitizeAttemptErrorURL(attErr)
-			// RS-16: 403 改写为 OutcomeClientError，保留 403 状态码
-			if !e.preserveClassifyHTTP && attErr.Outcome.Status == http.StatusForbidden {
+			matched := false
+			if st != nil && attErr.Outcome.Status != 0 { // DA-03：非 2xx 也检查错误规则
+				doc, isJSON := decodeJSON(attErr.Body)
+				if rule := st.def.matchError(attErr.Outcome.Status, doc, isJSON && isJSONType(attErr.Header.Get("Content-Type"))); rule != nil {
+					rule.apply(&attErr.Outcome, e.clock())
+					matched = true
+				}
+			}
+			// RS-16: 403 改写为 OutcomeClientError，保留 403 状态码；规则映射为 permission_denied 时同样处理（DA-04）
+			if !e.preserveClassifyHTTP && ((!matched && attErr.Outcome.Status == http.StatusForbidden) || attErr.Outcome.Kind == protocol.OutcomePermissionDenied) {
 				attErr.Outcome.Kind = protocol.OutcomeClientError
 				e.log403Warn(ctx, req.URL.Host, req.URL.Path, string(up.Secret))
 			}
@@ -258,6 +280,10 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	e.copyResponseHeaders(h, resp.Header)
 	if h.Get("Content-Type") == "" {
 		h.Set("Content-Type", "application/octet-stream")
+	}
+
+	if st != nil {
+		return e.declared(ctx, up, call, st, resp, h)
 	}
 
 	m := &meter{
@@ -415,4 +441,68 @@ func (m *meter) Usage() (pricing.Usage, protocol.UsageSource) {
 
 func (m *meter) Fault() (protocol.Outcome, bool) {
 	return protocol.Outcome{}, false
+}
+
+func (e Egress) clock() time.Time {
+	if e.now != nil {
+		return e.now()
+	}
+	return time.Now()
+}
+
+// declared 处理有声明的服务的 2xx 响应（DA-03、DA-06 ~ DA-08、DA-11）。
+func (e Egress) declared(ctx context.Context, up protocol.Upstream, call *protocol.Call, st *callState, resp *http.Response, h http.Header) (*protocol.Response, error) {
+	var reqDoc any
+	if len(call.Body) > 0 { // 只有缓冲的请求体可以读取（DA-12）
+		reqDoc, _ = decodeJSON(call.Body)
+	}
+	query, _ := url.ParseQuery(call.Params["query"]) // 解析失败时视为没有查询参数
+	if !st.ep.needsBody(st.def) || !isJSONType(resp.Header.Get("Content-Type")) {
+		if rule := st.def.matchError(resp.StatusCode, nil, false); rule != nil {
+			_ = resp.Body.Close() // 清理调用，错误无意义
+			o := protocol.Outcome{Status: resp.StatusCode}
+			rule.apply(&o, e.clock())
+			return nil, &protocol.AttemptError{Outcome: o, Header: h, Err: fmt.Errorf("rest: upstream %d matched an error rule", resp.StatusCode)}
+		}
+		u := computeUsage(st.ep, nil, reqDoc, query)
+		e.warnUsage(ctx, st, u)
+		return &protocol.Response{Kind: protocol.ResponseRaw, Status: resp.StatusCode, Header: h, Raw: resp.Body, Meter: &meter{usage: u.usage, src: u.src}}, nil
+	}
+	body, err := protocol.ReadBody(up, resp)
+	if err != nil {
+		return nil, err // 超过缓冲上限：local_error，不惩罚 Key（DA-11）
+	}
+	doc, isJSON := decodeJSON(body)
+	if !isJSON {
+		doc = nil
+	}
+	if rule := st.def.matchError(resp.StatusCode, doc, isJSON); rule != nil {
+		o := protocol.Outcome{Status: resp.StatusCode}
+		rule.apply(&o, e.clock())
+		eb := body
+		if len(eb) > protocol.MaxErrorBodyBytes {
+			eb = eb[:protocol.MaxErrorBodyBytes]
+		}
+		eh := http.Header{}
+		protocol.CopyHeaders(eh, h, "Content-Type")
+		return nil, &protocol.AttemptError{Outcome: o, Body: eb, Header: eh, Err: fmt.Errorf("rest: upstream %d matched an error rule", resp.StatusCode)}
+	}
+	u := computeUsage(st.ep, doc, reqDoc, query)
+	e.warnUsage(ctx, st, u)
+	out := &protocol.Response{Kind: protocol.ResponseBuffered, Status: resp.StatusCode, Header: h, Body: body, Meter: &meter{usage: u.usage, src: u.src}}
+	if st.ep != nil && st.ep.TaskID != nil {
+		if id, ok := taskIDFrom(doc, st.ep.TaskID); ok {
+			out.Pins = []string{pinValue(st.service, id)} // DA-08
+		} else {
+			e.logger().WarnContext(ctx, "rest: task id not found in response; task not pinned", "service", st.service)
+		}
+	}
+	return out, nil
+}
+
+// warnUsage 记录取值不合法的计量单位（DA-07）：只写服务名与单位名，不写字段值。
+func (e Egress) warnUsage(ctx context.Context, st *callState, u usageResult) {
+	for _, unit := range u.warn {
+		e.logger().WarnContext(ctx, "rest: usage value is not a non-negative integer; ignored", "service", st.service, "unit", unit)
+	}
 }

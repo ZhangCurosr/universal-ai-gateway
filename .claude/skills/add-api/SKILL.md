@@ -36,7 +36,9 @@ description: 把一个外部 REST API 接入 universal-ai-gateway：查阅官方
 
 - **base URL**（含版本前缀，例如 `https://api.example.com/v2`）；
 - **鉴权方式**，对应 Key 的写法（spec/08 §8.3.3）：`Authorization: Bearer` → `bearer:`；自定义头 → `header:<名字>:`；查询参数 → `query:<名字>:`；HTTP Basic → `basic:<用户>:<密码>`。签名类（AWS SigV4、HMAC）与需要自动刷新的 OAuth **不支持**，遇到就停下告诉用户；
-- **计费**：rest 只能按次计费（`requests`），问用户每次调用的价格（不知道就用 `"0"`）；
+- **计费**：缺省按次计费（`requests`），问用户每次调用的价格（不知道就用 `"0"`）。文档写明按页数、积分、字符数计费，且响应或请求里有对应字段时，用 `api.endpoints[].usage` 声明（第 4 步）；
+- **错误码**：额度用完、Token 错误、任务不存在等是不是放在 HTTP 200 的响应体里（例如 `{"code": -60018}`）；额度什么时候重置；
+- **异步任务**：有没有「提交 → 查询」两步、任务是否只能用提交它的 Key 查询；
 - **候选接口**：方法、路径、参数、返回什么、有没有副作用。
 
 ### 3. 让用户挑接口
@@ -80,6 +82,27 @@ models:
 - 每个参数写 `description`，能限制的都限制（`enum`、`minimum`、`required`、`additionalProperties: false`）；
 - `idempotent: true` 只用于无副作用的 `POST` / `PATCH`；
 - 二进制响应（图片、PDF）不支持作为工具结果。
+
+文档里有业务错误码、按字段计费或异步任务时，在同一个服务上加 `api`（规则见 DEPLOYMENT.md §9.8，spec/08 §8.3.6）：
+
+```yaml
+    api:
+      errors:
+        - when: { json: code, in: [1001] }        # 值的类型与上游一致：数字写数字，字符串加引号
+          outcome: rate_limited                   # 额度用完；Token 错误用 auth_failed；参数错误用 client_error
+          cooldown_until: { time: "00:00", tz: "+08:00" }   # 额度每天几点重置；每月重置再加 day_of_month
+      endpoints:
+        - match: "POST /tasks"
+          task_id: data.id                        # 提交接口：记下任务 ID
+          usage: { pages: { json: data.pages, default: 1 } }
+        - match: "GET /tasks/{id}"
+          pinned_by: id                           # 查询接口：只用提交任务的 Key
+          usage: {}                               # 查询不计费
+```
+
+- `usage` 里用到的单位必须写进 `price`；额度按天重置时，池上加 `cooldown: { max: 24h }`；
+- 需要失败自动换 Key 或按请求体字段计费的 `POST` 接口，工具声明写 `idempotent: true`（走 `/rest-idem/`）；
+- 不确定错误码含义时不要猜，宁可不写这条规则（未命中的 2xx 照常当作成功）。
 
 ### 5. 校验并预览
 

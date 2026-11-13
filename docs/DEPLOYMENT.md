@@ -684,11 +684,72 @@ models:
 
 ### 9.7 已知限制
 
-1. **仅按次计费**：`rest` 协议仅支持计量单位 `requests`（每次成功请求 1 次），不支持按 token、按请求体字段或按路径计费。
+1. **缺省按次计费**：没有 `api` 声明的服务每次成功请求计 1 个 `requests`。按响应字段、请求字段计费，以及业务错误码与异步任务，见 9.8。
 2. **`/rest/` 下 POST / PATCH 不重试**：依据 CORE-07 规则，流式请求体严格只尝试一次。
 3. **错误体截断**：上游返回的非 2xx 错误响应正文超过 8 KiB（`MaxErrorBodyBytes`）时会被截断。
-4. **无会话亲和**：通用 REST 转发不做状态维持和会话亲和。
+4. **缺省无会话亲和**：异步任务的查询需要固定到创建它的 Key 时，用 9.8 的 `task_id` / `pinned_by`。
 5. **无路径白名单**：网关不做请求路径与方法的内容过滤，安全控制依赖上游 Key 最小权限与模型访问列表（`allowed_models`）。接口声明（9.6）也不改变这一点。
+
+### 9.8 声明业务错误、计费方式与异步任务（spec/08 §8.3.6）
+
+很多 API 不只是「原样转发、按次计费」：额度用完时返回 HTTP 200 加业务错误码；按页数、积分计费；异步任务只能在创建它的账号下查询。在服务上加一个 `api` 块，通用转发就能处理这些情况，不需要专用适配器：
+
+```yaml
+pools:
+  - name: mineru-rest
+    protocol: rest
+    base_url: "https://mineru.net"
+    cooldown: { max: 24h }               # 日额度用完的 Key 要冷却到次日，不能被 10 分钟的缺省上限截断
+models:
+  - name: mineru-api
+    pool: mineru-rest
+    price: { pages: "0.01", requests: "0" }   # 声明里用到的单位必须定价
+    reserve: { pages: 600 }
+    api:
+      errors:                          # 按顺序匹配，第一条命中的生效
+        - when: { json: msgCode, in: ["A0202", "A0211"] }
+          outcome: auth_failed         # Token 错误：隔离这把 Key
+        - when: { json: code, in: [-60018, -60019] }
+          outcome: rate_limited        # 日额度用完：换 Key，冷却到北京时间次日 00:01
+          cooldown_until: { time: "00:01", tz: "+08:00" }
+        - when: { json: code, in: [-60012, -60013] }
+          outcome: client_error        # 任务不存在：把上游错误体以 404 交给客户端
+          status: 404
+        - when: { json: code, not_in: [0] }
+          outcome: client_error        # 其他业务错误：400
+      endpoints:
+        - match: "POST /api/v4/extract/task"
+          task_id: data.task_id        # 记下任务 ID，固定到这次用的 Key
+          usage: { pages: { request_query: pages, default: 600 } }   # 提交时按 ?pages= 计费，没给按 600
+        - match: "GET /api/v4/extract/task/{task}"
+          pinned_by: task              # 查询只用创建任务的 Key
+          usage: {}                    # 查询不计费
+```
+
+```bash
+# 提交（/rest-idem/ 才会在额度用完时自动换 Key），再轮询
+curl -sS -X POST "https://gateway.example.com/rest-idem/mineru-api/api/v4/extract/task?pages=13" \
+  -H "Authorization: Bearer $UAIG_TOKEN" -H "Content-Type: application/json" -d '{"url":"https://example.com/a.pdf"}'
+curl -sS "https://gateway.example.com/rest/mineru-api/api/v4/extract/task/<task_id>" -H "Authorization: Bearer $UAIG_TOKEN"
+```
+
+按字段计费的例子（上游报告了就用上游的，否则按请求推算）：
+
+```yaml
+      endpoints:
+        - match: "POST /search"
+          usage:
+            credits: { json: usage.credits, request_json: search_depth, map: { advanced: 2 }, default: 1 }
+```
+
+要点：
+
+- **结果类别**：`rate_limited`（换 Key、冷却）、`auth_failed`（隔离 Key）、`overloaded`、`server_error`（换 Key）、`permission_denied`（同 9.5，不隔离）、`client_error`（不换 Key，把上游错误体交给客户端）。
+- **字段路径**只支持 `a.b.0.c` 这种写法；值按 JSON 原样比较，`-60018` 与 `"-60018"` 不同，要和上游返回的类型一致。
+- **换 Key 与按请求体计费**只在 `/rest-idem/`（以及 `GET`、`DELETE`、`PUT`）上生效；`/rest/` 下的 `POST` 是流式请求体，只尝试一次，也读不到请求字段。工具声明里写 `idempotent: true` 就走 `/rest-idem/`。
+- **异步任务在提交时计费**：真实页数要等任务完成才知道，目前按 `?pages=` 或 `default` 结算。
+- **任务固定记录在内存里**：网关重启后，重启前创建的任务查询返回 404（T68 会解决）。
+- 声明了需要读响应体的规则时，JSON 响应会先缓冲再转发（上限 64 MiB）；文件下载等非 JSON 响应仍是流式。
 
 ## 10. MinerU 文档解析
 

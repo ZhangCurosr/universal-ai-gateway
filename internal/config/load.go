@@ -218,6 +218,12 @@ func (c *Config) Validate() error {
 			}
 			seenTool[t.Name] = true
 		}
+		// CFG-20
+		if m.API != nil {
+			if err := validateAPI(path, m); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
