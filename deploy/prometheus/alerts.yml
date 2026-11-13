@@ -1,0 +1,166 @@
+# Universal AI Gateway - Prometheus Alerting Rules
+# Conforms to spec/15_metrics.md and production alerting standards.
+
+groups:
+  - name: universal-ai-gateway-alerts
+    rules:
+      - alert: High5xxRate
+        expr: |
+          (
+            sum(rate(uaig_requests_total{code="5xx"}[5m]))
+            /
+            sum(rate(uaig_requests_total[5m]))
+            > 0.05
+          )
+          or
+          (
+            sum(rate(uai_requests_total{status=~"5.*"}[5m]))
+            /
+            sum(rate(uai_requests_total[5m]))
+            > 0.05
+          )
+          or
+          (
+            sum(rate(uai_request_errors_total{code=~"5.*"}[5m]))
+            /
+            sum(rate(uai_requests_total[5m]))
+            > 0.05
+          )
+        for: 5m
+        labels:
+          severity: critical
+          service: universal-ai-gateway
+        annotations:
+          summary: "Universal AI Gateway 5xx error rate > 5%"
+          description: "Over 5% of requests to the gateway are failing with 5xx HTTP errors over the last 5 minutes (current error rate: {{ $value | humanizePercentage }}). Investigate upstream provider health and gateway errors."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#7-监控与告警prometheus"
+
+      - alert: KeyPoolExhausted
+        expr: |
+          (
+            sum by (pool) (uaig_keys_status{state="ready"}) == 0
+          )
+          or
+          (
+            sum by (pool) (uai_keys_total{status="available"}) == 0
+          )
+        for: 1m
+        labels:
+          severity: critical
+          service: universal-ai-gateway
+        annotations:
+          summary: "Upstream key pool {{ $labels.pool }} is completely exhausted"
+          description: "There are zero available (ready) keys in upstream pool '{{ $labels.pool }}' for more than 1 minute. All keys are either cooling down, quarantined, disabled, or circuit-broken. Requests routing to this pool will fail."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#1-快速开始"
+
+      - alert: CircuitBreakerTripped
+        expr: |
+          (
+            sum by (pool) (uaig_keys_status{state="breaker_open"}) > 0
+          )
+          or
+          (
+            sum by (pool) (uai_circuit_breaker_tripped) > 0
+          )
+        for: 30s
+        labels:
+          severity: warning
+          service: universal-ai-gateway
+        annotations:
+          summary: "Circuit breaker tripped in upstream pool {{ $labels.pool }}"
+          description: "One or more upstream keys in pool '{{ $labels.pool }}' have tripped their circuit breaker (state=breaker_open) due to consecutive upstream failures."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#7-监控与告警prometheus"
+
+      - alert: HighLatencyP99
+        expr: |
+          (
+            histogram_quantile(0.99, sum by (le, model) (rate(uaig_request_duration_seconds_bucket[5m]))) > 10
+          )
+          or
+          (
+            histogram_quantile(0.99, sum by (le, model) (rate(uai_request_duration_seconds_bucket[5m]))) > 10
+          )
+        for: 5m
+        labels:
+          severity: warning
+          service: universal-ai-gateway
+        annotations:
+          summary: "P99 latency > 10s for model {{ $labels.model }}"
+          description: "P99 request latency for model '{{ $labels.model }}' has exceeded 10 seconds over the last 5 minutes (current p99: {{ $value | humanizeDuration }}). Check upstream latency or network connectivity."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#4-资源与调参"
+
+      - alert: HighTTFTP99
+        expr: |
+          (
+            histogram_quantile(0.99, sum by (le, model) (rate(uaig_ttfb_seconds_bucket[5m]))) > 5
+          )
+          or
+          (
+            histogram_quantile(0.99, sum by (le, model) (rate(uai_request_ttft_seconds_bucket[5m]))) > 5
+          )
+        for: 5m
+        labels:
+          severity: warning
+          service: universal-ai-gateway
+        annotations:
+          summary: "P99 TTFT / TTFB > 5s for model {{ $labels.model }}"
+          description: "P99 time to first token/byte for model '{{ $labels.model }}' has exceeded 5 seconds over the last 5 minutes (current p99: {{ $value | humanizeDuration }}). Upstream provider first-token generation is degrading."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#7-监控与告警prometheus"
+
+      - alert: AuditLogDropping
+        expr: |
+          (
+            rate(uaig_audit_dropped_total[5m]) > 0
+          )
+          or
+          (
+            rate(uai_audit_dropped_total[5m]) > 0
+          )
+        for: 1m
+        labels:
+          severity: warning
+          service: universal-ai-gateway
+        annotations:
+          summary: "Audit log pipeline is dropping audit records"
+          description: "Gateway audit pipeline queue is full and audit records are actively being dropped at rate {{ $value | humanize }} drops/second. Check disk I/O performance and audit pipeline capacity."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#7-监控与告警prometheus"
+
+      - alert: LedgerBacklogHigh
+        expr: |
+          (
+            uaig_ledger_events_queue_length > 1000
+          )
+          or
+          (
+            uai_ledger_pending_events > 1000
+          )
+        for: 5m
+        labels:
+          severity: critical
+          service: universal-ai-gateway
+        annotations:
+          summary: "Ledger pending event queue backlog > 1000"
+          description: "Billing ledger pending event queue has accumulated more than 1000 un-flushed events for > 5m (current depth: {{ $value }}). Database write saturation may cause billing event delivery delays."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#7-监控与告警prometheus"
+
+      - alert: RateLimitSurge
+        expr: |
+          (
+            sum(rate(uaig_request_errors_total{error_code="rate_limit"}[5m])) > 10
+          )
+          or
+          (
+            sum(rate(uaig_requests_total{outcome="rate_limited"}[5m])) > 10
+          )
+          or
+          (
+            sum(rate(uai_client_rate_limited_total[5m])) > 10
+          )
+        for: 2m
+        labels:
+          severity: warning
+          service: universal-ai-gateway
+        annotations:
+          summary: "Surge of rate-limited client requests (> 10 req/s)"
+          description: "A sudden high surge of client requests are being rejected due to client RPM limits (rate: {{ $value | humanize }} req/sec). Verify client tokens, quota limits, and potential runaway loops."
+          runbook_url: "https://github.com/ZhangCurosr/universal-ai-gateway/blob/main/docs/DEPLOYMENT.md#1-快速开始"
