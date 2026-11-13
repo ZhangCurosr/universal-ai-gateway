@@ -111,3 +111,74 @@ func TestSetPoolsConcurrent(t *testing.T) {
 		}
 	}
 }
+
+// SCH-12 / SCH-20：已读取旧池快照的请求与新一代共用同一份轮询进度。
+func TestSetPoolsWeightedRoundRobinAcrossGenerations(t *testing.T) {
+	h := newHarness(t, config.StrategyWeightedRoundRobin, key(1, 5, 10), key(2, 1, 10))
+	generations := []*pool{(*h.s.pools.Load())["p"]}
+	for i := 0; i < 3; i++ {
+		cfg := testPool(config.StrategyWeightedRoundRobin)
+		cfg.CooldownDefault += time.Duration(i+1) * time.Second
+		h.s.SetPools([]PoolConfig{cfg})
+		generations = append(generations, (*h.s.pools.Load())["p"])
+	}
+
+	start := make(chan struct{})
+	results := make(chan [2]int, len(generations))
+	var wg sync.WaitGroup
+	for _, p := range generations {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			var counts [2]int
+			for i := 0; i < 600; i++ {
+				// 模拟 Acquire 已取到该代池与候选集，热重载后继续执行选择。
+				l := h.s.pickSWRR(p, p.keys, t0)
+				if l == nil {
+					t.Error("pickSWRR() = nil, want available lease")
+					return
+				}
+				counts[l.Key.ID-1]++
+				l.Finish(protocol.Outcome{Kind: protocol.OutcomeSuccess})
+			}
+			results <- counts // 容量等于 worker 数，不阻塞退出。
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	var total [2]int
+	for counts := range results {
+		total[0] += counts[0]
+		total[1] += counts[1]
+	}
+	if total != [2]int{2000, 400} {
+		t.Fatalf("weighted selections across generations = %v, want [2000 400]", total)
+	}
+	for _, st := range h.s.KeyStatus() {
+		if st.InFlight != 0 {
+			t.Errorf("key %d in-flight = %d after all leases finished, want 0", st.ID, st.InFlight)
+		}
+	}
+}
+
+// SCH-20：共享轮询状态不能改变旧租约持有的冷却参数。
+func TestSetPoolsKeepsLeaseConfig(t *testing.T) {
+	h := newHarness(t, config.StrategyWeightedRoundRobin, key(1, 1, 10), key(2, 1, 10))
+	old := mustAcquire(t, h.s, AcquireRequest{Pool: "p", Exclude: []int64{2}})
+	cfg := testPool(config.StrategyWeightedRoundRobin)
+	cfg.CooldownDefault = 5 * time.Second
+	h.s.SetPools([]PoolConfig{cfg})
+	current := mustAcquire(t, h.s, AcquireRequest{Pool: "p", Exclude: []int64{1}})
+	old.Finish(protocol.Outcome{Kind: protocol.OutcomeRateLimited})
+	current.Finish(protocol.Outcome{Kind: protocol.OutcomeRateLimited})
+	for _, tt := range []struct {
+		lease *Lease
+		want  time.Duration
+	}{{old, 30 * time.Second}, {current, 5 * time.Second}} {
+		if got := tt.lease.Key.CooldownUntil().Sub(t0); got != tt.want {
+			t.Errorf("key %d cooldown after Finish() = %v, want %v", tt.lease.Key.ID, got, tt.want)
+		}
+	}
+}

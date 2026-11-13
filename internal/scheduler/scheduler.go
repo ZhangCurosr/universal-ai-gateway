@@ -63,8 +63,8 @@ type KeyStatus struct {
 // pool 是一个池的运行时状态。
 type pool struct {
 	cfg    PoolConfig
-	mu     sync.Mutex // 保护 keys 切片替换与 SWRR 运算
-	keys   []*Key     // guarded by mu
+	mu     *sync.Mutex // 各代池共用，保护 keys 切片替换与共享 Key 的 SWRR 运算
+	keys   []*Key      // guarded by mu
 	cursor atomic.Uint64
 }
 
@@ -89,7 +89,7 @@ func New(pools []PoolConfig, opts Options) *Scheduler {
 	s := &Scheduler{opts: opts, affinity: newAffinityCache(opts.AffinityCapacity), byID: map[int64]*Key{}}
 	m := make(map[string]*pool, len(pools))
 	for _, pc := range pools {
-		m[pc.Name] = &pool{cfg: pc}
+		m[pc.Name] = &pool{cfg: pc, mu: new(sync.Mutex)}
 	}
 	s.pools.Store(&m)
 	return s
@@ -103,8 +103,10 @@ func (s *Scheduler) SetPools(pools []PoolConfig) {
 	old := *s.pools.Load()
 	next := make(map[string]*pool, len(pools))
 	for _, pc := range pools {
-		np := &pool{cfg: pc}
+		np := &pool{cfg: pc, mu: new(sync.Mutex)}
 		if op, ok := old[pc.Name]; ok {
+			// SCH-20：旧 Acquire 可能仍持有 op；复用 Key 时必须同时复用保护其轮询权重的锁。
+			np.mu = op.mu
 			op.mu.Lock()
 			np.keys = op.keys
 			op.mu.Unlock()
