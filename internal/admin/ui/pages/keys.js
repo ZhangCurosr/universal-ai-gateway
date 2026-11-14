@@ -30,6 +30,10 @@ export async function render(main, ctx) {
   const ALL = '*all*'; // 下拉框中「全部标签」的取值
   let lastKeys = [];
   let labelFilter = null; // null = 全部标签；'' = 无标签
+  // UI-39：每个池的展开 / 收起状态，在本页停留期间保持（每 10 秒刷新不会重置）；没设置过的池按 Key 数决定
+  const COLLAPSE_OVER = 10;
+  const collapsed = new Map();
+  const isCollapsed = (pool, n) => (collapsed.has(pool) ? collapsed.get(pool) : n > COLLAPSE_OVER);
   const labelSelect = h('select', { class: 'input', 'aria-label': t('k.filterLabel') });
   labelSelect.addEventListener('change', () => {
     labelFilter = labelSelect.value === ALL ? null : labelSelect.value;
@@ -99,7 +103,13 @@ export async function render(main, ctx) {
       listBox.replaceChildren(h('section', { class: 'card' }, h('p', { class: 'muted pad', text: t('k.empty') })));
       return;
     }
-    listBox.replaceChildren(...[...pools.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([pool, list]) => poolCard(pool, list)));
+    const entries = [...pools.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    const anyOpen = entries.some(([pool, list]) => !isCollapsed(pool, list.length));
+    const allBtn = h('button', { type: 'button', class: 'link-btn small', text: t(anyOpen ? 'k.collapseAll' : 'k.expandAll'),
+      onClick: () => { for (const [pool] of entries) collapsed.set(pool, anyOpen); drawList(lastKeys); } });
+    listBox.replaceChildren(
+      entries.length > 1 ? h('div', { class: 'pool-tools' }, allBtn) : null,
+      ...entries.map(([pool, list]) => poolCard(pool, list)));
   }
 
   function poolCard(pool, list) {
@@ -107,14 +117,23 @@ export async function render(main, ctx) {
     const ready = list.filter((k) => k.state === 'ready' && !(k.cooldown_seconds > 0) && k.breaker !== 'open').length;
     const inflight = list.reduce((s, k) => s + (k.in_flight || 0), 0);
     const quota = list.some((k) => k.quota_limit > 0); // UI-35：声明了额度的池多一列
-    return h('section', { class: 'card' },
+    const closed = isCollapsed(pool, list.length);
+    const bodyId = 'pool-body-' + pool.replace(/[^A-Za-z0-9_-]/g, '_');
+    const toggle = h('button', { type: 'button', class: 'pool-toggle', 'aria-expanded': String(!closed), 'aria-controls': bodyId,
+      title: t(closed ? 'k.expand' : 'k.collapse'), 'aria-label': pool + ' · ' + t(closed ? 'k.expand' : 'k.collapse'),
+      onClick: () => { collapsed.set(pool, !closed); drawList(lastKeys); } },
+      h('span', { class: 'chev' + (closed ? '' : ' chev-open'), 'aria-hidden': 'true', text: '▸' }),
+      h('h2', { text: pool }));
+    return h('section', { class: 'card' + (closed ? ' pool-closed' : '') },
       h('div', { class: 'card-head card-head-row' },
-        h('div', { class: 'row-wrap' }, h('h2', { text: pool }), h('span', { class: 'tag mono', text: protoOf.get(pool) || '?' })),
+        h('div', { class: 'row-wrap' }, toggle, h('span', { class: 'tag mono', text: protoOf.get(pool) || '?' })),
         h('span', { class: 'muted small', text: t('k.poolSummary', { n: list.length, ready, inflight }) })),
       poolLine(extra && extra.pools.get(pool)),
-      tableWrap(h('table', { class: 'table table-wide' },
+      closed ? null : tableWrap(h('table', { class: 'table table-wide', id: bodyId },
         h('thead', {}, h('tr', {}, th(t('k.name')), th(t('k.secret')), th(t('k.state')), quota ? th(t('k.quota')) : null, extra ? th(t('k.day')) : null, th(t('k.expires')), th(t('k.breaker')), th(t('k.load')), th(t('k.weight'), 'num'), th(t('k.actions'), 'num'))),
-        h('tbody', {}, list.map((k) => keyRow(k, quota))))));
+        h('tbody', {}, list.map((k) => keyRow(k, quota))))),
+      closed ? h('button', { type: 'button', class: 'link-btn small pool-more', text: t('k.showKeys', { n: fmtInt(list.length) }),
+        onClick: () => { collapsed.set(pool, false); drawList(lastKeys); } }) : null);
   }
 
   // poolLine 是池摘要（UI-37）：可用 / 总数；额度：剩余、每小时消耗、预计用完或能撑到重置；7 天内过期

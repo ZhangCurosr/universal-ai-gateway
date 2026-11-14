@@ -552,3 +552,26 @@ func TestUIShare(t *testing.T) {
 		}
 	}
 }
+
+// UI-39：Key 页每个池可以展开 / 收起；Key 多的池缺省收起；刷新不重置；有全部展开 / 收起；文案中英文齐全。
+func TestUIPoolCollapse(t *testing.T) {
+	b, err := fs.ReadFile(uiFiles, "ui/pages/keys.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := string(b)
+	for _, want := range []string{"const collapsed = new Map()", "'aria-expanded'", "closed ? null : tableWrap(", "t(anyOpen ? 'k.collapseAll' : 'k.expandAll')"} {
+		if !strings.Contains(keys, want) {
+			t.Errorf("keys.js lacks %q", want)
+		}
+	}
+	b, err = fs.ReadFile(uiFiles, "ui/i18n.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"k.expand", "k.collapse", "k.expandAll", "k.collapseAll", "k.showKeys"} {
+		if strings.Count(string(b), "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}
