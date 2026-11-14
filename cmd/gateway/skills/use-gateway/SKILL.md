@@ -5,6 +5,8 @@ description: 通过用户自建的 Universal AI Gateway（环境变量 UAIG_URL�
 
 # 通过 Universal AI Gateway 调用 AI 与 API
 
+> 本技能由 `gateway connect <claude|codex|opencode|pi> --write` 安装；网关更新后再运行一次即可更新。
+
 用户有一个自托管网关：项目代码只和它通信，它持有上游 Key、换 Key 重试、计费，并让同一个模型能用任何主流 SDK 调用。完整说明在网关仓库的 `docs/AI_QUICKSTART.md`；本技能是精简版。
 
 ## 硬规则

@@ -43,7 +43,7 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		}
 		fmt.Fprintln(stdout, "config ok")
 		return 0
-	case "tools", "call", "mcp", "files":
+	case "tools", "call", "mcp", "files", "connect":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		switch args[0] {
@@ -53,6 +53,8 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			return cmdCall(ctx, args[1:], getenv, stdin, stdout, stderr)
 		case "files":
 			return cmdFiles(ctx, args[1:], getenv, stdout, stderr)
+		case "connect":
+			return cmdConnect(ctx, args[1:], getenv, stdout, stderr)
 		default:
 			return cmdMCP(ctx, args[1:], getenv, stdin, stdout, stderr)
 		}
@@ -120,6 +122,7 @@ client commands (talk to a running gateway; env UAIG_URL, UAIG_TOKEN):
                                                --upload-dir lets the AI upload files from DIR (gateway_upload_file)
   gateway files upload <path> [--ttl 2h]       upload a file; other tools take its file_id instead of the content
   gateway files list | delete <id>             list or delete your uploaded files
+  gateway connect <claude|codex|opencode|pi> [--write]   configure an AI CLI to use this gateway (token stays in UAIG_TOKEN)
 
 admin commands (env UAIG_ADMIN_URL, UAIG_ADMIN_TOKEN):
   gateway reload [--dry-run] [--json]          re-read the config file of the running gateway

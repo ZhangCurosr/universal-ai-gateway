@@ -2,7 +2,7 @@
 
 > 读者：在**其他项目**里写代码的 AI 助手，之前不了解这个网关。读完这一页就能正确调用。
 > 运维、配置、导入 Key 等管理操作不在本页，见 [DEPLOYMENT.md](./DEPLOYMENT.md)。
-> Claude Code 用户可以安装同内容的技能：把 [`skills/use-gateway`](./skills/use-gateway/SKILL.md) 目录复制到 `~/.claude/skills/use-gateway/`。
+> 一条命令配好你用的 AI CLI（Claude Code、Codex、OpenCode、Pi）并安装同内容的技能 `use-gateway`：`gateway connect <cli> --write`（见 §10）。
 
 ## 1. 它是什么
 
@@ -154,3 +154,23 @@ gateway files upload ./report.pdf --ttl 2h    # 输出 file_… ID
 - [ ] base URL：OpenAI 系带 `/v1`，Anthropic 与 Gemini 不带。
 - [ ] 项目里没有任何上游厂商的 Key 或地址。
 - [ ] 401 / 402 / 403 不重试，429 / 5xx 退避重试。
+
+## 10. 把网关配成各 AI CLI 的模型后端（`gateway connect`）
+
+在要使用网关的项目目录里运行（不加 `--write` 只打印，不改任何文件）：
+
+```bash
+gateway connect codex --write              # 或 claude / opencode / pi；--scope user 写到用户目录
+```
+
+它会写好该 CLI 的模型后端与 MCP 配置，并把 `use-gateway` 技能装到该 CLI 读取的技能目录。**Token 不会写进任何文件**，配置里只引用环境变量 `UAIG_TOKEN`，请自己设置一次（Windows：`setx UAIG_TOKEN "uai_live_..."`，然后重开终端）。服务名取自网关（能当大模型用的服务）。
+
+| CLI | 写入的文件 | 内容 |
+|:--|:--|:--|
+| Claude Code | `.mcp.json`；技能 `.claude/skills/use-gateway/` | MCP `uaig`（`Authorization: Bearer ${UAIG_TOKEN}`）；模型后端用环境变量 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`（命令会打印设置方法，不写进 `settings.json`） |
+| Codex | `.codex/config.toml`（标记块 `# >>> uaig …`）；技能 `.agents/skills/use-gateway/` | `[model_providers.uaig]`（`base_url = "<网关>/v1"`、`env_key = "UAIG_TOKEN"`、`wire_api = "responses"`）与 `[mcp_servers.uaig]`（`bearer_token_env_var = "UAIG_TOKEN"`）；`model_provider = "uaig"` 需要放在文件开头，或用 `codex -c model_provider=uaig -m <服务名>` |
+| OpenCode | `opencode.json`；技能 `.agents/skills/use-gateway/` | provider `uaig`（OpenAI 兼容，`{env:UAIG_TOKEN}`）与 MCP `uaig`；按 `opencode --version` 选择 V1 / V2 配置结构，也可以用 `--opencode-schema` 指定；模型写作 `uaig/<服务名>` |
+| Pi | `~/.pi/agent/models.json`；技能 `.agents/skills/use-gateway/` | provider `uaig`（`api: openai-completions`，`apiKey: "$UAIG_TOKEN"`；`--pi-api anthropic-messages` 可选）；Pi 没有内置 MCP，技能会让它用 `gateway tools` / `gateway call` |
+
+- 已有的 JSON 配置只改 `uaig` 这一个条目，其他内容和顺序不变；带注释的文件不改，只打印让你手工合并。改之前备份为 `.bak`，重复运行不会产生变化。
+- 网关地址取环境变量 `UAIG_URL`（缺省 `http://127.0.0.1:8080`）；局域网里的另一台设备用管理页面「局域网共享」里的地址。

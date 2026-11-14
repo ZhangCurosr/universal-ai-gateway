@@ -195,7 +195,7 @@ gateway reload             # 应用
 
 ## 6. 客户端接入
 
-> 让其他项目里的 AI 助手使用网关：把 [AI_QUICKSTART.md](./AI_QUICKSTART.md) 交给它，或者安装技能 [`docs/skills/use-gateway`](./skills/use-gateway/SKILL.md)（复制到 `~/.claude/skills/use-gateway/`，所有项目都能用）。
+> 让其他项目里的 AI 助手使用网关：在那个项目里运行 `gateway connect <claude|codex|opencode|pi> --write`（T73），一次配好该 CLI 的模型后端、MCP 与 `use-gateway` 技能（Token 只引用环境变量 `UAIG_TOKEN`）；或者把 [AI_QUICKSTART.md](./AI_QUICKSTART.md) 交给它。
 
 先用管理 API 为每个 AI 客户端创建 Token，并用 `allowed_models` 限制它能用的服务。下文中 `https://gw.example.com` 换成你的地址：局域网形态用 `http://<网关IP>:8080`。
 

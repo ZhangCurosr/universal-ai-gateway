@@ -196,3 +196,19 @@ gateway call ask_model --args '{"model":"deepseek-chat","input":"用一句话解
 | AC-03 | 写入类工具（`readOnlyHint: false`）必须加 `--yes`，否则不发请求、以 2 退出并说明将要做的修改；`reload` 带 `{"dry_run": true}` 时视为只读 |
 | AC-04 | 输出与错误中不出现管理员 Token |
 | AC-05 | 未知工具 → 以 2 退出并列出可用的短名 |
+
+## 7. 接入各家 AI CLI：`gateway connect`（任务卡 T73）
+
+`gateway connect <claude|codex|opencode|pi> [--scope project|user] [--write] [--model NAME] [--opencode-schema v1|v2] [--pi-api openai-completions|anthropic-messages]`、`gateway connect list`。连接信息同 CLI-05；服务名取 `ask_model` 工具说明中的可用服务（能当大模型使用的服务），取不到时用 `/v1/models`，都取不到时用占位符。设计说明见 [T73_connect_cli.md](../docs/handoff/T73_connect_cli.md)。
+
+| 编号 | 规则 |
+|:--|:--|
+| CN-01 | 输出与写入的内容中只出现 `UAIG_TOKEN` 这个变量名，**从不出现 Token 的值**；命令自身的输出、错误信息也不出现（沿用 CLI 的 `redact`）。最后一行提示如何长期设置环境变量（Windows：`setx UAIG_TOKEN …`，其他：写进 shell 配置），由用户自己执行 |
+| CN-02 | **claude**：模型后端用环境变量（Claude Code 的 `settings.json` 里的 `env` 会以明文保存 Token，所以不写），打印 `ANTHROPIC_BASE_URL=<URL>`、`ANTHROPIC_AUTH_TOKEN=$UAIG_TOKEN` 的设置方法；MCP 写 `.mcp.json`（project）或打印 `claude mcp add --scope user …`（user），条目 `uaig`：`{"type": "http", "url": "<URL>/mcp", "headers": {"Authorization": "Bearer ${UAIG_TOKEN}"}}`；技能装到 `.claude/skills/use-gateway/` 或 `~/.claude/skills/use-gateway/` |
+| CN-03 | **codex**：写 `.codex/config.toml`（project）或 `~/.codex/config.toml`（user），内容放在标记块 `# >>> uaig (gateway connect) >>>` … `# <<< uaig <<<` 之间：`[model_providers.uaig]`（`name`、`base_url = "<URL>/v1"`、`env_key = "UAIG_TOKEN"`、`wire_api = "responses"`）与 `[mcp_servers.uaig]`（`url = "<URL>/mcp"`、`bearer_token_env_var = "UAIG_TOKEN"`）。`model_provider = "uaig"` 与 `model` 是顶层键，写在标记块里会被前面的表吞掉，所以**只打印、不写入**，提示用户放到文件开头或用 `codex -c model_provider=uaig`。技能装到 `.agents/skills/` 或 `~/.agents/skills/` |
+| CN-04 | **opencode**：`opencode.json`（project）或 `~/.config/opencode/opencode.json`（user）。provider `uaig`：OpenAI 兼容，`baseURL = "<URL>/v1"`，`apiKey = "{env:UAIG_TOKEN}"`，`models` 为 `/v1/models` 的服务名；MCP `uaig`：remote，`url = "<URL>/mcp"`，`headers.Authorization = "Bearer {env:UAIG_TOKEN}"`，`oauth: false`。OpenCode V1 与 V2 的配置结构不同（V2 用 `providers` / `settings.baseURL`），`--opencode-schema v1|v2`（缺省按 `opencode --version` 判断，判断不了用 v2）。技能装到 `.agents/skills/` 或 `~/.agents/skills/` |
+| CN-05 | **pi**：`~/.pi/agent/models.json` 的 `providers.uaig`：`baseUrl = "<URL>/v1"`、`api = "openai-completions"`（`--pi-api anthropic-messages` 时 `baseUrl = "<URL>"`）、`apiKey = "$UAIG_TOKEN"`、`models` 为服务名列表。Pi 不内置 MCP：不写 MCP，提示 `gateway tools` / `gateway call`（技能里已有用法）。技能装到 `~/.agents/skills/`（user）或 `.agents/skills/`（project） |
+| CN-06 | 写入规则（`--write`）：文件不存在 → 新建（目录一并创建）。**JSON 文件已存在**：能按标准 JSON 解析时只增改 `uaig` 这一个条目，其他内容保持原样（按原文件的键顺序与 2 空格缩进重新输出）；含注释（JSONC）或解析失败时**不写**，打印片段让用户手工合并。**TOML**：替换已有的标记块，没有就追加到文件末尾。写之前把原文件备份为 `<文件>.bak`；同一内容再写一次不产生变化（幂等） |
+| CN-07 | 技能：`use-gateway` 打包进 `gateway` 程序（`embed`），安装时整目录覆盖 `use-gateway/`（只动这个目录）；技能文件里记录安装它的 `gateway` 版本。`--write` 之外不安装 |
+| CN-08 | 结束时打印验证命令：`curl -s $UAIG_URL/v1/models -H "Authorization: Bearer $UAIG_TOKEN"`，以及该 CLI 里的一句自检（如在 Codex 中选择 `uaig` 提供方后问一句 "ping"） |
+| CN-09 | 用户级配置目录按各 CLI 自己的环境变量查找（与 CLI 的行为一致）：Codex `CODEX_HOME`（缺省 `~/.codex`）、OpenCode `XDG_CONFIG_HOME`（缺省 `~/.config`）、Pi `PI_CODING_AGENT_DIR`（缺省 `~/.pi/agent`，`models.json` 总是写在这里）、Claude Code `CLAUDE_CONFIG_DIR`（缺省 `~/.claude`，用于技能目录）。实测中发现：设置了 `PI_CODING_AGENT_DIR` 时 Pi 不读 `~/.pi/agent/models.json` |
