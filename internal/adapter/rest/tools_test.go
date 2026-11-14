@@ -235,3 +235,35 @@ func TestRegisterWithOptionsTools(t *testing.T) {
 		t.Error("invalid tool def accepted")
 	}
 }
+
+// FS-30：文件参数进 X-UAIG-File，name_query 进 X-UAIG-File-Name-Query，其余参数进查询串，请求体为空。
+func TestFileToolRequest(t *testing.T) {
+	in := testIngress(t,
+		ToolDef{Service: "mu", Name: "parse", Description: "d", Method: "POST", Path: "/parse/file", InputSchema: schema, FileArg: "file", FileNameQuery: "name"},
+		ToolDef{Service: "mu", Name: "put", Description: "d", Method: "PUT", Path: "/obj/{key}", InputSchema: schema, FileArg: "blob"},
+		ToolDef{Service: "mu", Name: "idem", Description: "d", Method: "POST", Path: "/i", InputSchema: schema, FileArg: "f", Idempotent: true},
+	)
+	tr, err := in.ToolRequest("parse", json.RawMessage(`{"file":" file_abc ","is_ocr":true,"lang":"en"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Op != OpPost || len(tr.Body) != 0 || tr.Header.Get(headerFile) != "file_abc" || tr.Header.Get(headerFileNameQuery) != "name" ||
+		tr.Query.Encode() != "is_ocr=true&lang=en" || tr.PathValues["path"] != "parse/file" {
+		t.Fatalf("parse = %+v", tr)
+	}
+	tr, err = in.ToolRequest("put", json.RawMessage(`{"blob":"file_x","key":"a b"}`))
+	if err != nil || tr.Op != OpPut || tr.PathValues["path"] != "obj/a%20b" || tr.Header.Get(headerFileNameQuery) != "" || len(tr.Query) != 0 {
+		t.Fatalf("put = %+v %v", tr, err)
+	}
+	if tr, err := in.ToolRequest("idem", json.RawMessage(`{"f":"file_x"}`)); err != nil || tr.Op != OpPostIdem {
+		t.Fatalf("idem = %+v %v", tr, err)
+	}
+	for _, args := range []string{`{}`, `{"file":3}`, `{"file":""}`} {
+		if _, err := in.ToolRequest("parse", json.RawMessage(args)); err == nil || !strings.Contains(err.Error(), `argument "file" must be a file_id`) {
+			t.Errorf("%s: %v", args, err)
+		}
+	}
+	if _, err := in.ToolRequest("parse", json.RawMessage(`{"file":"file_x","nested":{"a":1}}`)); err == nil {
+		t.Error("nested query argument accepted")
+	}
+}

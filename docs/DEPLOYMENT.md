@@ -899,6 +899,52 @@ curl -sS -X POST "https://gateway.example.com/rest/mineru-api/parse/file?name=re
 - 轮询间隔固定为 2 秒起、每次 ×1.5、最长 15 秒；`poll.timeout` 缺省 10 分钟，最长 1 小时。
 - 把虚拟端点声明为工具（9.6）时，`POST /parse` 这类提交 JSON 的接口写 `idempotent: true`，AI 一次调用就能拿到结果。
 
+### 9.9 文件中转：让 AI 把本地文件交给接口（T69，spec/09 §7）
+
+MCP 工具的参数只能是 JSON，AI 没法把本机的 PDF 放进参数里。开启文件中转后，文件**上传一次**得到 `file_…` ID，之后声明了文件参数的工具、以及任何 `/rest/` 请求都可以用这个 ID 代替请求体。
+
+```yaml
+files:
+  enabled: true
+  max_file_bytes: 209715200      # 单个文件 200 MiB（字节数）
+  default_ttl: 24h               # 到期自动删除；上传时可以用 ttl 指定，最长 max_ttl（168h）
+
+models:
+  - name: mineru-api
+    tools:
+      - name: mineru_parse_file
+        description: "解析一个已上传的 PDF / 图片 / Office 文件，返回 Markdown。先用 gateway_upload_file 上传得到 file_id"
+        method: POST
+        path: /parse/file                         # 9.8 中的上传类 flow 端点
+        file: { arg: file, name_query: name }     # 参数 file 是文件 ID，作为请求体；文件名填进查询参数 name
+        input_schema:
+          type: object
+          properties:
+            file:   { type: string, description: "gateway_upload_file 返回的 file_id" }
+            is_ocr: { type: boolean }
+          required: [file]
+```
+
+**AI 怎么上传**：在 AI 所在的机器上用本地 stdio 桥（6.2），并用 `--upload-dir` 指定允许上传的目录（可以写多个）。桥会多提供一个工具 `gateway_upload_file {path, ttl?}`，AI 给出路径即可：
+
+```json
+{ "mcpServers": { "uaig": {
+  "command": "gateway",
+  "args": ["mcp", "--upload-dir", "D:/Docs/to-parse"],
+  "env": { "UAIG_URL": "http://127.0.0.1:8080", "UAIG_TOKEN": "uai_live_..." }
+} } }
+```
+
+AI 先调用 `gateway_upload_file {"path": "D:/Docs/to-parse/报告.pdf"}` 得到 `file_id`，再调用 `mineru_parse_file {"file": "file_…"}`。同一个 ID 在到期前可以反复使用。
+
+- **只允许 `--upload-dir` 里的文件**（解开符号链接后判断）。不要把账号文件、密钥所在的目录加进去；不加 `--upload-dir` 时没有这个工具。
+- 命令行：`gateway files upload a.pdf [--ttl 2h]`、`gateway files list`、`gateway files delete <id>`。
+- HTTP：`POST /files?name=a.pdf&ttl=2h`（请求体是文件，必须带 `Content-Length`）；之后在请求上加头 `X-UAIG-File: file_…`、请求体留空，例如 `curl -X POST -H "X-UAIG-File: file_…" "$UAIG_URL/rest/mineru-api/parse/file?name=a.pdf"`。
+- 文件只属于上传它的客户端，别的客户端拿到 ID 也用不了（与不存在时一样返回 404）。文件不计费；日志只写文件 ID 与大小，不写文件名。
+- 上限：单个文件 `max_file_bytes`、每个客户端 `max_files_per_client`（100）与 `max_bytes_per_client`（2 GiB）、全网关 `max_total_bytes`（10 GiB）；超过数量或总量时返回 409，删掉旧文件或等它们到期。管理页面概览显示用量，`GET /admin/api/files` 可以查看每个客户端的用量。
+- 文件存放在 `<data_dir>/files`（可以用 `files.dir` 改），重启后保留未到期的文件。不提供下载文件内容的接口。
+- 远程 HTTP 方式的 MCP 没有上传工具，用命令行或 `POST /files` 上传后把 ID 告诉 AI。
+
 ## 10. MinerU 文档解析
 
 网关对接 MinerU 官方的精准解析 API v4（spec/08 §8.2.1）。配置：

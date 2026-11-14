@@ -52,6 +52,16 @@ mcp:                               # spec/14：/mcp 端点
   auto_threshold: 8                # auto：客户端可见工具数不超过它时直接列出，否则用目录
   pinned_tools: []                 # 目录模式下仍然直接列出的工具名
 
+files:                             # 文件中转（T69，CFG-23，spec/09 §7）；改动需要重启
+  enabled: false                   # true = 注册 /files，接受 X-UAIG-File
+  dir: ""                          # 缺省 <server.data_dir>/files
+  max_file_bytes: 209715200        # 单个文件上限（200 MiB），≤ limits.max_stream_body_bytes
+  max_files_per_client: 100
+  max_bytes_per_client: 2147483648 # 2 GiB
+  max_total_bytes: 10737418240     # 10 GiB
+  default_ttl: 24h
+  max_ttl: 168h
+
 ledger:
   flush_interval: 250ms
   event_queue_capacity: 4096
@@ -159,6 +169,9 @@ models:                           # 客户端可见的「服务」：大模型�
 | `audit.flush_interval` | `250ms` |
 | `audit.retention_days` | `30` |
 | `translation.unknown_fields` | `reject` |
+| `files.enabled` / `files.dir` | `false` / `""`（`<server.data_dir>/files`） |
+| `files.max_file_bytes` / `max_files_per_client` / `max_bytes_per_client` / `max_total_bytes` | `209715200` / `100` / `2147483648` / `10737418240` |
+| `files.default_ttl` / `files.max_ttl` | `24h` / `168h` |
 | 池内缺省字段 | `strategy: least_inflight`、`affinity_ttl: 5m`、`max_attempts: 3`、`pin_ttl: 24h`、`connect: 10s`、`response_header_base: 60s`、`response_header_per_mib: 90s`、`stream_idle: 120s`、`non_stream_total: 10m`、`cooldown.default: 30s`、`cooldown.max: 10m`、`breaker` 同上例 |
 
 池级默认值与 `models[].upstream_model`（缺省 = `name`）由 `Config.Normalize()` 填充（解析后调用）。
@@ -191,6 +204,7 @@ models:                           # 客户端可见的「服务」：大模型�
 | CFG-20 | `models[].api` 可选，是服务的声明式 API 能力（spec/08 §8.3.6）：`errors`（错误规则列表，每条 `when`、`outcome`、可选 `status`、`cooldown_until`）与 `endpoints`（每项 `match`、可选 `task_id`、`pinned_by`、`usage`）。配置包做静态校验：`when` 至少一个条件，`json` 必须配 `in` / `not_in` / `exists`，值只能是标量；`outcome` 取 DA-04 的六个值；`status` 只用于 `client_error` 且在 400 ~ 499；`cooldown_until` 只用于 `rate_limited`，`time` 为 `HH:MM`、`day_of_month` 为 1 ~ 28、`tz` 为 `±HH:MM` 或 `UTC`；`match` 为「方法 空格 路径」，占位符独占一段且不重复；`pinned_by` 必须是 `match` 中的占位符，且不能与 `task_id` 同时出现；`usage` 的单位名合法且**必须在本服务的 `price` 中定价**，每个单位至少有一个来源，`request_json` 与 `request_query` 互斥，`map` 只配合请求来源，数值非负。端点可以写 `flow`（spec/08 §8.3.7）：`submit` 与 `upload` 恰好一个，二者的 `request` 不含占位符；`upload` 只能用于 `POST` / `PATCH` 的 `match`，必须有 `upload_url`，`body` 每项有 `query`、`type` 为 `string` / `bool` / `int` / `list`；有 `poll` 时第一步必须有 `task_id`，`poll.request` 必须含 `{task_id}` 且不含其他占位符，`done` 非空，`timeout` 在 0 ~ 1h；`result` 需要 `poll`，`zip_entry` 需要 `url` 且是不含目录的文件名；`usage` 的 `zip_json`（`entry` 为不含目录的文件名，`count` 为字段路径）只用于 `result` 有 `zip_entry` 的 flow，也算作一个来源；有 `flow` 的端点不能再写端点级的 `task_id`、`pinned_by`。服务所在池的协议是否支持由装配代码检查（DA-01） |
 | CFG-21 | `pools[].quota` 可选（T63），是池级周期额度：`unit` 匹配 `[a-z][a-z0-9_]*` 且出现在该池至少一个服务的 `price` 中；`limit` ≥ 1；`period` ∈ `day` / `week` / `month` / `total`；`reset.time` 为 `HH:MM`（缺省 `00:00`）；`reset.weekday`（`mon` ~ `sun`）只用于且必须用于 `week`；`reset.day`（1 ~ 31，超过当月天数取月末）只用于且必须用于 `month`；`day` 只接受 `reset.time` 与 `reset.tz`；`reset.tz` 为 `±HH:MM` 或 `UTC`（缺省 UTC，与 CFG-20 的 `cooldown_until` 相同）；`total` 不允许写 `reset`；`strategy` ∈ `drain` / `spread`（缺省 `drain`）。额度的增删改属于池的变化，热重载生效 |
 | CFG-22 | `alerts` 可选（T64）：`check_interval` 缺省 1m、≥ 10s；`repeat` 缺省 24h、≥ 1m；`webhook` 存在时 `url_file` 必填，`format` ∈ `generic` / `slack` / `feishu` / `wecom` / `dingtalk`（缺省 `generic`）；地址文件在启动时读取，去掉首尾空白后必须是一个 http(s) URL，否则拒绝启动。`pools[].alerts` 可选：`min_available_keys` ≥ 1、`min_quota_left` ≥ 1（该池必须声明 `quota`）、`expiring_within` ≥ 1h，至少设置一项。`alerts` 段与池的告警设置都可以热重载 |
+| CFG-23 | `files` 可选（T69，spec/09 §7）：`max_file_bytes` > 0 且 ≤ `limits.max_stream_body_bytes`；`max_files_per_client` > 0；`max_bytes_per_client` ≥ `max_file_bytes`；`max_total_bytes` ≥ `max_bytes_per_client`；`default_ttl` ≥ 1m；`max_ttl` ≥ `default_ttl`。`models[].tools[].file: {arg, name_query?}`（FS-30）：只允许 `POST` / `PUT`，`arg` 匹配 `^[A-Za-z_][A-Za-z0-9_]*$` 且不是路径占位符，`name_query` 匹配 `^[A-Za-z0-9_.-]{1,64}$`；声明了 `file` 而 `files.enabled` 为 false → 拒绝启动（FS-31）。`files` 段改动需要重启 |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 

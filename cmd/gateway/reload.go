@@ -24,6 +24,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/core"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/crypto"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/files"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/httpapi"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ledger"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/mcp"
@@ -484,6 +485,7 @@ type genDeps struct {
 	ipLimiter *ratelimit.Limiter
 	overload  *httpapi.OverloadGuard
 	budget    *responseBudget
+	files     *files.Store // 文件中转（T69）；nil = 没有开启
 	logger    *slog.Logger
 }
 
@@ -523,19 +525,19 @@ func buildGeneration(cfg *config.Config, d genDeps, prev *generation) (*generati
 	}
 	dataDeps := httpapi.DataDeps{
 		Config: cfg, Core: kernel, Registry: registry, Index: d.index, Pepper: d.pepper,
-		Limiter: d.limiter, IPLimiter: d.ipLimiter, Overload: d.overload, Trusted: trusted, Logger: d.logger,
+		Limiter: d.limiter, IPLimiter: d.ipLimiter, Overload: d.overload, Trusted: trusted, Files: d.files, Logger: d.logger,
 	}
 	if !cfg.MCP.Disabled {
-		dataDeps.MCP = newMCPServer(cfg, registry, kernel, d.logger)
+		dataDeps.MCP = newMCPServer(cfg, registry, kernel, d.files, d.logger)
 		dataDeps.MCPErrorWriter = mcp.WriteHTTPError
 	}
 	return &generation{cfg: cfg, registry: registry, client: client, connect: connect, handler: httpapi.NewDataRouter(dataDeps)}, nil
 }
 
-func newMCPServer(cfg *config.Config, registry *protocol.Registry, kernel *core.Core, logger *slog.Logger) *mcp.Server {
+func newMCPServer(cfg *config.Config, registry *protocol.Registry, kernel *core.Core, fs *files.Store, logger *slog.Logger) *mcp.Server {
 	return mcp.New(mcp.Deps{
 		Registry: registry, Core: kernel, MaxResultBytes: cfg.MCP.MaxResultBytes, Version: version, Logger: logger,
-		ToolMode: cfg.MCP.ToolMode, AutoThreshold: cfg.MCP.AutoThreshold, PinnedTools: cfg.MCP.PinnedTools,
+		ToolMode: cfg.MCP.ToolMode, AutoThreshold: cfg.MCP.AutoThreshold, PinnedTools: cfg.MCP.PinnedTools, Files: fs,
 	})
 }
 

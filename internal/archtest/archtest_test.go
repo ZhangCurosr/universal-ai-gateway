@@ -49,6 +49,7 @@ var layers = map[string]int{
 	"internal/adapter/tavily":      2,
 	"internal/adapter/adaptertest": 2,
 	"internal/translate":           2,
+	"internal/files":               2, // T69（用户批准登记）
 
 	"internal/core": 3,
 

@@ -228,7 +228,10 @@ func (c *Config) Validate() error {
 	if err := c.validateQuotas(); err != nil { // CFG-21：需要先知道各池服务的计量单位
 		return err
 	}
-	return c.validateAlerts() // CFG-22
+	if err := c.validateAlerts(); err != nil { // CFG-22
+		return err
+	}
+	return c.validateFiles() // CFG-23
 }
 
 var (
@@ -255,6 +258,11 @@ func validateTool(tp string, t ToolConfig) error {
 	names, err := ToolPathPlaceholders(t.Path)
 	if err != nil {
 		return fieldErr(tp+".path", "%v", err)
+	}
+	if t.File != nil {
+		if err := validateToolFile(tp, t, names); err != nil {
+			return err
+		}
 	}
 	if t.InputSchema == nil {
 		if len(names) > 0 {

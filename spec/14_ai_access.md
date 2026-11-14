@@ -134,6 +134,8 @@ type ToolSource interface {
 | CLI-15 | `--watch <间隔>`（≥ 1m）：常驻运行，每个间隔检查文件修改时间与大小，有变化才同步并输出一行带时间的汇总；单次失败只输出错误，下一轮重试；收到中断后退出码 0 |
 | CLI-16 | 输出 `synced: imported N, updated U, disabled D, restored R, skipped S, expired E, failed F`；任何输出都不包含密钥或文件中的其他字段 |
 | CLI-17 | `keys import` 与 `keys sync` 的名称编号接在池中同前缀已有的最大编号之后（`<前缀>-NNN`，与 ADM-23 相同），重复运行不会撞名（T64） |
+| CLI-18 | `gateway files upload <路径> [--ttl 2h] [--json]`、`gateway files list [--json]`、`gateway files delete <id>`（T69，spec/09 FS-41）：连接信息同 CLI-05；上传超时 = 60 秒 + 每 MiB 10 秒 |
+| CLI-19 | `gateway mcp [--upload-dir <目录>]...`（T69，spec/09 FS-40）：目录必须存在；有 `--upload-dir` 时桥接在 `tools/list` 末尾追加本地工具 `gateway_upload_file {path, ttl?}` 并自己执行它；目录模式下 AI 直接调用它（不经过 `gateway_call_tool`） |
 | CLI-10 | `gateway admin-mcp`：stdio MCP 服务端，桥接到 `<UAIG_ADMIN_URL>/admin/mcp`，Token 取 `UAIG_ADMIN_TOKEN`；行为同 CLI-04。 |
 
 ## 4. 客户端配置示例（写进 `docs/DEPLOYMENT.md`，T15）

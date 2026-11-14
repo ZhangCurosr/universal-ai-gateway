@@ -18,15 +18,16 @@ export async function render(main, ctx) {
   main.replaceChildren(pageHeader(t('ov.title'), ''), loading());
   const now = new Date();
   const from = new Date(now.getTime() - 24 * 3600 * 1000);
-  let health, keyList, items, clientList, cfg, poolAlerts;
+  let health, keyList, items, clientList, cfg, poolAlerts, fileStats;
   try {
-    [health, { keys: keyList }, { items }, { clients: clientList }, cfg, { alerts: poolAlerts }] = await Promise.all([
+    [health, { keys: keyList }, { items }, { clients: clientList }, cfg, { alerts: poolAlerts }, fileStats] = await Promise.all([
       ctx.health(),
       api('GET', '/admin/api/keys'),
       api('GET', '/admin/api/usage?from=' + encodeURIComponent(from.toISOString().replace(/\.\d+Z$/, 'Z')) + '&to=' + encodeURIComponent(now.toISOString().replace(/\.\d+Z$/, 'Z'))),
       api('GET', '/admin/api/clients'),
       ctx.config(),
       api('GET', '/admin/api/alerts'), // UI-36：池级告警（T64）
+      api('GET', '/admin/api/files'), // FS-51：文件中转（T69）
     ]);
   } catch (e) {
     main.replaceChildren(pageHeader(t('ov.title'), ''), errorBox(e));
@@ -54,6 +55,14 @@ export async function render(main, ctx) {
     const { length, capacity } = health.ledger_queue;
     const high = capacity > 0 && length / capacity > 0.5;
     stats.push(stat(t('ov.ledger'), fmtInt(length) + ' / ' + fmtInt(capacity), t(high ? 'ov.ledgerHigh' : 'ov.ledgerOk'), high ? 'warn' : 'ok'));
+  }
+
+  // FS-51：文件中转的用量；没有开启时不显示
+  if (fileStats && fileStats.enabled) {
+    const { used, limits } = fileStats;
+    const high = limits.max_total_bytes > 0 && used.bytes / limits.max_total_bytes > 0.8;
+    stats.push(stat(t('ov.files'), fmtBytes(used.bytes) + ' / ' + fmtBytes(limits.max_total_bytes),
+      t('ov.filesNote', { n: fmtInt(used.files) }), high ? 'warn' : ''));
   }
 
   // 各池
@@ -118,6 +127,15 @@ export async function render(main, ctx) {
     h('section', { class: 'stats', 'aria-label': t('ov.title') }, stats),
     h('div', { class: 'split' }, h('div', { class: 'split-main' }, poolsCard), h('div', { class: 'split-side' }, attnCard)),
     topCard);
+}
+
+// fmtBytes 用 1024 进制显示字节数（FS-51）。
+function fmtBytes(n) {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let i = 0;
+  let v = n || 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return (i === 0 ? String(v) : v.toFixed(v >= 10 ? 0 : 1)) + ' ' + units[i];
 }
 
 function stat(label, value, note, tone) {

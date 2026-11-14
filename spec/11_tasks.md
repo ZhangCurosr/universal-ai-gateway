@@ -349,7 +349,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T63 | 按周期额度调度：池级额度声明（单位、上限、周期、重置时刻）、每 Key 周期用量、用满主动冷却到重置时刻、耗尽优先或平均分摊（[说明](../docs/handoff/T63_quota_scheduling.md)） | T62、T66、T68 | 是（已批准） | `DONE` |
 | T64 | Key 补充与告警：`gateway keys sync` 同步账号文件（含 CSV），可用 Key 或剩余额度低于阈值时告警（指标、管理面 MCP、Web UI）、快过期提醒（[说明](../docs/handoff/T64_key_sync_alerts.md)） | T62 | 是（已批准） | `DONE` |
 | T65 | Key 视图：Web UI 与管理面 MCP 展示每 Key 用量、剩余额度、失败率、过期时间与池剩余容量（[说明](../docs/handoff/T65_key_views.md)） | T63 | 是（已批准） | `DONE` |
-| T69 | 文件中转：客户端（含 MCP 工具）上传一次得到文件 ID，任何工具用 ID 引用文件；有大小、数量与保存时间上限 | T67 | 是 | `TODO` |
+| T69 | 文件中转：客户端（含 MCP 工具）上传一次得到文件 ID，任何工具用 ID 引用文件；有大小、数量与保存时间上限（[说明](../docs/handoff/T69_file_relay.md)） | T67 | 是（已批准） | `DONE` |
 
 ---
 

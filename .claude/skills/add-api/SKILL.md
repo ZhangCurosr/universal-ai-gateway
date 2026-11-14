@@ -106,6 +106,8 @@ models:
 
 文档要求「提交任务 → 轮询 → 下载结果」或「先申请上传地址再上传文件」时，用 `flow` 声明一个虚拟端点（DEPLOYMENT.md §9.8 后半部分，spec/08 §8.3.7），让 AI 一次调用拿到结果：`submit`（转发 JSON 请求体，走 `/rest-idem/`）或 `upload`（请求体是文件，走 `/rest/`），`poll` 写清状态字段与完成、失败的取值，`result` 写下载地址字段（结果是 zip 时加 `zip_entry`）。同步等待需要在池上加 `timeouts: { response_header_base: 10m }`。
 
+接口的请求体是文件本身（上传类 flow，或直接 `POST` 文件的接口）时，给 AI 用的工具加 `file: { arg: file, name_query: name }`，并在配置中打开 `files.enabled`（DEPLOYMENT.md §9.9）：AI 先用 `gateway_upload_file`（本地桥加 `--upload-dir`）上传得到 `file_id`，再把它作为 `file` 参数传给工具。不要让 AI 把文件内容放进参数。
+
 ### 5. 校验并预览
 
 ```bash

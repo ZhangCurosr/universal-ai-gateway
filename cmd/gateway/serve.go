@@ -18,6 +18,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/crypto"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/files"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/httpapi"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ledger"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/metrics"
@@ -162,6 +163,11 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 	if err := checkWebhookFile(cfg); err != nil { // CFG-22：告警推送地址读不到则拒绝启动
 		return err
 	}
+	fileStore, err := openFileStore(cfg, logger) // T69：nil = 没有开启 files
+	if err != nil {
+		return err
+	}
+	gd.files = fileStore
 	gen, err := buildGeneration(cfg, gd, nil)
 	if err != nil {
 		return err
@@ -254,6 +260,9 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 	alerts := newAlertEngine(sched, func() *config.Config { return rl.gen.Load().cfg }, logger)
 	metricsGauges.Pools = alerts.PoolGauges
 	startWorker("pool_alerts", alerts.Run)
+	if fileStore != nil {
+		startWorker("files_sweep", fileStore.Run) // FS-04
+	}
 	dataHandler := trackHandlers(&handlers, rl) // 数据面处理器可被热重载原子替换（HR-13）
 	adminMCPHandler := newAdminMCP(logger)
 	adminHandler, adminCtl := admin.NewServerWithControl(admin.Deps{
@@ -279,6 +288,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		Tools:         rl.toolsView,
 		MCP:           adminMCPHandler, // spec/14 §6
 		Alerts:        alerts.View,     // ADM-26
+		Files:         fileStore,       // FS-50
 	})
 	adminMCPHandler.admin = adminHandler
 	rl.adminCtl = adminCtl
@@ -637,4 +647,24 @@ func persistQuarantines(ctx context.Context, st keyStateSetter, reqs <-chan quar
 			cancel()
 		}
 	}
+}
+
+// openFileStore 按 files 配置打开文件中转的存储（T69）；没有开启时返回 nil。
+func openFileStore(cfg *config.Config, logger *slog.Logger) (*files.Store, error) {
+	f := cfg.Files
+	if !f.Enabled {
+		return nil, nil
+	}
+	dir := f.Dir
+	if dir == "" {
+		dir = filepath.Join(cfg.Server.DataDir, "files")
+	}
+	s, err := files.Open(dir, files.Limits{
+		MaxFileBytes: f.MaxFileBytes, MaxFilesPerClient: f.MaxFilesPerClient, MaxBytesPerClient: f.MaxBytesPerClient,
+		MaxTotalBytes: f.MaxTotalBytes, DefaultTTL: f.DefaultTTL, MaxTTL: f.MaxTTL,
+	}, nil, logger)
+	if err != nil {
+		return nil, fmt.Errorf("open file store: %w", err)
+	}
+	return s, nil
 }

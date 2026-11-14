@@ -439,6 +439,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 | RS-43 | `ToolResult`：2xx 时，响应体为空 → 文本 `empty response (HTTP <status>)`；`Content-Type` 为 `application/json` 或 `*+json` 且是合法 JSON → 文本为响应体原文，顶层是对象时同时放进 `Structured`；`text/*` → 文本为响应体（必须是合法 UTF-8，否则同下）；没有 `Content-Type` → 按文本处理（不少 API 不设置它），是合法 JSON 对象时同样放进 `Structured`；其他类型 → `IsError`，文本 `binary response (<Content-Type>, <N> bytes) is not supported by tools`，不包含响应内容。非 2xx → `IsError`，文本 `HTTP <status>: ` + 响应体前 2000 字节（在 UTF-8 字符边界截断）。`ToolResult` 不返回 error |
 | RS-44 | 工具调用与直接调用同一路由，鉴权、白名单（TL-03 / TL-06）、计费、选 Key、重试、403 告警全部沿用 T51 规则，本卡不增加特殊路径 |
 | RS-45 | DEPLOYMENT.md §9 新增「把接口暴露给 AI」：配置示例（Bivia 的 POST 接口、带占位符的 GET 接口）、参数映射规则、`idempotent` 与 `read_only` 的含义、二进制响应不支持、修改后需重启；并醒目写明 §2.5：接口声明不是权限边界 |
+| RS-46 | 接口声明可以带文件参数 `file: {arg, name_query?}`（T69，spec/09 FS-30）：`ToolDef.FileArg`、`ToolDef.FileNameQuery`；`ToolRequest` 把文件 ID 放进 `X-UAIG-File`、`name_query` 放进 `X-UAIG-File-Name-Query`，其余参数按 GET 的规则进查询串，请求体为空。两个头由网关在交给适配器之前处理并删除（FS-22），适配器不读取它们 |
 
 #### 8.3.6 声明式 API 能力（任务卡 T66）
 

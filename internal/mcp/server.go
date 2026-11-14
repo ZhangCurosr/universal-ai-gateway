@@ -14,6 +14,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/core"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/files"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
@@ -36,6 +37,8 @@ type Deps struct {
 	AutoThreshold int
 	// PinnedTools 是目录模式下仍然直接列出的工具名（CAT-03）。
 	PinnedTools []string
+	// Files 是文件中转的存储（T69）；nil = 没有开启 files，工具请求带文件 ID 时返回错误结果。
+	Files *files.Store
 }
 
 // Server 是 MCP 服务端（Streamable HTTP 传输，无状态：不签发 Mcp-Session-Id）。并发安全。

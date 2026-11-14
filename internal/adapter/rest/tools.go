@@ -27,7 +27,17 @@ type ToolDef struct {
 	InputSchema json.RawMessage // type 为 object 的 JSON Schema
 	Idempotent  bool            // 只对 POST / PATCH 有意义：选用可重试的 /rest-idem/ 路由
 	ReadOnly    bool            // MCP readOnlyHint
+	// FileArg 非空时（T69，FS-30）：该参数是文件 ID，网关用文件内容作为请求体；其余参数进查询串。
+	FileArg string
+	// FileNameQuery 非空时把文件名填进这个查询参数（FS-21）。
+	FileNameQuery string
 }
+
+// 文件中转的内部请求头（spec/08 FS-20、FS-21）；由网关在交给适配器之前处理并删除。
+const (
+	headerFile          = "X-UAIG-File"
+	headerFileNameQuery = "X-UAIG-File-Name-Query"
+)
 
 // toolTable 是构造后只读的工具表（RS-40）：Ingress 持有指向它的指针，因此仍然无状态、并发安全。
 type toolTable struct {
@@ -134,6 +144,9 @@ func (in Ingress) ToolRequest(name string, args json.RawMessage) (*protocol.Tool
 	}
 
 	tr := &protocol.ToolRequest{PathValues: map[string]string{"service": e.def.Service, "path": strings.TrimPrefix(path, "/")}}
+	if e.def.FileArg != "" {
+		return fileToolRequest(tr, e.def, m)
+	}
 	switch e.def.Method {
 	case http.MethodGet, http.MethodDelete:
 		q, err := argsToQuery(m)
@@ -163,6 +176,34 @@ func (in Ingress) ToolRequest(name string, args json.RawMessage) (*protocol.Tool
 		default:
 			tr.Op = OpPatch
 		}
+	}
+	return tr, nil
+}
+
+// fileToolRequest 实现 FS-30：文件 ID 放进 X-UAIG-File，其余参数按 GET 的规则进查询串，请求体为空。
+func fileToolRequest(tr *protocol.ToolRequest, def ToolDef, m map[string]json.RawMessage) (*protocol.ToolRequest, error) {
+	var id string
+	if raw, ok := m[def.FileArg]; !ok || json.Unmarshal(raw, &id) != nil || strings.TrimSpace(id) == "" {
+		return nil, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("argument %q must be a file_id string (upload the file first)", def.FileArg))
+	}
+	delete(m, def.FileArg)
+	q, err := argsToQuery(m)
+	if err != nil {
+		return nil, err
+	}
+	tr.Query = q
+	tr.Header = http.Header{}
+	tr.Header.Set(headerFile, strings.TrimSpace(id))
+	if def.FileNameQuery != "" {
+		tr.Header.Set(headerFileNameQuery, def.FileNameQuery)
+	}
+	switch {
+	case def.Method == http.MethodPut:
+		tr.Op = OpPut
+	case def.Idempotent:
+		tr.Op = OpPostIdem
+	default:
+		tr.Op = OpPost
 	}
 	return tr, nil
 }

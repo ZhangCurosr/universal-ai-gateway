@@ -13,6 +13,7 @@
 | `POST` | `/v1/responses`，以及 `GET`/`DELETE` `/v1/responses/{id}`、`POST /v1/responses/{id}/cancel`、`GET /v1/responses/{id}/input_items` | openai_responses（Call） | `core.Handler(responses 入站, 该路由)` |
 | `GET` | `/v1/models` | anthropic 与 openai_chat（Catalog，冲突） | `Ingress.WriteCatalog(core.Models(principal))` |
 | `POST`（`GET`/`DELETE` 返回 405） | `/mcp` | httpapi（由 `DataDeps.MCP` 注入，spec/14） | `mcp.Server` |
+| `POST` `GET`、`GET` `DELETE` | `/files`、`/files/{id}` | httpapi 自身（只在 `files.enabled` 时，T69） | 文件中转（§7，FS-10 ~ FS-12） |
 | `GET` | `/healthz` | httpapi 自身 | `200 {"status":"ok"}`，不鉴权 |
 
 | 编号 | 规则（已实现于 `router.go`） |
@@ -26,7 +27,7 @@
 ### 1.1 中间件顺序
 
 ```
-RequestID → ClientIP → AccessLog → Recover → [协议路由: IPRateLimit → Overload → Authenticate → RateLimit] → 端点
+RequestID → ClientIP → AccessLog → Recover → [协议路由: IPRateLimit → Overload → Authenticate → RateLimit → 文件请求体（FS-20）] → 端点
 ```
 
 顺序的理由：`IPRateLimit` 与 `Overload` 放在鉴权之前，使未鉴权的洪泛请求在计算 HMAC、读取请求体之前就被挡掉；`RateLimit`（每客户端）必须在鉴权之后，因为它需要 clientID。
@@ -283,3 +284,57 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | UI-37 | Key 页（T65）：与 Key 列表一起（每 10 秒）请求 ADM-29 与 ADM-30，失败时只隐藏以下内容。每个池卡片标题下一行摘要：「可用 a / n」；有额度时加「剩余 N 单位」「每小时约 N 单位」（速度 > 0 时）以及「预计 {时间} 用完」（黄色）或「能撑到 {时间} 重置」或「按当前用法不会用完」；有 7 天内过期的 Key 时加「7 天内过期 N 把」；没有可用 Key 时整行红色。表格增加「24 小时」列：`请求数 · 失败率`（失败率 ≥ 20% 黄色、≥ 50% 红色；没有尝试时为「—」），`title` 列出尝试数、各类失败次数与最近一次失败 |
 | UI-31 | 「配置」页：按钮「预览重载」（`dry_run: true`）与「应用重载」（二次确认）；显示模式、增删改的池与服务、变化的设置、需要重启的字段、警告；收到 202 时显示「正在重启」，每秒查询 `GET reload` 直到该记录不再是 `restarting`（最多 2 分钟；重启期间的请求失败视为尚未就绪）；错误按 UI-16 显示。下方是最近 20 次重载记录。 |
 | UI-32 | 「配置」页的服务与工具：按 `GET config` 列出池与服务，按 `GET tools` 列出工具（名称、所属服务、只读与否、说明首行）与当前的 `tool_mode`。全部用 `textContent` 写入（UI-12）。 |
+
+## 7. 文件中转（任务卡 T69）
+
+客户端把文件上传给网关一次，得到文件 ID；之后的工具调用与 `/rest/` 请求用 ID 代替请求体，网关从本地读出文件发给上游。只在 `files.enabled` 时生效（spec/03 CFG-23）。设计说明见 [T69_file_relay.md](../docs/handoff/T69_file_relay.md)。
+
+### 7.1 存储（新包 `internal/files`）
+
+| 编号 | 规则 |
+|:--|:--|
+| FS-01 | 每个文件在 `dir` 下有两个文件：`<id>.bin`（内容）与 `<id>.json`（元数据 `{id, owner, name, size, sha256, content_type, created_at, expires_at}`）。写入时先写 `<id>.tmp`，边写边算 SHA-256，长度正确后 `rename`；元数据最后写。启动时扫描目录重建内存索引：没有元数据或元数据损坏的 `.bin`、所有 `.tmp` 一律删除，记一条 Warn（只写文件 ID） |
+| FS-02 | 文件 ID = `file_` + 26 个 base32 小写字符（`crypto/rand`，128 位）。ID 不是权限凭证：只有上传它的客户端（`owner` = 客户端 ID）能查看、引用、删除；其他客户端得到与不存在时相同的 404 |
+| FS-03 | 上限：`max_file_bytes`、`max_files_per_client`、`max_bytes_per_client`、`max_total_bytes`。超过单个文件上限 → 413；超过数量或总量 → 409，消息指明哪一项（先删除旧文件或等它过期）。配额在开始写入前按 `Content-Length` 预占，失败或中断时释放 |
+| FS-04 | 到期：`ttl` 取 `default_ttl`，可以在上传时指定（Go 时长，≤ `max_ttl`，否则 400）。后台任务每分钟删除到期文件；正在被请求读取的文件等读取结束后再删（引用计数）。到期后引用 → 404，消息 `file expired or not found` |
+| FS-05 | 文件内容不计费、不占客户端的金额额度；上传与删除请求计入客户端的 `rpm_limit`。日志与审计只写客户端 ID、文件 ID、大小与结果，**不写文件名与内容**（文件名常含个人信息） |
+
+### 7.2 数据面 API
+
+| 编号 | 规则 |
+|:--|:--|
+| FS-10 | `POST /files?name=<文件名>&ttl=<时长>`：请求体是文件本身，必须带 `Content-Length`（> 0），否则 400；分块上传 → 400。`name` 必填，取 base name，≤ 255 字节，不能含控制字符。`Content-Type` 原样记下（缺省 `application/octet-stream`）。读取时限放宽到 `server.read_timeout` + 每 MiB 10 秒（约 100 KiB/s 的最低速度）。成功 201：`{"id", "name", "size", "sha256", "content_type", "created_at", "expires_at"}` |
+| FS-11 | `GET /files`：本客户端的文件列表（按创建时间倒序）与用量 `{"files": [...], "used": {"files", "bytes"}, "limits": {...}}`；`GET /files/{id}`：单个文件的元数据；`DELETE /files/{id}`：删除，204。不提供下载内容的接口 |
+| FS-12 | 只在 `files.enabled` 时注册。路由经过与协议路由相同的中间件（IP 限流、过载保护、鉴权、客户端限流），错误格式用兜底协议（与 RTE-04 的 404 相同，当前为 OpenAI 风格） |
+
+### 7.3 用文件 ID 代替请求体
+
+| 编号 | 规则 |
+|:--|:--|
+| FS-20 | 请求头 `X-UAIG-File: <id>`：网关在鉴权之后、交给适配器之前，把请求体替换为该文件的内容，`Content-Length` 设为文件大小；客户端自带的请求体必须为空（否则 400）。只对请求体为 `BodyStream` 或 `BodyBuffered` 的路由生效（缓冲路由仍受该路由的 `MaxBodyBytes` 限制，超过 → 413）；`BodyNone` 路由带这个头 → 400。文件不存在、已过期或不属于本客户端 → 404 |
+| FS-21 | `X-UAIG-File-Name-Query: <参数名>`（与 FS-20 一起用）：查询串里没有该参数时，把文件名作为它的值追加进去；参数名只允许 `[A-Za-z0-9_.-]` |
+| FS-22 | 替换在协议无关的位置完成：直接 HTTP 请求在 `internal/httpapi` 的中间件里；工具调用在 `internal/mcp` 构造内部请求时（工具调用不经过 HTTP 中间件）。两处都在替换后删除这两个头，适配器看不到它们 |
+| FS-23 | 文件作为请求体时，计费、选 Key、重试与直接上传完全相同：`BodyStream` 路由只尝试一次（CORE-07），`BodyBuffered` 路由可以换 Key 重试（读入内存的是文件内容） |
+| FS-24 | 过载保护（OVL-02）在鉴权之前执行，那时还不知道文件大小：带 `X-UAIG-File` 的请求按未知长度占用请求体预算（单个请求的上限）。工具调用中的文件请求体不另占预算（与工具调用的其他请求体相同） |
+
+### 7.4 工具声明中的文件参数（`rest` 适配器）
+
+| 编号 | 规则 |
+|:--|:--|
+| FS-30 | `models[].tools[].file: {arg, name_query?}`：只允许 `POST` / `PUT`（配置校验）。调用时参数 `arg` 必须是字符串（文件 ID），移出参数表，放进 FS-20 的请求头；`name_query` 放进 FS-21 的请求头；其余参数按 GET 的规则放进查询串（RS-42 的标量规则），请求体为空 |
+| FS-31 | `files.enabled` 为 false 而配置了 `file` 参数 → 网关拒绝启动，消息指明工具名 |
+
+### 7.5 上传入口
+
+| 编号 | 规则 |
+|:--|:--|
+| FS-40 | `gateway mcp`（stdio 桥接）加 `--upload-dir <目录>`（可重复）后，在 `tools/list` 的结果末尾追加本地工具 `gateway_upload_file {path, ttl?}`（非只读），由桥接自己执行，不转发给网关：`path` 解析为绝对路径并解开符号链接后必须位于某个 `--upload-dir` 之内，否则 `isError`；然后按 FS-10 上传，结果文本是 FS-10 的 JSON。没有 `--upload-dir` 时不提供这个工具（AI 不能借它读取任意文件） |
+| FS-41 | 命令行：`gateway files upload <路径> [--ttl 2h]`、`gateway files list [--json]`、`gateway files delete <id>`，用 `UAIG_URL` / `UAIG_TOKEN`（与 `gateway call` 相同） |
+| FS-42 | 远程 MCP（不经过桥接）的 AI 只能用 FS-41 或 FS-10 上传，本卡不提供 base64 上传工具 |
+
+### 7.6 管理面
+
+| 编号 | 规则 |
+|:--|:--|
+| FS-50 | `GET /admin/api/files`：`{"enabled", "used": {files, bytes}, "clients": [{client_id, files, bytes}], "expiring": [{id, client_id, size, expires_at}], "limits"}`；`expiring` 是最近到期的 20 个文件，不含文件名。没有开启时只有 `{"enabled": false}`。`DELETE /admin/api/files/{id}`：管理员删除任意文件 |
+| FS-51 | 概览页的指标行增加「文件中转」：`已用字节 / max_total_bytes` 与文件数，超过 80% 黄色；`files.enabled` 为 false 时不显示 |

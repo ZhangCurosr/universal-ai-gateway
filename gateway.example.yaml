@@ -55,6 +55,13 @@ audit:
 #     url_file: ./secrets/alert_webhook.url
 #     format: feishu                    # generic | slack | feishu | wecom | dingtalk
 
+# 文件中转（T69）：上传一次得到 file_id，声明了 file 参数的工具与 /rest/ 请求用 ID 代替请求体（DEPLOYMENT.md 9.9）。
+# files:
+#   enabled: true
+#   max_file_bytes: 209715200           # 200 MiB
+#   default_ttl: 24h
+#   max_ttl: 168h
+
 pools:
   - name: anthropic-main
     protocol: anthropic

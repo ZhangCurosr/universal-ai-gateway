@@ -21,6 +21,8 @@ type Client struct {
 	URL   string // 网关 MCP 端点，如 http://127.0.0.1:8080/mcp
 	Token string // 网关客户端 Token（uai_live_...）；不得写入日志或错误信息
 	HTTP  *http.Client
+	// UploadDirs 非空时，Bridge 提供本地工具 gateway_upload_file（FS-40，T69）。
+	UploadDirs UploadDirs
 }
 
 // ToolInfo 是 tools/list 返回的一个工具。
@@ -323,7 +325,14 @@ func (c *Client) forward(ctx context.Context, line []byte, out, log io.Writer) e
 	}
 	_ = json.Unmarshal(line, &probe) // 只用于取 id；不是合法 JSON 时交给网关报错
 
+	local, handled, listTools := c.bridgeLocal(ctx, line)
+	if handled {
+		return writeRaw(out, local)
+	}
 	respBody, err := c.Post(ctx, line)
+	if err == nil && listTools {
+		respBody = appendUploadTool(respBody)
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil

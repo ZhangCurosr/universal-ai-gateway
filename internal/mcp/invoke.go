@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/apperr"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/auth"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/files"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
@@ -133,6 +135,16 @@ func (s *Server) callTool(r *http.Request, name string, args json.RawMessage) (*
 	if err != nil {
 		return protocol.TextResult(err.Error(), true), nil
 	}
+	// FS-20 / FS-22：工具调用不经过 HTTP 中间件，在这里把文件 ID 换成请求体
+	var owner int64
+	if p != nil {
+		owner = p.ClientID
+	}
+	cleanup, err := files.Attach(s.d.Files, req, owner, rt.Body != protocol.BodyNone)
+	if err != nil {
+		return protocol.TextResult(apperr.Normalize(err).Message, true), nil
+	}
+	defer cleanup()
 
 	k := handlerKey{proto: entry.Ingress.Protocol(), op: rt.Op}
 	h := s.handlers[k]

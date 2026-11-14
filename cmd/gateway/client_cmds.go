@@ -18,7 +18,8 @@ import (
 //
 //	gateway tools                         列出当前 Token 可用的工具
 //	gateway call <tool> [--args JSON|-]   调用一个工具，结果文本写到 stdout
-//	gateway mcp                           stdio MCP 服务端（桥接到网关的 /mcp），供 Claude Code 等本地启动
+//	gateway mcp [--upload-dir DIR]        stdio MCP 服务端（桥接到网关的 /mcp），供 Claude Code 等本地启动；
+//	                                      --upload-dir 时提供本地上传工具 gateway_upload_file（FS-40）
 //
 // 连接信息只从环境变量读取（CLI-05）：Token 放在命令行参数里会出现在进程列表与 shell 历史中。
 const (
@@ -181,10 +182,28 @@ func cmdCall(ctx context.Context, args []string, getenv func(string) string, std
 }
 
 // cmdMCP 实现 `gateway mcp`（CLI-04）：stdin/stdout 上的 MCP stdio 传输，桥接到网关的 /mcp。
-func cmdMCP(ctx context.Context, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+func cmdMCP(ctx context.Context, args []string, getenv func(string) string, stdin io.Reader, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("mcp", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	var dirs stringList
+	fs.Var(&dirs, "upload-dir", "directory whose files the AI may upload with gateway_upload_file (repeatable; FS-40)")
+	if err := fs.Parse(args); err != nil || fs.NArg() > 0 {
+		if err == nil {
+			fmt.Fprintln(stderr, "usage: gateway mcp [--upload-dir DIR]...")
+		}
+		return 2
+	}
 	c, ok := clientEnv(getenv, stderr)
 	if !ok {
 		return 2
+	}
+	if len(dirs) > 0 {
+		ud, err := mcp.NewUploadDirs(dirs)
+		if err != nil {
+			fmt.Fprintln(stderr, "gateway:", err)
+			return 2
+		}
+		c.UploadDirs = ud
 	}
 	if err := mcp.Bridge(ctx, c, stdin, stdout, stderr); err != nil {
 		fmt.Fprintln(stderr, "gateway:", err)

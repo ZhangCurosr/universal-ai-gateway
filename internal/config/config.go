@@ -16,6 +16,7 @@ type Config struct {
 	Translation TranslationConfig `yaml:"translation"`
 	MCP         MCPConfig         `yaml:"mcp"`
 	Alerts      AlertsConfig      `yaml:"alerts"` // 池级告警（T64，CFG-22）
+	Files       FilesConfig       `yaml:"files"`  // 文件中转（T69，CFG-23）
 	Pools       []PoolConfig      `yaml:"pools"`
 	Models      []ModelConfig     `yaml:"models"`
 }
@@ -161,6 +162,8 @@ type ToolConfig struct {
 	Idempotent bool `yaml:"idempotent"`
 	// ReadOnly 为 nil 时：GET 为 true，其他方法为 false（见 IsReadOnly）。
 	ReadOnly *bool `yaml:"read_only"`
+	// File 声明文件参数（T69，FS-30）；nil = 没有。
+	File *ToolFile `yaml:"file"`
 }
 
 // DefaultToolSchema 是未声明 input_schema 时的参数 Schema（CFG-17）。
@@ -227,6 +230,7 @@ func Default() Config {
 func (c *Config) Normalize() {
 	setDefault(&c.Translation.UnknownFields, "reject")
 	c.Alerts.normalize()
+	c.Files.normalize()
 	for i := range c.Pools {
 		p := &c.Pools[i]
 		setDefault(&p.Strategy, StrategyLeastInflight)

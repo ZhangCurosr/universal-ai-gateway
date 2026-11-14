@@ -95,7 +95,7 @@ func restToolDefs(cfg *config.Config) ([]rest.ToolDef, error) {
 			if err != nil {
 				return nil, fmt.Errorf("config: models[%d].tools[%d].input_schema: %w", i, j, err)
 			}
-			defs = append(defs, rest.ToolDef{
+			def := rest.ToolDef{
 				Service:     m.Name,
 				Name:        t.Name,
 				Title:       t.Title,
@@ -105,7 +105,11 @@ func restToolDefs(cfg *config.Config) ([]rest.ToolDef, error) {
 				InputSchema: schema,
 				Idempotent:  t.Idempotent,
 				ReadOnly:    t.IsReadOnly(),
-			})
+			}
+			if t.File != nil { // T69，FS-30
+				def.FileArg, def.FileNameQuery = t.File.Arg, t.File.NameQuery
+			}
+			defs = append(defs, def)
 		}
 	}
 	return defs, nil

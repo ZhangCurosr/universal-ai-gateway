@@ -19,6 +19,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/clientip"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/crypto"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/files"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ledger"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
@@ -59,6 +60,8 @@ type Deps struct {
 	MCP http.Handler
 	// Alerts 返回当前的池级告警（ADM-26，T64）；为 nil 时端点返回空列表。
 	Alerts func() AlertsView
+	// Files 是文件中转的存储（FS-50，T69）；nil = 没有开启。
+	Files *files.Store
 }
 
 // Control 让调用方在运行中替换管理面读取的配置（配置热重载，spec/03 §8）。
@@ -220,6 +223,10 @@ func NewServerWithControl(d Deps) (http.Handler, *Control) {
 
 	// 池级告警（ADM-26）
 	mux.HandleFunc("GET /admin/api/alerts", s.handleAlerts)
+
+	// 文件中转（FS-50）
+	mux.HandleFunc("GET /admin/api/files", s.handleFiles)
+	mux.HandleFunc("DELETE /admin/api/files/{id}", s.handleDeleteFile)
 	if d.MCP != nil {
 		mux.Handle("POST /admin/mcp", d.MCP)
 		mux.HandleFunc("/admin/mcp", func(w http.ResponseWriter, r *http.Request) {

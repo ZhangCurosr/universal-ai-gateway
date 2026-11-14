@@ -9,6 +9,7 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/clientip"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/core"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/files"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/ratelimit"
 )
@@ -28,7 +29,9 @@ type DataDeps struct {
 	// MCPErrorWriter 是该端点中间件使用的错误格式（mcp.WriteHTTPError）。httpapi 不导入 mcp 包，由 cmd/gateway 注入。
 	MCP            http.Handler
 	MCPErrorWriter ErrorWriter
-	Logger         *slog.Logger
+	// Files 是文件中转的存储（T69）；nil = 没有开启 files，不注册 /files，带 X-UAIG-File 的请求 → 400。
+	Files  *files.Store
+	Logger *slog.Logger
 }
 
 // NewDataRouter 按注册表中全部入站适配器声明的路由组装数据面（spec/09 §1，RTE-01 ~ RTE-04）。
@@ -78,6 +81,10 @@ func NewDataRouter(d DataDeps) http.Handler {
 		mux.Handle("/mcp", h) // 方法由 mcp.Server 判断（GET / DELETE 返回 405）
 	}
 
+	if d.Files != nil { // FS-10 ~ FS-12
+		d.mountFiles(mux, fallback.WriteError)
+	}
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
@@ -112,9 +119,11 @@ func (d DataDeps) protocolChain(in protocol.Ingress, rt protocol.Route, h http.H
 	ew := in.WriteError
 	return chain(h,
 		IPRateLimit(d.IPLimiter, d.Config.Limits.PreAuthIPRPM, ew),
+		fileBudget,
 		d.Overload.Middleware(ew, rt.Body == protocol.BodyBuffered),
 		Authenticate(d.Index, d.Pepper, ew),
 		RateLimit(d.Limiter, ew),
+		d.fileBody(ew, rt.Body != protocol.BodyNone), // FS-20：鉴权之后、交给内核之前
 	)
 }
 

@@ -43,7 +43,7 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		}
 		fmt.Fprintln(stdout, "config ok")
 		return 0
-	case "tools", "call", "mcp":
+	case "tools", "call", "mcp", "files":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		switch args[0] {
@@ -51,8 +51,10 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			return cmdTools(ctx, args[1:], getenv, stdout, stderr)
 		case "call":
 			return cmdCall(ctx, args[1:], getenv, stdin, stdout, stderr)
+		case "files":
+			return cmdFiles(ctx, args[1:], getenv, stdout, stderr)
 		default:
-			return cmdMCP(ctx, getenv, stdin, stdout, stderr)
+			return cmdMCP(ctx, args[1:], getenv, stdin, stdout, stderr)
 		}
 	case "reload", "keys", "admin-mcp":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -112,7 +114,10 @@ func usage(w io.Writer) {
 client commands (talk to a running gateway; env UAIG_URL, UAIG_TOKEN):
   gateway tools [--json]                       list the tools available to this token
   gateway call <tool> [--args JSON|-] [--json] call a tool and print its result
-  gateway mcp                                  run an MCP server on stdio (for Claude Code, Cursor, ...)
+  gateway mcp [--upload-dir DIR]...            run an MCP server on stdio (for Claude Code, Cursor, ...);
+                                               --upload-dir lets the AI upload files from DIR (gateway_upload_file)
+  gateway files upload <path> [--ttl 2h]       upload a file; other tools take its file_id instead of the content
+  gateway files list | delete <id>             list or delete your uploaded files
 
 admin commands (env UAIG_ADMIN_URL, UAIG_ADMIN_TOKEN):
   gateway reload [--dry-run] [--json]          re-read the config file of the running gateway

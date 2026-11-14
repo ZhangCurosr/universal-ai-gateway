@@ -92,7 +92,7 @@ tools/check/            一键检查程序（go run ./tools/check）
 第 5 层  cmd/gateway                                   （可以依赖任何 internal 包）
 第 4 层  httpapi   admin   mcp
 第 3 层  core（内核）
-第 2 层  ledger  audit  scheduler  metrics  auth  ratelimit  adapter/*  translate  store/sqlite
+第 2 层  ledger  audit  scheduler  metrics  auth  ratelimit  adapter/*  translate  store/sqlite  files
 第 1 层  protocol  store  pricing  sse  jsonx  crypto  ir  config  obs  clientip
 第 0 层  apperr
 ```
@@ -115,6 +115,8 @@ tools/check/            一键检查程序（go run ./tools/check）
 | ARCH-06 | `admin` 可以导入 `store`、`auth`、`crypto`、`ledger`、`scheduler`，但**禁止**导入 `core` |
 | ARCH-07 | 具体适配器包 `internal/adapter/<name>` **只能**被 `cmd/gateway`（`adapters.go`）导入；内核、路由、管理面一律通过 `protocol` 接口使用适配器。注意 core（第 3 层）导入 adapter（第 2 层）在分层上是「向下」的，所以必须有这条专门规则 |
 | ARCH-08 | `internal/adapter/adaptertest` 只能被 `_test.go` 文件导入 |
+
+**数据面磁盘 I/O 的例外（T69，用户批准）**：数据面热路径不做磁盘 I/O，只有文件中转例外（spec/09 §7）：`/files` 路由与带 `X-UAIG-File` 的请求读写 `files.dir` 下的文件（`internal/files`，第 2 层，只依赖 `apperr`）。普通模型调用不受影响；文件元数据也放在文件旁边，不进数据库（ARCH-01 不变）。
 
 ## 5. 运行时结构
 
