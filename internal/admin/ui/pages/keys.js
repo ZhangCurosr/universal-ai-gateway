@@ -263,8 +263,12 @@ export async function render(main, ctx) {
   const fExp = input({ type: 'datetime-local', step: '1' });
   const fLabel = input({ type: 'text', maxlength: '64' });
   const addBtn = h('button', { type: 'submit', class: 'btn btn-primary btn-block', text: t('k.add') });
+  // UI-34：批量导入（标题栏按钮与「新增 Key」卡片中的入口打开同一个对话框）
+  const openImport = () => openImportDialog(cfg, () => { load().then(schedule); });
   const form = h('form', { class: 'card form-card stack', 'aria-labelledby': 'k-new-h', novalidate: true },
     h('h2', { id: 'k-new-h', text: t('k.new') }),
+    pools.length ? h('p', { class: 'small muted import-hint' }, t('k.importHint') + ' ',
+      h('button', { type: 'button', class: 'link-btn', text: t('k.importLink'), onClick: openImport })) : null,
     formErr,
     pools.length ? null : h('p', { class: 'muted', text: t('k.noPools') }),
     field('k-pool', t('k.pool'), fPool),
@@ -301,9 +305,7 @@ export async function render(main, ctx) {
   if (!pools.length) addBtn.disabled = true;
 
   refreshBtn.addEventListener('click', () => { load().then(schedule); });
-  // UI-34：批量导入
-  const importBtn = h('button', { type: 'button', class: 'btn', text: t('k.import'), disabled: !pools.length,
-    onClick: () => openImportDialog(cfg, () => { load().then(schedule); }) });
+  const importBtn = h('button', { type: 'button', class: 'btn', text: t('k.import'), disabled: !pools.length, onClick: openImport });
 
   main.replaceChildren(
     pageHeader(t('k.title'), '', labelSelect, importBtn, refreshBtn),

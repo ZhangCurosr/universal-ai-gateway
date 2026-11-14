@@ -160,6 +160,8 @@ button, input, select { font: inherit; color: inherit; }
 .btn-chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 .link-btn { min-height: 36px; padding: 0 8px; border: none; background: transparent; color: var(--accent); cursor: pointer; }
 .link-btn:hover { text-decoration: underline; }
+.import-hint { margin: -4px 0 0; }
+.import-hint .link-btn { padding: 0; min-height: 0; }
 .link-danger { color: #B91C1C; }
 .nav-foot .link-btn { padding: 0; min-height: 32px; color: var(--ink-2); }
 .icon-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; border: none; background: transparent; color: inherit; border-radius: 8px; cursor: pointer; flex: none; }

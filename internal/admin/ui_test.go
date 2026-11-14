@@ -418,6 +418,10 @@ func TestUIBulkImport(t *testing.T) {
 	if !strings.Contains(keys, "openImportDialog(") || !strings.Contains(keys, "t('k.import')") {
 		t.Error("keys.js has no bulk import entry")
 	}
+	// 「新增 Key」卡片中也有入口（UI-34）
+	if !strings.Contains(keys, "t('k.importLink'), onClick: openImport") || strings.Count(i18n, "'k.importLink'") != 2 {
+		t.Error("the add-key card has no bulk import link")
+	}
 	if !strings.Contains(imp, "api('POST', '/admin/api/keys/import'") {
 		t.Error("keys_import.js does not post to the bulk import endpoint")
 	}
