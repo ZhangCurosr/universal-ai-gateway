@@ -37,12 +37,7 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		fmt.Fprintln(stdout, version)
 		return 0
 	case "check-config":
-		cfg, _, code := loadConfig(args[1:], stderr)
-		if cfg == nil {
-			return code
-		}
-		fmt.Fprintln(stdout, "config ok")
-		return 0
+		return cmdCheckConfig(args[1:], stdout, stderr) // T76：与启动相同的完整检查
 	case "tools", "call", "mcp", "files", "connect":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -112,7 +107,7 @@ func loadConfig(args []string, stderr io.Writer) (*config.Config, string, int) {
 func usage(w io.Writer) {
 	fmt.Fprintln(w, `usage:
   gateway serve        --config <path>   start the gateway
-  gateway check-config --config <path>   validate the config file
+  gateway check-config --config <path> [--json]   validate the config file (same checks as serve)
   gateway version                        print version
 
 client commands (talk to a running gateway; env UAIG_URL, UAIG_TOKEN):

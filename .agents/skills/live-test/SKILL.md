@@ -17,11 +17,7 @@ description: 用真实上游 Key 对 universal-ai-gateway 做本机实测（验�
 
 1. **编译到临时目录**（不要编译到仓库根目录）：
    `go build -o <scratch>/imp/gateway.exe ./cmd/gateway`
-2. **写配置**：监听 `127.0.0.1:18496`（数据面）/ `127.0.0.1:18497`（管理面），`data_dir: ./data`，`master_key_file: ./secrets/master.key`。先 `gateway.exe check-config --config x.yaml`。
-   已知的坑（`check-config` 查不出来，启动时才报错）：
-   - `openai_chat` 协议的服务必须给 `price.cache_read_tokens` 定价；
-   - `mineru` 协议会上报 `requests` 单位，必须定价；
-   - `rest` 协议有 `api.endpoints[].usage` 时，用到的每个单位都要在 `price` 里。
+2. **写配置**：监听 `127.0.0.1:18496`（数据面）/ `127.0.0.1:18497`（管理面），`data_dir: ./data`，`master_key_file: ./secrets/master.key`。先 `gateway.exe check-config --config x.yaml`：它做与启动相同的完整检查（T76），缺少价目单位（如 `openai_chat` 的 `cache_read_tokens`、`mineru` 的 `requests`）、接口声明用错协议、告警地址文件读不到都会在这里报出。
 3. **在后台启动**：`./gateway.exe serve --config x.yaml > gw.boot.log 2>&1`，等 `/healthz` 返回 200。
 4. **导入 Key**（输出只有计数）：
    ```bash

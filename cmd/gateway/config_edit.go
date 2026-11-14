@@ -89,7 +89,7 @@ func (e *configEntryEditor) apply(ctx context.Context, actor int64, version stri
 	if err != nil {
 		return shareError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
-	if _, err := buildGeneration(cfg, e.rl.gd, e.rl.gen.Load()); err != nil { // PE-03：与重载相同的构造检查
+	if err := validateGeneration(cfg, e.rl.gd, e.rl.gen.Load()); err != nil { // PE-03：与启动、重载相同的完整检查（T76）
 		return shareError(http.StatusBadRequest, "invalid_request", err.Error())
 	}
 	if check {

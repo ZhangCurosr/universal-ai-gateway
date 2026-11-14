@@ -7,7 +7,7 @@
 ```
 gateway serve   --config <path>      启动服务（默认 ./gateway.yaml）
 gateway version                      打印版本号
-gateway check-config --config <path> 只加载并校验配置，成功输出 "config ok" 并以 0 退出，失败以 1 退出
+gateway check-config --config <path> [--json]  与启动相同的完整检查（T76，CK-01 ~ CK-04：配置规则 + 构造注册表与内核 + 告警地址文件，只在内存中，不打开数据库、不监听端口、不访问上游），成功输出 "config ok" 并以 0 退出，失败以 1 退出；--json 输出 {"ok": bool, "error": "..."}
 gateway reload [--dry-run] [--json]  让运行中的网关重新读取配置文件（§8，任务卡 T55）
 ```
 
@@ -18,6 +18,15 @@ gateway reload [--dry-run] [--json]  让运行中的网关重新读取配置文�
 
 - 未知子命令：打印用法到 stderr，退出码 2。
 - 所有日志输出到 **stderr**（JSON 格式，`slog.NewJSONHandler`）。stdout 只用于 `version` 与 `check-config` 的结果。
+
+### 1.1 `check-config` 的完整检查（任务卡 T76）
+
+| 编号 | 规则 |
+|:--|:--|
+| CK-01 | `check-config` 依次：① `config.Load`；② 构造一代（注册表 → 价目单位与接口声明 → 内核），与 `serve` / 重载 / T72 的「检查」使用同一函数；③ 告警推送地址文件检查（CFG-22）。任何一步失败：stderr 输出错误（与 `serve` 启动失败时的消息相同），以 1 退出；全部通过输出 `config ok`，以 0 退出 |
+| CK-02 | 构造检查用一套只在内存中的依赖（空的账本、调度器、限流器），不打开 `data_dir` 中的数据库、不读主密钥、不监听端口、不访问上游。不需要 `data_dir` 已经存在 |
+| CK-03 | 错误消息指明位置，例如 `model "deepseek-chat": price for unit "cache_read_tokens" is missing (pool "deepseek" uses protocol openai_chat)`；若现有的 CORE-05 消息不含池与协议，补上 |
+| CK-04 | `--json`：输出 `{"ok": bool, "error": "..."}`，供脚本与 AI 使用 |
 
 ## 2. 配置文件结构（YAML）
 
