@@ -56,7 +56,7 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 		default:
 			return cmdMCP(ctx, args[1:], getenv, stdin, stdout, stderr)
 		}
-	case "reload", "keys", "admin-mcp":
+	case "reload", "keys", "admin-mcp", "admin":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		switch args[0] {
@@ -64,6 +64,8 @@ func realMainIO(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv
 			return cmdReload(ctx, args[1:], getenv, stdout, stderr)
 		case "keys":
 			return cmdKeys(ctx, args[1:], getenv, stdout, stderr)
+		case "admin":
+			return cmdAdmin(ctx, args[1:], getenv, stdin, stdout, stderr)
 		default:
 			return cmdAdminMCP(ctx, getenv, stdin, stdout, stderr)
 		}
@@ -123,5 +125,7 @@ admin commands (env UAIG_ADMIN_URL, UAIG_ADMIN_TOKEN):
   gateway reload [--dry-run] [--json]          re-read the config file of the running gateway
   gateway keys import --pool P --file F ...     add upstream keys from a local file (keys never printed)
   gateway keys sync --pool P --file F --label L [--watch 10m]   keep labeled keys in step with the file
+  gateway admin tools [--json]                 list the admin tools (read / write)
+  gateway admin call <tool> [--args JSON] [--yes]   call an admin tool, e.g. "pools"; write tools need --yes
   gateway admin-mcp                            run the admin MCP server on stdio`)
 }

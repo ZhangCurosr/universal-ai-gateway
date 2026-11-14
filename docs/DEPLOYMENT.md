@@ -369,6 +369,15 @@ claude mcp add --transport http uaig-admin http://127.0.0.1:8081/admin/mcp --hea
 | `gateway_admin_set_key_state` | 启用或停用一把上游 Key | 否 |
 | `gateway_admin_reload` | 重载配置文件（建议先 `dry_run`） | 否 |
 
+**命令行**（任何能执行 shell 命令的 AI CLI 都能用，包括没有 MCP 的 Pi；连接信息同上）：
+
+```bash
+gateway admin tools                                   # 列出工具：短名、read / write、说明
+gateway admin call pools                              # 池的可用数、额度、预计用完时间（JSON）
+gateway admin call key_stats --args '{"pool":"tavily"}'
+gateway admin call set_key_state --args '{"id":12,"state":"disabled"}' --yes   # 写入类必须加 --yes
+```
+
 **有意不提供**新建客户端、轮换 Token、添加 Key：这些操作会把凭据交给 AI。新建客户端请用管理页面；添加 Key 用下面的 `gateway keys import`，密钥在本机读取，不经过 AI。
 
 > 管理员 Token 有完整的管理权限。只把管理面 MCP 配给你信任的本机 AI 客户端，不要把管理面暴露到局域网或公网。

@@ -191,3 +191,8 @@ gateway call ask_model --args '{"model":"deepseek-chat","input":"用一句话解
 | AM-03 | 不提供新建客户端、轮换 Token、添加 Key 的工具（§2.2）。 |
 | AM-04 | 调用：参数按工具的 Schema 校验类型（不合法 → `isError`）；构造进程内请求，复制外层的 `Authorization`、`RemoteAddr`、`Host`，交给管理面处理器，响应写入上限 1 MiB 的缓冲区。2xx → 文本为响应体（JSON），对象同时放进 `structuredContent`；非 2xx → `isError`，文本 `HTTP <状态>: <响应体>`。重载工具收到 202 时原样返回（进程内重启已开始，用 `gateway_admin_reload_records` 查看结果）。 |
 | AM-05 | 每次 `tools/call` 记 Info 日志 `admin mcp call`：工具名、结果状态码；不记参数与响应。 |
+| AC-01 | `gateway admin tools [--json]`（T74）：经 `/admin/mcp` 的 `tools/list`，每行 `短名  read|write  说明首行`（短名去掉 `gateway_admin_` 前缀，`read` 即 `readOnlyHint: true`）；`--json` 输出完整列表。连接信息同 CLI-10（`UAIG_ADMIN_URL`、`UAIG_ADMIN_TOKEN`） |
+| AC-02 | `gateway admin call <工具> [--args JSON|-] [--json] [--yes]`：工具写全名或短名；结果文本写到 stdout，`isError` 时写到 stderr 并以 1 退出；`--json` 输出完整结果 |
+| AC-03 | 写入类工具（`readOnlyHint: false`）必须加 `--yes`，否则不发请求、以 2 退出并说明将要做的修改；`reload` 带 `{"dry_run": true}` 时视为只读 |
+| AC-04 | 输出与错误中不出现管理员 Token |
+| AC-05 | 未知工具 → 以 2 退出并列出可用的短名 |

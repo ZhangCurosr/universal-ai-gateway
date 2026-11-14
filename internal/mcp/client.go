@@ -31,6 +31,19 @@ type ToolInfo struct {
 	Title       string          `json:"title,omitempty"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
+	// Annotations 是工具注解（readOnlyHint 等）；服务端没有给出时为 nil。
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+}
+
+// ToolAnnotations 是 tools/list 中的工具注解（MCP）。
+type ToolAnnotations struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
+}
+
+// ReadOnly 报告工具是否声明为只读（没有注解时为 false）。
+func (t ToolInfo) ReadOnly() bool {
+	return t.Annotations != nil && t.Annotations.ReadOnlyHint != nil && *t.Annotations.ReadOnlyHint
 }
 
 // CallResult 是 tools/call 的结果。

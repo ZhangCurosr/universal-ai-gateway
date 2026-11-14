@@ -36,6 +36,9 @@ description: 用真实上游 Key 对 universal-ai-gateway 做本机实测（验�
 
 ## 常用验证点
 
-- 计费：`GET /admin/api/keys/stats?pool=<池>` 的 `usage`、`GET /admin/api/usage`。
-- Key 状态：`GET /admin/api/pools`（可用数、冷却、用尽）。
+用管理面命令行最省事（`UAIG_ADMIN_URL`、`UAIG_ADMIN_TOKEN` 设好后）：
+
+- 计费：`gateway admin call key_stats --args '{"pool":"<池>"}'`、`gateway admin call usage`。
+- Key 状态：`gateway admin call pools`（可用数、冷却、用尽、预计用完时间）、`gateway admin call list_keys`。
+- 告警与重载：`gateway admin call alerts`、`gateway admin call reload_records`。
 - 日志：`gw.boot.log` 里没有 Key / Token 明文（引导 Token 那一行除外）。
