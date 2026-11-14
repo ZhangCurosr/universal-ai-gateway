@@ -139,7 +139,8 @@ type StreamEvent struct { Kind StreamEventKind; ID, Text string; IsRefusal bool;
 | `max_tokens` | `MaxTokens` | 必填，≤ 0 → 400 |
 | `system` 字符串 | `System`（一个 TextPart） | |
 | `system` 数组 `type=text` | `System`（按顺序，保留 `cache_control`） | 其他类型 → 400 |
-| `messages[role=user\|assistant].content` 字符串 | 一个 TextPart | 其他 role → 400 |
+| `messages[role=user\|assistant].content` 字符串 | 一个 TextPart | 除 `system`（下一行）外的其他 role → 400 |
+| `messages[role=system]`（Claude Code 2.1 起会发送；T75，TC-01） | 出现在第一条 user / assistant 消息之前：追加到 `System`；之后：作为 user 文本留在原位置（上一条 IR 消息是 user 时追加到其末尾，否则新建 user 消息；紧随其后的 user 消息并入同一条，不产生连续两条 user 消息） | 内容只允许文本，否则 400；文本原样保留，不加标记 |
 | content 块 `text` | `TextPart`（保留 `cache_control`） | `citations` 丢弃 |
 | content 块 `image`，`source.type=base64` | `ImagePart{MediaType, Data}` | base64 非法 → 400 |
 | content 块 `image`，`source.type=url` | `ImagePart{URL}` | 只允许 http(s) |
@@ -284,7 +285,7 @@ type StreamEvent struct { Kind StreamEventKind; ID, Text string; IsRefusal bool;
 | 时机 | 输出事件 |
 |:--|:--|
 | 上游流开始 | `response.created`、`response.in_progress`（`response` 为 `status: "in_progress"`、`output: []` 的骨架） |
-| 第一段文本 | `response.output_item.added`（message 项）→ `response.content_part.added`（output_text，`text: ""`） |
+| 第一段文本 | `response.output_item.added`（message 项，**总是带 `content: []`**：Codex 等客户端缺少它时会忽略该项；T75，TC-02）→ `response.content_part.added`（output_text，`text: ""`） |
 | 每段文本增量 | `response.output_text.delta`（`item_id`、`output_index`、`content_index: 0`、`delta`） |
 | 文本结束（遇到工具调用或流结束） | `response.output_text.done`（完整 text）→ `response.content_part.done` → `response.output_item.done` |
 | 工具调用开始 | `response.output_item.added`（function_call 项，`arguments: ""`） |

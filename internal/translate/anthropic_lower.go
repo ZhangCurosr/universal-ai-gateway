@@ -181,6 +181,8 @@ func lowerAnthropicMessages(raw json.RawMessage, req *ir.Request, opts Options, 
 	if len(list) == 0 {
 		return invalid("messages must not be empty")
 	}
+	sawConversation := false // 已经出现过 user / assistant 消息
+	mergeNextUser := false   // 上一条 IR 消息由对话中间的 system 消息形成：紧随其后的 user 消息并入它（TC-01）
 	for i, item := range list {
 		path := fmt.Sprintf("messages[%d]", i)
 		var keys map[string]json.RawMessage
@@ -199,16 +201,60 @@ func lowerAnthropicMessages(raw json.RawMessage, req *ir.Request, opts Options, 
 		if err := decodeString(keys["role"], path+".role", &role); err != nil {
 			return err
 		}
-		if role != string(ir.RoleUser) && role != string(ir.RoleAssistant) {
-			return invalid(path + ".role must be user or assistant")
+		if role == "system" { // TC-01：Claude Code 2.1 在 messages[] 中发送 system 消息
+			texts, err := lowerAnthropicSystemMessage(keys["content"], path)
+			if err != nil {
+				return err
+			}
+			if !sawConversation {
+				req.System = append(req.System, texts...)
+				continue
+			}
+			parts := make([]ir.Part, len(texts))
+			for j, tp := range texts {
+				parts[j] = tp
+			}
+			if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == ir.RoleUser {
+				req.Messages[n-1].Parts = append(req.Messages[n-1].Parts, parts...)
+			} else {
+				req.Messages = append(req.Messages, ir.Message{Role: ir.RoleUser, Parts: parts})
+			}
+			mergeNextUser = true
+			continue
 		}
+		if role != string(ir.RoleUser) && role != string(ir.RoleAssistant) {
+			return invalid(path + ".role must be user, assistant or system")
+		}
+		sawConversation = true
 		parts, err := lowerAnthropicContent(keys["content"], path, ir.Role(role))
 		if err != nil {
 			return err
 		}
-		req.Messages = append(req.Messages, ir.Message{Role: ir.Role(role), Parts: parts})
+		if n := len(req.Messages); mergeNextUser && role == string(ir.RoleUser) && n > 0 && req.Messages[n-1].Role == ir.RoleUser {
+			req.Messages[n-1].Parts = append(req.Messages[n-1].Parts, parts...)
+		} else {
+			req.Messages = append(req.Messages, ir.Message{Role: ir.Role(role), Parts: parts})
+		}
+		mergeNextUser = false
 	}
 	return nil
+}
+
+// lowerAnthropicSystemMessage 读取 messages[] 中 system 消息的内容：只允许文本（TC-01）。
+func lowerAnthropicSystemMessage(raw json.RawMessage, path string) ([]ir.TextPart, error) {
+	parts, err := lowerAnthropicContent(raw, path, ir.RoleUser)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ir.TextPart, 0, len(parts))
+	for _, p := range parts {
+		tp, ok := p.(ir.TextPart)
+		if !ok {
+			return nil, invalid(path + ": system messages may only contain text")
+		}
+		out = append(out, tp)
+	}
+	return out, nil
 }
 
 func lowerAnthropicContent(raw json.RawMessage, path string, role ir.Role) ([]ir.Part, error) {

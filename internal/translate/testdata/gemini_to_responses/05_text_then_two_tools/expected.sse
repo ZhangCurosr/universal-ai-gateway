@@ -36,7 +36,8 @@ data:   "item": {
 data:     "type": "message",
 data:     "id": "msg_1",
 data:     "status": "in_progress",
-data:     "role": "assistant"
+data:     "role": "assistant",
+data:     "content": []
 data:   },
 data:   "output_index": 0,
 data:   "sequence_number": 2,

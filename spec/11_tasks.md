@@ -354,6 +354,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T72 | 网页端管理池与服务：新建、编辑、删除池与服务，写回配置文件并热重载（复用 T71 的配置写回） | T71 | 是 | `TODO` |
 | T73 | `gateway connect <claude\|codex\|opencode\|pi>`：输出或写入各 AI CLI 的模型后端、MCP 配置并安装 `use-gateway` 技能，Token 只引用环境变量（[说明](../docs/handoff/T73_connect_cli.md)） | T69 | 是（已批准） | `DONE` |
 | T74 | 管理面命令行 `gateway admin tools` / `gateway admin call`：管理面 MCP 工具的命令行入口，写入类需 `--yes`（[说明](../docs/handoff/T74_admin_cli.md)） | T58 | 是（已批准） | `DONE` |
+| T75 | 转译兼容：Anthropic `messages[]` 中的 system 消息（Claude Code 2.1）、Responses message 项总是带 `content`（Codex）（[说明](../docs/handoff/T75_translate_compat.md)） | T73 | 是（已批准） | `DONE` |
 
 ---
 

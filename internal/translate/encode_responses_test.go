@@ -3,6 +3,7 @@ package translate
 import (
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,5 +76,18 @@ func TestResponsesEncoderStream(t *testing.T) {
 	}
 	if eventNames[len(eventNames)-1] != "response.completed" {
 		t.Errorf("expected last event response.completed, got %s", eventNames[len(eventNames)-1])
+	}
+}
+
+// TC-02（T75）：message 项总是带 content（Codex 要求）；function_call 项不带。
+func TestRespOutputItemContent(t *testing.T) {
+	msg, err := json.Marshal(respOutputItem{Type: "message", ID: "m", Status: "in_progress", Role: "assistant"})
+	if err != nil || !strings.Contains(string(msg), `"content":[]`) || strings.Count(string(msg), `"content"`) != 1 {
+		t.Fatalf("message = %s %v", msg, err)
+	}
+	args := ""
+	call, err := json.Marshal(respOutputItem{Type: "function_call", ID: "f", Status: "in_progress", CallID: "c", Name: "n", Arguments: &args})
+	if err != nil || strings.Contains(string(call), "content") || !strings.Contains(string(call), `"arguments":""`) {
+		t.Fatalf("function_call = %s %v", call, err)
 	}
 }

@@ -37,7 +37,8 @@ func TestLowerAnthropicRejects(t *testing.T) {
 		{"bad tool_choice", `{` + base + `"tool_choice":{"type":"sometimes"},` + msgs + `}`, "tool_choice"},
 		{"tool_choice tool no name", `{` + base + `"tool_choice":{"type":"tool"},` + msgs + `}`, "name"},
 		{"system image", `{` + base + `"system":[{"type":"image"}],` + msgs + `}`, "system[0]"},
-		{"bad role", `{` + base + `"messages":[{"role":"system","content":"x"}]}`, "role"},
+		{"bad role", `{` + base + `"messages":[{"role":"tool","content":"x"}]}`, "role"}, // T75：system 改为接受（TC-01）
+		{"system image", `{` + base + `"messages":[{"role":"user","content":"hi"},{"role":"system","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}}]}]}`, "system messages may only contain text"},
 		{"message extra key", `{` + base + `"messages":[{"role":"user","content":"x","name":"a"}]}`, "name"},
 		{"document block", `{` + base + `"messages":[{"role":"user","content":[{"type":"document","source":{}}]}]}`, "document"},
 		{"server_tool_use block", `{` + base + `"messages":[{"role":"assistant","content":[{"type":"server_tool_use","id":"s"}]}]}`, "server_tool_use"},
@@ -83,5 +84,50 @@ func TestLowerAnthropicDropsFields(t *testing.T) {
 	}
 	if req.User != "u" || len(req.Messages) != 1 {
 		t.Errorf("req = %+v", req)
+	}
+}
+
+// TC-01（T75）：messages[] 中的 system 消息。开头的并入 System；中间的作为 user 文本留在原位置，
+// 并入上一条 user 消息；紧随其后的 user 消息也并入，不产生连续两条 user 消息。
+func TestLowerAnthropicSystemMessages(t *testing.T) {
+	texts := func(m ir.Message) string {
+		var b []string
+		for _, p := range m.Parts {
+			if tp, ok := p.(ir.TextPart); ok {
+				b = append(b, tp.Text)
+			}
+		}
+		return strings.Join(b, "|")
+	}
+	cases := []struct {
+		name, msgs string
+		system     string
+		want       []string // 每条 IR 消息：角色:文本
+	}{
+		{"claude code shape", `{"role":"user","content":"hi"},{"role":"system","content":"<system-reminder>r</system-reminder>"}`,
+			"top", []string{"user:hi|<system-reminder>r</system-reminder>"}},
+		{"leading", `{"role":"system","content":[{"type":"text","text":"s1"}]},{"role":"user","content":"hi"}`,
+			"top|s1", []string{"user:hi"}},
+		{"after assistant, then user", `{"role":"user","content":"a"},{"role":"assistant","content":"b"},{"role":"system","content":"r"},{"role":"user","content":"c"},{"role":"assistant","content":"d"}`,
+			"top", []string{"user:a", "assistant:b", "user:r|c", "assistant:d"}},
+		{"between users", `{"role":"user","content":"a"},{"role":"system","content":"r"},{"role":"user","content":"c"}`,
+			"top", []string{"user:a|r|c"}},
+	}
+	for _, c := range cases {
+		req, err := lowerAnthropic([]byte(`{"model":"m","max_tokens":10,"system":"top","messages":[`+c.msgs+`]}`), Options{})
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var sys []string
+		for _, s := range req.System {
+			sys = append(sys, s.Text)
+		}
+		var got []string
+		for _, m := range req.Messages {
+			got = append(got, string(m.Role)+":"+texts(m))
+		}
+		if strings.Join(sys, "|") != c.system || strings.Join(got, ";") != strings.Join(c.want, ";") {
+			t.Errorf("%s: system=%v messages=%v", c.name, sys, got)
+		}
 	}
 }

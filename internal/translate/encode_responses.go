@@ -33,6 +33,22 @@ type respOutputItem struct {
 	Arguments *string           `json:"arguments,omitempty"`
 }
 
+// MarshalJSON 实现 TC-02：message 项总是带 content（刚打开时为 []），function_call 项不带。
+func (it respOutputItem) MarshalJSON() ([]byte, error) {
+	type plain respOutputItem
+	if it.Type != "message" {
+		return json.Marshal(plain(it))
+	}
+	content := it.Content
+	if content == nil {
+		content = []respContentPart{}
+	}
+	return json.Marshal(struct {
+		plain
+		Content []respContentPart `json:"content"`
+	}{plain(it), content})
+}
+
 type respContentPart struct {
 	Type        string `json:"type"` // output_text
 	Text        string `json:"text"`
