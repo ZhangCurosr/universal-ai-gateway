@@ -4,6 +4,7 @@ import { h } from '../dom.js';
 import { t, fmtTime } from '../i18n.js';
 import { api } from '../api.js';
 import { errorBox, notice, pill, card, tableWrap, pageHeader, loading, confirmDialog } from '../ui.js';
+import { entriesCard } from './config_editor.js';
 
 const POLL_MS = 1000;
 const POLL_LIMIT_MS = 2 * 60 * 1000;
@@ -93,6 +94,7 @@ export async function render(main, ctx) {
     card(t('cfg.reload'), h('div', { class: 'stack pad' }, h('p', { class: 'muted small', text: t('cfg.reloadHint') }),
       h('div', { class: 'row-wrap' }, previewBtn, applyBtn), result)),
     card(t('cfg.records'), recordsBox),
+    entriesCard(ctx, () => refreshLists()), // UI-40：池与服务（T72）
     card(t('cfg.services'), servicesBox),
     card(h('div', { class: 'row-wrap' }, h('h2', { text: t('cfg.tools') }), pill(t('cfg.mode', { mode: tools.tool_mode }), 'off')), toolsBox));
 }

@@ -286,10 +286,11 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		Reload:        rl.Reload,
 		ReloadRecords: records.view,
 		Tools:         rl.toolsView,
-		MCP:           adminMCPHandler,               // spec/14 §6
-		Alerts:        alerts.View,                   // ADM-26
-		Files:         fileStore,                     // FS-50
-		Share:         (&shareEditor{rl: rl}).deps(), // LAN-01、LAN-02（T71）
+		MCP:           adminMCPHandler,                     // spec/14 §6
+		Alerts:        alerts.View,                         // ADM-26
+		Files:         fileStore,                           // FS-50
+		Share:         (&shareEditor{rl: rl}).deps(),       // LAN-01、LAN-02（T71）
+		ConfigEdit:    (&configEntryEditor{rl: rl}).deps(), // PE-01 ~ PE-07（T72）
 	})
 	adminMCPHandler.admin = adminHandler
 	rl.adminCtl = adminCtl

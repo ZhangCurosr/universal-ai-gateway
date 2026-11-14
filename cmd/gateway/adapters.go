@@ -114,3 +114,15 @@ func restToolDefs(cfg *config.Config) ([]rest.ToolDef, error) {
 	}
 	return defs, nil
 }
+
+// editableProtocols 是网页端新建池时可以选择的协议（T72，PE-01）。
+var editableProtocols = []protocol.Protocol{anthropic.Protocol, openai.Protocol, openairesp.Protocol, gemini.Protocol, tavily.Protocol, mineru.Protocol, rest.Protocol}
+
+// defaultBaseURLs 是各协议常用的上游地址（PE-01，只用作表单的缺省值）。
+var defaultBaseURLs = map[protocol.Protocol]string{
+	anthropic.Protocol: "https://api.anthropic.com",
+	openai.Protocol:    "https://api.openai.com",
+	gemini.Protocol:    "https://generativelanguage.googleapis.com",
+	tavily.Protocol:    "https://api.tavily.com",
+	mineru.Protocol:    "https://mineru.net",
+}

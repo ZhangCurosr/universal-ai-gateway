@@ -351,7 +351,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T65 | Key 视图：Web UI 与管理面 MCP 展示每 Key 用量、剩余额度、失败率、过期时间与池剩余容量（[说明](../docs/handoff/T65_key_views.md)） | T63 | 是（已批准） | `DONE` |
 | T69 | 文件中转：客户端（含 MCP 工具）上传一次得到文件 ID，任何工具用 ID 引用文件；有大小、数量与保存时间上限（[说明](../docs/handoff/T69_file_relay.md)） | T67 | 是（已批准） | `DONE` |
 | T71 | 网页端局域网共享：状态与开关（写回 `server.data_listen` 并重载）、访问地址、防火墙命令、另一台设备的配置片段（[说明](../docs/handoff/T71_lan_sharing.md)） | — | 是（已批准） | `DONE` |
-| T72 | 网页端管理池与服务：新建、编辑、删除池与服务，写回配置文件并热重载（复用 T71 的配置写回） | T71 | 是 | `TODO` |
+| T72 | 网页端管理池与服务：新建、编辑、删除池与服务，写回配置文件并热重载（复用 T71 的配置写回；[说明](../docs/handoff/T72_pools_editor.md)） | T71 | 是（已批准） | `DONE` |
 | T73 | `gateway connect <claude\|codex\|opencode\|pi>`：输出或写入各 AI CLI 的模型后端、MCP 配置并安装 `use-gateway` 技能，Token 只引用环境变量（[说明](../docs/handoff/T73_connect_cli.md)） | T69 | 是（已批准） | `DONE` |
 | T74 | 管理面命令行 `gateway admin tools` / `gateway admin call`：管理面 MCP 工具的命令行入口，写入类需 `--yes`（[说明](../docs/handoff/T74_admin_cli.md)） | T58 | 是（已批准） | `DONE` |
 | T75 | 转译兼容：Anthropic `messages[]` 中的 system 消息（Claude Code 2.1）、Responses message 项总是带 `content`（Codex）（[说明](../docs/handoff/T75_translate_compat.md)） | T73 | 是（已批准） | `DONE` |

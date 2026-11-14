@@ -575,3 +575,31 @@ func TestUIPoolCollapse(t *testing.T) {
 		}
 	}
 }
+
+// UI-40：配置页有「池与服务」卡片；编辑器用 entries / compose / 增删改接口，提交带 version；文案中英文齐全。
+func TestUIPoolsEditor(t *testing.T) {
+	read := func(name string) string {
+		b, err := fs.ReadFile(uiFiles, "ui/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	cfg, ed, keys, i18n := read("pages/config.js"), read("pages/config_editor.js"), read("pages/keys.js"), read("i18n.js")
+	if !strings.Contains(cfg, "entriesCard(ctx,") {
+		t.Error("config.js does not show the pools and services card")
+	}
+	for _, want := range []string{"api('GET', '/admin/api/config/entries')", "'/admin/api/config/compose'", "{ version: state.version, yaml, check }", "'/admin/api/config/models', { version, yaml: r.yaml }"} {
+		if !strings.Contains(ed, want) {
+			t.Errorf("config_editor.js lacks %q", want)
+		}
+	}
+	if !strings.Contains(keys, "href: '#/config'") {
+		t.Error("keys page has no link to create a pool")
+	}
+	for _, k := range []string{"pe.title", "pe.newPool", "pe.newService", "pe.tabForm", "pe.tabYAML", "pe.check", "pe.save", "pe.priceHint", "pe.confirmDeletePoolKeys", "k.createPool"} {
+		if strings.Count(i18n, "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}

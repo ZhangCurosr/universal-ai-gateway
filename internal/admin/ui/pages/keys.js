@@ -289,7 +289,7 @@ export async function render(main, ctx) {
     pools.length ? h('p', { class: 'small muted import-hint' }, t('k.importHint') + ' ',
       h('button', { type: 'button', class: 'link-btn', text: t('k.importLink'), onClick: openImport })) : null,
     formErr,
-    pools.length ? null : h('p', { class: 'muted', text: t('k.noPools') }),
+    pools.length ? null : h('p', { class: 'muted' }, t('k.noPools') + ' ', h('a', { href: '#/config', text: t('k.createPool') })), // UI-40
     field('k-pool', t('k.pool'), fPool),
     field('k-name', t('k.name'), fName),
     field('k-secret', t('k.secret'), fSecret, t('k.secretHint')),

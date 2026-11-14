@@ -284,6 +284,7 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | UI-37 | Key 页（T65）：与 Key 列表一起（每 10 秒）请求 ADM-29 与 ADM-30，失败时只隐藏以下内容。每个池卡片标题下一行摘要：「可用 a / n」；有额度时加「剩余 N 单位」「每小时约 N 单位」（速度 > 0 时）以及「预计 {时间} 用完」（黄色）或「能撑到 {时间} 重置」或「按当前用法不会用完」；有 7 天内过期的 Key 时加「7 天内过期 N 把」；没有可用 Key 时整行红色。表格增加「24 小时」列：`请求数 · 失败率`（失败率 ≥ 20% 黄色、≥ 50% 红色；没有尝试时为「—」），`title` 列出尝试数、各类失败次数与最近一次失败 |
 | UI-38 | 「局域网共享」页（T71，#/share）：状态（已对局域网开放 / 只允许本机访问、当前监听地址）与开关（二次确认，说明会写回配置文件并短暂重启；重启期间按 UI-31 等待记录）；开放时显示明文 HTTP 的风险提示；说明管理页面只能在本机打开。访问地址（LAN-01 的 `url`，带复制按钮，标出网卡名）。防火墙命令（Windows：`New-NetFirewallRule … -Profile Private`；其他系统：ufw 示例），网关不自动修改。另一台设备的配置片段（环境变量、Claude Code、OpenAI SDK、MCP），Token 一律是 `<Token>` 占位符；按钮「为这台设备创建 Token」跳到 `#/clients?new=lan-device`，客户端页据此打开新建表单并预填名称（Token 仍只在创建时显示一次）。配置文件不可写时隐藏开关并提示手工修改 |
 | UI-39 | Key 页按池折叠：池卡片标题（带 ▸ 图标的按钮，`aria-expanded`）点击展开 / 收起；收起时只显示标题、协议、Key 数摘要与池摘要（UI-37），以及「显示全部 N 把 Key」。没有手动设置过的池，Key 数超过 10 时缺省收起；手动设置在本页停留期间保持（每 10 秒刷新不重置，离开页面后恢复缺省）。有两个以上池时，列表上方有「全部展开 / 全部收起」 |
+| UI-40 | 「配置」页「池与服务」卡片（T72）：池表格（名称、协议、上游地址、服务数、Key 数、编辑 / 删除）与服务表格（名称、所属池、价格）；「新建池」「新建服务」。对话框有「表单」与「高级（YAML）」两个标签页（经 compose 同步）：池的表单为名称（新建后不可改）、协议（下拉，选择后填入常用地址）、上游地址、调度策略、最大尝试次数，新建时可勾选「同时新建一个同名服务」并按协议的计量单位列出价格；服务的表单为名称、所属池、上游模型名、价格（按所属池协议的单位）、预留量。按钮「检查」（`check: true`）与「保存并生效」；版本冲突时提示并刷新。删除二次确认，池里有 Key 时说明会成为孤立 Key。配置文件不可写时只读。「上游 Key」页没有池时给出到「配置」页的链接 |
 | UI-31 | 「配置」页：按钮「预览重载」（`dry_run: true`）与「应用重载」（二次确认）；显示模式、增删改的池与服务、变化的设置、需要重启的字段、警告；收到 202 时显示「正在重启」，每秒查询 `GET reload` 直到该记录不再是 `restarting`（最多 2 分钟；重启期间的请求失败视为尚未就绪）；错误按 UI-16 显示。下方是最近 20 次重载记录。 |
 | UI-32 | 「配置」页的服务与工具：按 `GET config` 列出池与服务，按 `GET tools` 列出工具（名称、所属服务、只读与否、说明首行）与当前的 `tool_mode`。全部用 `textContent` 写入（UI-12）。 |
 
@@ -353,3 +354,17 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | LAN-04 | 每次修改记 Info 日志 `config edited by admin`（字段名、旧值、新值），并出现在重载记录中（ADM-19） |
 | LAN-05 | 修改配置文件的代码放在 `internal/config`（`yaml.v3` 只允许在这里，spec/01 §4）：`config.SetScalar(data, keys, value)`（只替换这一处文本）、`config.EditFile(path, keys, value)`（校验、备份、原子写入）、`config.WriteFileAtomic`，供本卡与后续「网页管理池与服务」复用；`admin` 通过 `Deps` 注入的函数调用，不直接接触文件路径 |
 | LAN-06 | 管理面本身不受影响：仍然只监听本机（CFG-02、DEP-03）。页面上说明：其他设备只能用网关的 AI 能力，不能打开管理页面 |
+
+## 9. 网页端管理池与服务（任务卡 T72）
+
+「配置」页的「池与服务」卡片（UI-40）新建、修改、删除池与服务，写回配置文件并热重载。另有 `POST /admin/api/config/compose`（`{kind, yaml, fields?}` → `{yaml, fields}`）用于表单与 YAML 标签页的同步，只处理文本、不读写文件。列表项可以是块写法或单行流式写法（`- { name: … }`）；整个列表写成流式（`pools: [ … ]`，非空）时拒绝编辑。设计说明见 [T72_pools_editor.md](../docs/handoff/T72_pools_editor.md)。
+
+| 编号 | 规则 |
+|:--|:--|
+| PE-01 | `GET /admin/api/config/entries`：`{"version": "<配置文件内容的 sha256>", "writable": bool, "pools": [{name, yaml, services, keys}], "models": [{name, pool, yaml}], "protocols": [{name, units: [...], default_base_url}]}`。`yaml` 是该项在配置文件中的原文（含项内注释）；`protocols` 来自注册表（单位即出站适配器的 `Units()`；rest 为 `requests` 加上 `api.endpoints[].usage` 中出现的单位）；常用地址由装配代码提供（anthropic → `https://api.anthropic.com`、openai_chat → `https://api.openai.com`、gemini → `https://generativelanguage.googleapis.com`、tavily → `https://api.tavily.com`、mineru → `https://mineru.net`，其余为空） |
+| PE-02 | 写操作：`POST /admin/api/config/pools`、`PUT /admin/api/config/pools/{name}`、`DELETE /admin/api/config/pools/{name}`，服务同理（`/config/models`）。请求体 `{"version": "...", "yaml": "<该项的 YAML>", "check": bool}`（DELETE 只要 `version`）。`version` 与文件当前内容不一致 → 409（文件已被别人或手工改过，刷新后重试）。`check: true` 只校验并返回结果，不写文件 |
+| PE-03 | 校验：`yaml` 必须是一个映射且只描述一项；名称与路径中的 `{name}` 一致（PUT 不能改名，改名等于删除再新建，由用户自己决定）；新建时名称不能已存在。把它放进完整配置后，先用 `config.Parse`（CFG 全部规则），再用与重载相同的构造检查（注册表、价目单位齐全 CORE-05、接口声明 CFG-18 等）。任何一步失败 → 400，消息指明原因，文件不变 |
+| PE-04 | 写配置文件：用 `yaml.v3` 定位 `pools` / `models` 序列中的那一项，**只替换该项的文本行**（新建追加到序列末尾，删除去掉该项的行），文件其他部分（注释、空行、其他项）原样不变；`pools:` / `models:` 不存在时追加。备份 `<文件>.bak`、原子写入、重载失败恢复原文件，同 LAN-03 |
+| PE-05 | 写入后按 HR 规则重载（池与服务的增删改是热重载，不重启）；响应 `{"version": "<新版本>", "reload": <ADM-18 的响应>}`。删除池时池下还有服务 → 400；删除服务时它是某个客户端 `allowed_models` 中的唯一一项 → 仍然允许，响应 `warnings` 中列出受影响的客户端 |
+| PE-06 | 每次写入记 Info 日志 `config edited by admin`（`kind`、`name`、`op`、操作者），出现在重载记录中；不记 YAML 内容 |
+| PE-07 | 配置文件不可写（`writable: false`）时页面只读，写操作 409。管理面 MCP **不**增加写配置的工具（只有网页与管理 API 能改配置；AI 改配置仍然走编辑文件 + `gateway reload`，可以审阅 diff） |

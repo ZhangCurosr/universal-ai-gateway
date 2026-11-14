@@ -64,6 +64,8 @@ type Deps struct {
 	Files *files.Store
 	// Share 是局域网共享（LAN-01、LAN-02，T71）；nil = 不能从网页修改（只显示状态）。
 	Share *ShareDeps
+	// ConfigEdit 是网页端管理池与服务（PE-01 ~ PE-07，T72）；nil = 不能从网页修改。
+	ConfigEdit *ConfigEditDeps
 }
 
 // Control 让调用方在运行中替换管理面读取的配置（配置热重载，spec/03 §8）。
@@ -233,6 +235,16 @@ func NewServerWithControl(d Deps) (http.Handler, *Control) {
 	// 局域网共享（LAN-01、LAN-02）
 	mux.HandleFunc("GET /admin/api/share", s.handleShareGet)
 	mux.HandleFunc("POST /admin/api/share", s.handleShareSet)
+
+	// 池与服务（PE-01 ~ PE-05）
+	mux.HandleFunc("GET /admin/api/config/entries", s.handleConfigEntries)
+	mux.HandleFunc("POST /admin/api/config/compose", s.handleConfigCompose)
+	mux.HandleFunc("POST /admin/api/config/pools", s.handleConfigEntry("pools", "create"))
+	mux.HandleFunc("PUT /admin/api/config/pools/{name}", s.handleConfigEntry("pools", "update"))
+	mux.HandleFunc("DELETE /admin/api/config/pools/{name}", s.handleConfigEntry("pools", "delete"))
+	mux.HandleFunc("POST /admin/api/config/models", s.handleConfigEntry("models", "create"))
+	mux.HandleFunc("PUT /admin/api/config/models/{name}", s.handleConfigEntry("models", "update"))
+	mux.HandleFunc("DELETE /admin/api/config/models/{name}", s.handleConfigEntry("models", "delete"))
 	if d.MCP != nil {
 		mux.Handle("POST /admin/mcp", d.MCP)
 		mux.HandleFunc("/admin/mcp", func(w http.ResponseWriter, r *http.Request) {
