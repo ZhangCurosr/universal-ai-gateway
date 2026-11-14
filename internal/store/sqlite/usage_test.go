@@ -198,3 +198,39 @@ func TestSumKeyUsage(t *testing.T) {
 		t.Fatal("invalid unit name must be rejected")
 	}
 }
+
+// STO-22：按 Key 汇总请求数、各单位用量与费用；时间范围左闭右开；跨度上限
+func TestSumUsageByKey(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	mk := func(req string, key int64, at time.Time, cost int64, usage map[string]int64) store.UsageEvent {
+		return store.UsageEvent{RequestID: req, ClientID: 1, KeyID: key, Model: "m", Op: "call", Usage: usage, CostNanoUSD: cost,
+			UsageSource: store.UsageSourceUpstream, CreatedAt: at}
+	}
+	from, to := fixedNow.Add(-24*time.Hour), fixedNow
+	if err := db.InsertUsageEvents(ctx, []store.UsageEvent{
+		mk("a", 1, fixedNow.Add(-time.Hour), 10, map[string]int64{"credits": 2}),
+		mk("b", 1, fixedNow.Add(-2*time.Hour), 5, map[string]int64{"credits": 1, "requests": 1}),
+		mk("c", 1, to, 99, map[string]int64{"credits": 50}), // 右端不含
+		mk("d", 2, from, 7, nil), // 左端含；没有用量
+		mk("e", 3, fixedNow.Add(-time.Hour), 1, map[string]int64{"pages": 3}), // 不在请求的 Key 中
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.SumUsageByKey(ctx, from, to, []int64{1, 2, 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].KeyID != 1 || got[0].Requests != 2 || got[0].CostNanoUSD != 15 || got[0].Usage["credits"] != 3 || got[0].Usage["requests"] != 1 {
+		t.Fatalf("key 1 = %+v", got)
+	}
+	if got[1].KeyID != 2 || got[1].Requests != 1 || got[1].CostNanoUSD != 7 || len(got[1].Usage) != 0 {
+		t.Fatalf("key 2 = %+v", got[1])
+	}
+	if _, err := db.SumUsageByKey(ctx, to, from, []int64{1}); err == nil {
+		t.Fatal("reversed range must be rejected")
+	}
+	if _, err := db.SumUsageByKey(ctx, to.Add(-32*24*time.Hour), to, []int64{1}); err == nil {
+		t.Fatal("range over 31 days must be rejected")
+	}
+}

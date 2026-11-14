@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -222,6 +223,68 @@ func (d *DB) sumUsageRows(ctx context.Context, query string, args []any, out map
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate key usage: %w", err)
+	}
+	return nil
+}
+
+// SumUsageByKey 实现 STO-22：按 Key 读出时间段内的事件并在 Go 中按单位求和（单位是动态的）。走 idx_usage_key_time。
+func (d *DB) SumUsageByKey(ctx context.Context, from, to time.Time, keyIDs []int64) ([]store.KeyUsage, error) {
+	if !from.Before(to) || to.Sub(from) > store.MaxKeyUsageRange {
+		return nil, fmt.Errorf("sum usage by key: range must be positive and at most %s", store.MaxKeyUsageRange)
+	}
+	acc := map[int64]*store.KeyUsage{}
+	for len(keyIDs) > 0 {
+		batch := keyIDs[:min(len(keyIDs), sumKeyUsageBatch)]
+		keyIDs = keyIDs[len(batch):]
+		args := make([]any, 0, len(batch)+2)
+		args = append(args, from.UnixMilli(), to.UnixMilli())
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		// 只拼接占位符（个数由 batch 决定），不拼接任何值
+		query := `SELECT key_id, usage, cost_nano_usd FROM usage_events
+			WHERE created_at >= ? AND created_at < ? AND key_id IN (?` + strings.Repeat(",?", len(batch)-1) + `)`
+		if err := d.scanKeyUsage(ctx, query, args, acc); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]store.KeyUsage, 0, len(acc))
+	for _, u := range acc {
+		out = append(out, *u)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].KeyID < out[j].KeyID })
+	return out, nil
+}
+
+func (d *DB) scanKeyUsage(ctx context.Context, query string, args []any, acc map[int64]*store.KeyUsage) error {
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("sum usage by key: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, cost int64
+		var raw string
+		if err := rows.Scan(&id, &raw, &cost); err != nil {
+			return fmt.Errorf("scan usage by key: %w", err)
+		}
+		var units map[string]int64
+		if err := json.Unmarshal([]byte(raw), &units); err != nil {
+			return fmt.Errorf("decode usage of key %d: %w", id, err)
+		}
+		u := acc[id]
+		if u == nil {
+			u = &store.KeyUsage{KeyID: id, Usage: map[string]int64{}}
+			acc[id] = u
+		}
+		u.Requests++
+		u.CostNanoUSD += cost
+		for k, v := range units {
+			u.Usage[k] += v
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate usage by key: %w", err)
 	}
 	return nil
 }

@@ -235,6 +235,16 @@ const MESSAGES = {
     'k.exhausted': '额度用尽',
     'k.exhaustedReason': '{time} 重置后恢复',
     'k.exhaustedTotal': '额度已用完，不会重置',
+    'k.day': '24 小时',
+    'k.dayAttempts': '24 小时尝试 {n} 次',
+    'k.dayLast': '最近一次失败：{kind}，{time}',
+    'k.plAvailable': '可用 {a} / {n}',
+    'k.plLeft': '剩余 {left} {unit}',
+    'k.plBurn': '每小时约 {n} {unit}',
+    'k.plRunsOut': '预计 {time} 用完',
+    'k.plLasts': '能撑到 {time} 重置',
+    'k.plNoBurn': '按当前用法不会用完',
+    'k.plExpiring': '7 天内过期 {n} 把',
     'k.import': '批量导入',
     'ki.title': '批量导入 Key',
     'ki.prefix': '名称前缀',
@@ -551,6 +561,16 @@ const MESSAGES = {
     'k.exhausted': 'Quota used up',
     'k.exhaustedReason': 'Usable again after the reset at {time}',
     'k.exhaustedTotal': 'Allowance used up; it does not reset',
+    'k.day': '24 h',
+    'k.dayAttempts': '{n} attempts in 24 h',
+    'k.dayLast': 'Last failure: {kind}, {time}',
+    'k.plAvailable': '{a} / {n} available',
+    'k.plLeft': '{left} {unit} left',
+    'k.plBurn': 'about {n} {unit}/h',
+    'k.plRunsOut': 'runs out around {time}',
+    'k.plLasts': 'lasts until the reset at {time}',
+    'k.plNoBurn': 'will not run out at the current rate',
+    'k.plExpiring': '{n} expire within 7 days',
     'k.import': 'Bulk import',
     'ki.title': 'Bulk import keys',
     'ki.prefix': 'Name prefix',
@@ -660,6 +680,12 @@ export function t(key, vars) {
   const s = MESSAGES[lang][key] ?? MESSAGES.en[key] ?? key;
   if (!vars) return s;
   return s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? String(vars[k]) : m));
+}
+
+// fmtNum 格式化小数（最多两位小数，T65）。
+export function fmtNum(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return t('common.dash');
+  return new Intl.NumberFormat(lang === 'zh' ? 'zh-CN' : 'en-US', { maximumFractionDigits: 2 }).format(n);
 }
 
 export function fmtInt(n) {

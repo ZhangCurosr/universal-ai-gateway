@@ -83,6 +83,8 @@ button, input, select { font: inherit; color: inherit; }
 .card-head { padding: 14px 20px; border-bottom: 1px solid var(--border); }
 .card-head-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .card > .card-head-row { padding: 14px 20px; border-bottom: 1px solid var(--border); }
+.nowrap { white-space: nowrap; }
+.pool-line { padding: 8px 20px; border-bottom: 1px solid var(--border); }
 .table-wrap { overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; min-width: 560px; }
 .table-wide { min-width: 900px; }

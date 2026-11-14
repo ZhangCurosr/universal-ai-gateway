@@ -239,3 +239,11 @@ func AffinityKey(clientID int64, h http.Header, hint protocol.AffinityHint) stri
 | AL-04 | Webhook：一次评估中的全部变化合并为一条 POST（JSON），超时 10 秒；非 2xx 或网络错误时间隔 2 秒、4 秒各重试一次，仍失败记 Warn 并放弃，告警状态不受影响。地址每次推送前从 `url_file` 读取；日志中的地址用 `obs.MaskSecret` |
 | AL-05 | 消息格式：`generic` 为 `{"status": "firing"\|"resolved", "alerts": [{pool, kind, level, status, value, threshold, since, message}]}`；`slack` 为 `{"text"}`；`feishu` 为 `{"msg_type": "text", "content": {"text"}}`；`wecom` 与 `dingtalk` 为 `{"msgtype": "text", "text": {"content"}}`。文本第一行为 `Universal AI Gateway`，之后每条一行 `[级别或 resolved] 池: 说明` |
 | AL-06 | 配置热重载后按新设置评估；对应规则或池已删除的告警直接移除，不推送「已恢复」 |
+
+### 7.5 每把 Key 的尝试统计（任务卡 T65）
+
+| 编号 | 规则 |
+|:--|:--|
+| KS-01 | 每把 Key 有 24 个按整点对齐的小时桶，每桶记录尝试数与各失败种类的次数。`Lease.Finish` 只做原子操作；桶的轮换先用比较并交换占住新的小时再清零（两步之间的极少数并发计数可能丢失，统计用途可以接受）；时钟回拨到已轮换的小时时丢弃该次记录。只在内存中，重启后从零开始 |
+| KS-02 | 计入尝试的结果：`success` 与七种失败 `rate_limited`、`auth_failed`、`permission_denied`、`overloaded`、`server_error`、`timeout`、`network_error`。`client_error`、`canceled`、`local_error` 不是 Key 的问题，不计入（也不计入尝试数） |
+| KS-03 | `Scheduler.KeyStats() map[keyID]KeyStat`：最近 24 小时（含当前小时）的尝试数、各种失败数、最近一次失败的种类与时间；`FailureRate()` 为失败数 ÷ 尝试数。统计由 Key 以指针持有，`SetKeys` 以新对象替换同 ID 的 Key 时沿用 |

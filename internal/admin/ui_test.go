@@ -494,3 +494,26 @@ func TestUIPoolAlerts(t *testing.T) {
 		}
 	}
 }
+
+// UI-37：Key 页读取池摘要与 24 小时统计，失败时隐藏；文案中英文齐全。
+func TestUIKeyViews(t *testing.T) {
+	b, err := fs.ReadFile(uiFiles, "ui/pages/keys.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := string(b)
+	for _, want := range []string{"api('GET', '/admin/api/pools')", "api('GET', '/admin/api/keys/stats')", "poolLine(extra && extra.pools.get(pool))", "extra ? dayCell(k) : null"} {
+		if !strings.Contains(keys, want) {
+			t.Errorf("keys.js lacks %q", want)
+		}
+	}
+	b, err = fs.ReadFile(uiFiles, "ui/i18n.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"k.day", "k.dayAttempts", "k.dayLast", "k.plAvailable", "k.plLeft", "k.plBurn", "k.plRunsOut", "k.plLasts", "k.plNoBurn", "k.plExpiring"} {
+		if strings.Count(string(b), "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}

@@ -173,9 +173,22 @@ type Store interface {
 	LoadRuntimeState(ctx context.Context, now time.Time) ([]KeyRuntime, []TaskPin, error)
 	// SumKeyUsage 返回 keyIDs 中各 Key 自 since 起在计量单位 unit 上的用量之和（STO-21，T63）；没有用量的 Key 不出现。
 	SumKeyUsage(ctx context.Context, unit string, since time.Time, keyIDs []int64) (map[int64]int64, error)
+	// SumUsageByKey 按 Key 汇总 [from, to) 内的计费事件（STO-22，T65）；没有事件的 Key 不出现。to - from 不得超过 31 天。
+	SumUsageByKey(ctx context.Context, from, to time.Time, keyIDs []int64) ([]KeyUsage, error)
 
 	GetSetting(ctx context.Context, key string) (string, bool, error)
 	PutSetting(ctx context.Context, key, value string) error
 
 	Close() error
 }
+
+// KeyUsage 是一把 Key 在一段时间内的用量汇总（STO-22，T65）。
+type KeyUsage struct {
+	KeyID       int64
+	Requests    int64            // 计费事件数
+	Usage       map[string]int64 // 各计量单位之和
+	CostNanoUSD int64
+}
+
+// MaxKeyUsageRange 是 SumUsageByKey 允许的最长时间跨度。
+const MaxKeyUsageRange = 31 * 24 * time.Hour

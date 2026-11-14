@@ -107,6 +107,29 @@ func adminTools() []adminTool {
 		{name: "gateway_admin_alerts", title: "Key pool alerts", readOnly: true, schema: noArgsSchema,
 			desc:    "Pool alerts firing now (ADM-26): low_keys (fewer available keys than the pool's minimum; critical when none are left), low_quota (little quota left this period) and expiring (keys expiring soon), each with value, threshold, start time and message. An empty list means no pool needs attention.",
 			request: noArgs(http.MethodGet, "/admin/api/alerts")},
+		{name: "gateway_admin_pools", title: "Key pool capacity", readOnly: true, schema: noArgsSchema,
+			desc:    "Per pool (ADM-30): keys by state (available includes keys briefly cooling down), keys expiring within 7 days, billed requests and attempt failure rate over the last 24 hours, and for pools with a quota: used and left this period, burn per hour (last 24 hours), the next reset, and either runs_out_at or lasts_until_reset. Use it to answer whether a pool will last until its quota resets.",
+			request: noArgs(http.MethodGet, "/admin/api/pools")},
+		{name: "gateway_admin_key_stats", title: "Per-key usage and failures", readOnly: true,
+			desc:   "Per upstream key (ADM-29): billed requests, usage per unit and cost for a time range (default: last 24 hours, at most 31 days), plus attempts, failures by kind (rate_limited, auth_failed, permission_denied, overloaded, server_error, timeout, network_error), failure rate and the last failure over the last 24 hours. Secrets are never shown.",
+			schema: `{"type":"object","properties":{"pool":{"type":"string","description":"Only keys of this pool; empty for all"},"from":{"type":"string","description":"Start, RFC 3339"},"to":{"type":"string","description":"End, RFC 3339"}},"additionalProperties":false}`,
+			request: func(args json.RawMessage) (string, string, []byte, error) {
+				var a struct{ Pool, From, To string }
+				if err := decodeAdminArgs(args, &a); err != nil {
+					return "", "", nil, err
+				}
+				q := url.Values{}
+				for k, v := range map[string]string{"pool": a.Pool, "from": a.From, "to": a.To} {
+					if v != "" {
+						q.Set(k, v)
+					}
+				}
+				path := "/admin/api/keys/stats"
+				if len(q) > 0 {
+					path += "?" + q.Encode()
+				}
+				return http.MethodGet, path, nil, nil
+			}},
 		{name: "gateway_admin_reload_records", title: "Reload history", readOnly: true, schema: noArgsSchema,
 			desc:    "The last 20 config reloads: time, mode (hot or restart), result (applied, failed, rolled_back, restarting) and error.",
 			request: noArgs(http.MethodGet, "/admin/api/reload")},

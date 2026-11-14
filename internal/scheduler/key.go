@@ -60,6 +60,7 @@ type Key struct {
 	swrrCurrent   int64 // SWRR 当前权重，由池级 mutex 保护
 	breaker       breaker
 	quota         quotaState // 本期额度用量（T63）
+	stats         *keyStats  // 最近 24 小时的尝试统计（T65）；SetKeys 换对象时沿用
 }
 
 // NewKey 构造 Key。maxInFlight < 1 时按 1 处理，weight < 1 时按 1 处理。
@@ -70,7 +71,7 @@ func NewKey(id int64, pool, name string, secret []byte, weight, maxInFlight int,
 	if maxInFlight < 1 {
 		maxInFlight = 1
 	}
-	k := &Key{ID: id, Pool: pool, Name: name, Secret: secret, Weight: weight, MaxInFlight: int32(maxInFlight)}
+	k := &Key{ID: id, Pool: pool, Name: name, Secret: secret, Weight: weight, MaxInFlight: int32(maxInFlight), stats: &keyStats{}}
 	k.persisted.Store(int32(state))
 	return k
 }

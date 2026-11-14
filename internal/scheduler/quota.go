@@ -63,12 +63,13 @@ func (q *Quota) PeriodStart(now time.Time) time.Time {
 // NextReset 返回 now 之后的下一个重置时刻；total 周期返回零值。
 func (q *Quota) NextReset(now time.Time) time.Time {
 	s := q.Schedule
+	if s.Period == config.QuotaPeriodTotal { // 不重置；也不需要时区
+		return time.Time{}
+	}
 	start := q.PeriodStart(now)
 	l := start.In(s.Loc)
 	y, m, d := l.Date()
 	switch s.Period {
-	case config.QuotaPeriodTotal:
-		return time.Time{}
 	case config.QuotaPeriodDay:
 		return time.Date(y, m, d+1, s.Hour, s.Minute, 0, 0, s.Loc)
 	case config.QuotaPeriodWeek:

@@ -1,7 +1,7 @@
-// 上游 Key 页：按池分组、每 10 秒刷新运行时状态（UI-17）、新增、编辑、停用 / 恢复；过期时间与标签（T62）；批量导入（T70）。
+// 上游 Key 页：按池分组、每 10 秒刷新运行时状态（UI-17）、新增、编辑、停用 / 恢复；过期时间与标签（T62）；批量导入（T70）；池摘要与 24 小时统计（T65）。
 
 import { h } from '../dom.js';
-import { t, fmtInt, fmtTime } from '../i18n.js';
+import { t, fmtInt, fmtTime, fmtNum } from '../i18n.js';
 import { api } from '../api.js';
 import { errorBox, notice, pill, tableWrap, pageHeader, loading, bar, field, input, select, openDialog, confirmDialog } from '../ui.js';
 import { openImportDialog } from './keys_import.js';
@@ -45,10 +45,22 @@ export async function render(main, ctx) {
     labelSelect.hidden = labels.length < 2;
   }
 
+  // UI-37：池摘要与每把 Key 的 24 小时统计单独请求；失败时只隐藏这些信息
+  let extra = null;
+  async function loadExtra() {
+    try {
+      const [{ pools }, { keys }] = await Promise.all([api('GET', '/admin/api/pools'), api('GET', '/admin/api/keys/stats')]);
+      return { pools: new Map(pools.map((p) => [p.pool, p])), stats: new Map(keys.map((k) => [k.id, k])) };
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function load() {
     try {
-      const { keys } = await api('GET', '/admin/api/keys');
+      const [{ keys }, ex] = await Promise.all([api('GET', '/admin/api/keys'), loadExtra()]);
       if (stopped) return;
+      extra = ex;
       lastKeys = keys;
       drawLabelFilter(keys);
       drawList(keys);
@@ -99,9 +111,45 @@ export async function render(main, ctx) {
       h('div', { class: 'card-head card-head-row' },
         h('div', { class: 'row-wrap' }, h('h2', { text: pool }), h('span', { class: 'tag mono', text: protoOf.get(pool) || '?' })),
         h('span', { class: 'muted small', text: t('k.poolSummary', { n: list.length, ready, inflight }) })),
+      poolLine(extra && extra.pools.get(pool)),
       tableWrap(h('table', { class: 'table table-wide' },
-        h('thead', {}, h('tr', {}, th(t('k.name')), th(t('k.secret')), th(t('k.state')), quota ? th(t('k.quota')) : null, th(t('k.expires')), th(t('k.breaker')), th(t('k.load')), th(t('k.weight'), 'num'), th(t('k.actions'), 'num'))),
+        h('thead', {}, h('tr', {}, th(t('k.name')), th(t('k.secret')), th(t('k.state')), quota ? th(t('k.quota')) : null, extra ? th(t('k.day')) : null, th(t('k.expires')), th(t('k.breaker')), th(t('k.load')), th(t('k.weight'), 'num'), th(t('k.actions'), 'num'))),
         h('tbody', {}, list.map((k) => keyRow(k, quota))))));
+  }
+
+  // poolLine 是池摘要（UI-37）：可用 / 总数；额度：剩余、每小时消耗、预计用完或能撑到重置；7 天内过期
+  function poolLine(p) {
+    if (!p) return null;
+    const parts = [t('k.plAvailable', { a: fmtInt(p.keys.available), n: fmtInt(p.keys.total) })];
+    let tone = p.keys.available === 0 ? 'bad' : '';
+    if (p.quota) {
+      const q = p.quota;
+      parts.push(t('k.plLeft', { left: fmtInt(q.left), unit: q.unit }));
+      if (q.burn_per_hour > 0) parts.push(t('k.plBurn', { n: fmtNum(q.burn_per_hour), unit: q.unit }));
+      if (q.runs_out_at) {
+        parts.push(t('k.plRunsOut', { time: fmtTime(q.runs_out_at) }));
+        tone = tone || 'warn';
+      } else if (q.lasts_until_reset) {
+        parts.push(t('k.plLasts', { time: fmtTime(q.next_reset) }));
+      } else {
+        parts.push(t('k.plNoBurn'));
+      }
+    }
+    if (p.expiring_7d > 0) parts.push(t('k.plExpiring', { n: fmtInt(p.expiring_7d) }));
+    return h('div', { class: 'pool-line small' + (tone ? ' tone-' + tone : ' muted') }, parts.join(' · '));
+  }
+
+  // dayCell 是 24 小时统计（UI-37）：请求数 · 失败率；title 列出各类失败与最近一次失败
+  function dayCell(k) {
+    const s = extra && extra.stats.get(k.id);
+    if (!s) return h('td', { class: 'small muted', text: t('common.dash') });
+    const rate = s.failure_rate_24h || 0;
+    const tone = rate >= 0.5 ? ' tone-bad' : rate >= 0.2 ? ' tone-warn' : '';
+    const kinds = Object.entries(s.failures_24h || {}).map(([kind, n]) => kind + ' ' + n);
+    const title = [t('k.dayAttempts', { n: fmtInt(s.attempts_24h) })].concat(kinds)
+      .concat(s.last_failure ? [t('k.dayLast', { kind: s.last_failure.kind, time: fmtTime(s.last_failure.at) })] : []).join('\n');
+    return h('td', { class: 'small mono nowrap' + tone, title,
+      text: fmtInt(s.requests) + ' · ' + (s.attempts_24h > 0 ? (rate * 100).toFixed(rate >= 0.1 ? 0 : 1) + '%' : t('common.dash')) });
   }
 
   // quotaCell 显示本期用量：已用 / 上限与进度条（UI-35）
@@ -143,6 +191,7 @@ export async function render(main, ctx) {
       h('td', { class: 'mono small', text: k.secret_hint }),
       h('td', {}, h('div', { class: 'stack-xs' }, state, reason ? h('span', { class: 'muted small', text: reason }) : null)),
       quota ? quotaCell(k) : null,
+      extra ? dayCell(k) : null,
       k.expires_at ? h('td', { class: 'small mono', title: k.expires_at, text: fmtTime(k.expires_at) }) : h('td', { class: 'small muted', text: t('k.never') }),
       h('td', { class: 'small' + (k.breaker === 'open' ? ' tone-bad' : ''), text: br }),
       h('td', {}, h('div', { class: 'load' }, bar(frac), h('span', { class: 'mono small', text: fmtInt(k.in_flight || 0) + ' / ' + fmtInt(k.max_in_flight) }))),

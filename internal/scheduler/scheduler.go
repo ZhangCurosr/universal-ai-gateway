@@ -152,6 +152,7 @@ func (s *Scheduler) SetKeys(keys []*Key) {
 				k.cooldownUntil.Store(old.cooldownUntil.Load())
 				k.authFailures.Store(old.authFailures.Load())
 				k.quota.copyFrom(&old.quota) // 额度用量属于账号，不随元数据变化（T63）
+				k.stats = old.stats          // 尝试统计同样沿用（KS-03）
 			}
 		}
 		k.breaker.configure(p.cfg.Breaker)
@@ -395,6 +396,7 @@ func (l *Lease) Finish(o protocol.Outcome) {
 	k, cfg := l.Key, l.pool.cfg
 	k.release()
 	now := l.s.opts.Now()
+	k.stats.record(now, o.Kind) // KS-01：只做原子加法
 	counted := false
 	switch o.Kind {
 	case protocol.OutcomeSuccess: // ST-01

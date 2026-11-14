@@ -187,6 +187,7 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 | STO-19 | `LoadRuntimeState(now)`（T68） | 返回 `cooldown_until > now` 或 `auth_failures > 0` 的行（冷却已结束的 `CooldownUntil` 为零值）与 `expires_at > now` 的固定记录；不修改数据 |
 | STO-20 | 迁移 `0004_usage_key_index.sql`（T63） | 新增索引 `idx_usage_key_time ON usage_events(key_id, created_at)` |
 | STO-21 | `SumKeyUsage(unit, since, keyIDs)`（T63） | 对 `created_at >= since` 且 `key_id` 在 `keyIDs` 中的事件，按 Key 求 `json_extract(usage, '$.<unit>')` 之和；没有用量的 Key 不出现。`unit` 必须匹配 `^[a-z][a-z0-9_]*$`，否则返回错误；JSON 路径作为 `?` 参数传入；每次最多 500 个 Key 的占位符，超出分批 |
+| STO-22 | `SumUsageByKey(from, to, keyIDs)`（T65） | 按 Key 汇总 `[from, to)` 内、`key_id` 在 `keyIDs` 中的计费事件：请求数（事件数）、`usage` 各单位之和、费用之和；没有事件的 Key 不出现，按 Key ID 升序。`from` 必须早于 `to` 且跨度 ≤ 31 天，否则返回错误。用 `idx_usage_key_time`，每次最多 500 个 Key 的占位符 |
 | STO-09 | `SetUpstreamKeyState` | `state` 不在 `ready/quarantined/disabled` 中返回 `ErrInvalidArgument`；不存在返回 `ErrNotFound` |
 | STO-10 | `InsertUsageEvents` | 单个事务批量插入；使用 `INSERT OR IGNORE`，重复 `request_id` 静默跳过（幂等）；空切片直接返回 nil |
 | STO-11 | `SumCostByClient` | `SELECT client_id, SUM(cost_nano_usd) ... GROUP BY client_id` |

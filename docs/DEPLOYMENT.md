@@ -628,6 +628,14 @@ pools:
 - 告警开始、级别变化、恢复时各推送一次；推送失败只记日志，不影响网关。
 - Prometheus 指标：`uaig_pool_available_keys`、`uaig_pool_quota_left`、`uaig_pool_keys_expiring`、`uaig_alerts_firing`。
 
+##### 池还够用吗：Key 视图
+
+管理页面「上游 Key」的每个池卡片标题下有一行摘要：可用 Key 数、本期剩余额度、最近 24 小时的消耗速度，以及「预计 {时间} 用完」或「能撑到 {时间} 重置」；表格里的「24 小时」列是每把 Key 的请求数与失败率，鼠标悬停可以看到各类失败（限流、鉴权、超时……）的次数（T65）。
+
+- 失败率按每次**尝试**统计（包括被换 Key 重试掉的那一次），只在内存中，重启后从零开始；客户端自己的错误（4xx）不算 Key 的失败。
+- 管理 API：`GET /admin/api/pools`、`GET /admin/api/keys/stats?pool=&from=&to=`（用量与费用可以选最长 31 天）。
+- 管理面 MCP：`gateway_admin_pools`、`gateway_admin_key_stats`。接好管理面 MCP 后可以直接问 AI「tavily 池这个月还够用吗」。
+
 ##### 周期额度：用满前主动换 Key
 
 账号有「每月 N 次」「每天 N 页」「试用共 N 点」这类额度时，在池上声明，网关会按 Key 统计本期用量，用满就不再选它，直到重置时刻；不会先让上游失败一次（T63）：
