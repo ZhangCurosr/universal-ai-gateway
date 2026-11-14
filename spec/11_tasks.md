@@ -345,6 +345,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T66 | 声明式 API 能力 A：业务错误映射、用量提取、异步任务固定；用配置接入 MinerU 异步任务与 Tavily 搜索验证（[说明](../docs/handoff/T66_declarative_api.md)） | T61 建议先做 | 是（已批准） | `DONE` |
 | T67 | 声明式 API 能力 B：同步等待（提交 → 轮询 → 取结果）与预签名上传；验收为只用配置重写 MinerU 的同步解析与本地文件上传（[说明](../docs/handoff/T67_declarative_flows.md)） | T66 | 是（已批准） | `DONE` |
 | T68 | 运行时状态持久化：Key 冷却、鉴权失败计数、任务固定由控制面定期快照，启动时恢复（热路径不访问数据库；T63 的周期用量复用同一机制）（[说明](../docs/handoff/T68_runtime_state.md)） | — | 是（已批准） | `DONE` |
+| T70 | 网页端批量导入上游 Key：浏览器解析文本或文件（每行一把、JSONL、CSV），批量接口单独校验每条、整批只重载一次（[说明](../docs/handoff/T70_bulk_key_import.md)） | T62 | 是（已批准） | `DONE` |
 | T63 | 按周期额度调度：池级额度声明（单位、上限、周期、重置时刻）、每 Key 周期用量、用满主动冷却到重置时刻、耗尽优先或平均分摊 | T62、T66、T68 | 是 | `TODO` |
 | T64 | Key 补充与告警：`gateway keys sync` 同步账号文件（含 CSV），可用 Key 或剩余额度低于阈值时告警（指标、管理面 MCP、Web UI）、快过期提醒 | T62 | 是 | `TODO` |
 | T65 | Key 视图：Web UI 与管理面 MCP 展示每 Key 用量、剩余额度、失败率、过期时间与池剩余容量 | T63 | 是 | `TODO` |

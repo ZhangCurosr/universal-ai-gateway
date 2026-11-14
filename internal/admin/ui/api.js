@@ -30,10 +30,10 @@ export class ApiError extends Error {
 let onUnauthorized = () => {};
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
 
-// api 发送一次请求并返回解析后的 JSON。opts.token 用于登录时验证尚未保存的 Token。
+// api 发送一次请求并返回解析后的 JSON。opts.token 用于登录时验证尚未保存的 Token；opts.timeout 覆盖默认的 15 秒（UI-19）。
 export async function api(method, path, body, opts = {}) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const timer = setTimeout(() => ctrl.abort(), opts.timeout || TIMEOUT_MS); // opts.timeout：批量导入等较慢的写入
   const headers = { Accept: 'application/json' };
   const token = opts.token !== undefined ? opts.token : getToken();
   if (token) headers.Authorization = 'Bearer ' + token;

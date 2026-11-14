@@ -181,6 +181,7 @@ func NewServerWithControl(d Deps) (http.Handler, *Control) {
 	mux.HandleFunc("POST /admin/api/keys", s.serial(s.handleCreateKey))
 	mux.HandleFunc("GET /admin/api/keys", s.handleListKeys)
 	mux.HandleFunc("PATCH /admin/api/keys/{id}", s.serial(s.handleUpdateKey))
+	mux.HandleFunc("POST /admin/api/keys/import", s.serial(s.handleImportKeys))
 
 	// Usage
 	mux.HandleFunc("GET /admin/api/usage", s.handleQueryUsage)

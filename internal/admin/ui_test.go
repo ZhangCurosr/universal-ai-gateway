@@ -404,3 +404,48 @@ func TestUIOrphanedKeyState(t *testing.T) {
 		t.Error("i18n.js lacks orphaned messages in both languages")
 	}
 }
+
+// UI-34：Key 页有批量导入入口，提交到批量接口；页面元素中不渲染密钥；文案中英文齐全。
+func TestUIBulkImport(t *testing.T) {
+	read := func(name string) string {
+		b, err := fs.ReadFile(uiFiles, "ui/"+name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(b)
+	}
+	keys, imp, i18n := read("pages/keys.js"), read("pages/keys_import.js"), read("i18n.js")
+	if !strings.Contains(keys, "openImportDialog(") || !strings.Contains(keys, "t('k.import')") {
+		t.Error("keys.js has no bulk import entry")
+	}
+	if !strings.Contains(imp, "api('POST', '/admin/api/keys/import'") {
+		t.Error("keys_import.js does not post to the bulk import endpoint")
+	}
+	for i, line := range strings.Split(imp, "\n") {
+		if strings.Contains(line, "h(") && strings.Contains(strings.ToLower(line), "secret") &&
+			!strings.Contains(line, "SecretField") && !strings.Contains(line, "secretField") && !strings.Contains(line, "SecretPrefix") {
+			t.Errorf("keys_import.js:%d may render a secret: %s", i+1, strings.TrimSpace(line))
+		}
+	}
+	// onClose 与导入完成后都清空文本框（UI-34）
+	if strings.Count(imp, "fText.value = '';") < 3 {
+		t.Error("keys_import.js does not clear the pasted text on close and after importing")
+	}
+	used := regexp.MustCompile(`t\('((?:ki\.|k\.import)[\w.]*)'`).FindAllStringSubmatch(imp+keys, -1)
+	if len(used) < 20 {
+		t.Fatalf("found only %d import messages", len(used))
+	}
+	for _, m := range used {
+		if strings.HasSuffix(m[1], ".") {
+			continue // 动态拼接的前缀，例如 'ki.fmt.' + format
+		}
+		if n := strings.Count(i18n, "'"+m[1]+"':"); n != 2 {
+			t.Errorf("message %s defined %d times, want 2 (zh and en)", m[1], n)
+		}
+	}
+	for _, k := range []string{"ki.fmt.lines", "ki.fmt.jsonl", "ki.fmt.csv", "ki.st.invalid", "ki.st.failed"} {
+		if strings.Count(i18n, "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}

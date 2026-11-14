@@ -1,9 +1,10 @@
-// 上游 Key 页：按池分组、每 10 秒刷新运行时状态（UI-17）、新增、编辑、停用 / 恢复；过期时间与标签（T62）。
+// 上游 Key 页：按池分组、每 10 秒刷新运行时状态（UI-17）、新增、编辑、停用 / 恢复；过期时间与标签（T62）；批量导入（T70）。
 
 import { h } from '../dom.js';
 import { t, fmtInt, fmtTime } from '../i18n.js';
 import { api } from '../api.js';
 import { errorBox, notice, pill, tableWrap, pageHeader, loading, bar, field, input, select, openDialog, confirmDialog } from '../ui.js';
+import { openImportDialog } from './keys_import.js';
 
 const REFRESH_MS = 10000;
 
@@ -235,9 +236,12 @@ export async function render(main, ctx) {
   if (!pools.length) addBtn.disabled = true;
 
   refreshBtn.addEventListener('click', () => { load().then(schedule); });
+  // UI-34：批量导入
+  const importBtn = h('button', { type: 'button', class: 'btn', text: t('k.import'), disabled: !pools.length,
+    onClick: () => openImportDialog(cfg, () => { load().then(schedule); }) });
 
   main.replaceChildren(
-    pageHeader(t('k.title'), '', labelSelect, refreshBtn),
+    pageHeader(t('k.title'), '', labelSelect, importBtn, refreshBtn),
     h('div', { class: 'live-row' }, status),
     msg,
     h('div', { class: 'split' }, h('div', { class: 'split-main' }, listBox), h('div', { class: 'split-side' }, form)));
