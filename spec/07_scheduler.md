@@ -207,3 +207,22 @@ func AffinityKey(clientID int64, h http.Header, hint protocol.AffinityHint) stri
 | RT-12 | 关闭时在数据面排空之后（与计费刷盘同一阶段）总是写最后一次快照 |
 | RT-13 | 进程崩溃时最多丢失最近 5 秒的变化 |
 | RT-14 | 快照与相关日志中不出现任务 ID、Key 明文或客户端 Token；亲和键本身是哈希 |
+
+### 7.3 周期额度（任务卡 T63）
+
+池可以声明每把 Key 每个周期在某个计量单位上的上限（CFG-21）。网关按 Key 统计本期用量，到上限就主动不再选它，直到下一个重置时刻；用量从计费事件得来，跨重启准确。
+
+| 编号 | 规则 |
+|:--|:--|
+| QT-01 | `PoolConfig.Quota` 为 nil 时行为与 T63 之前完全相同 |
+| QT-02 | 每把 Key 在内存中保存「周期开始时刻」与「已用量」（每 Key 一把小锁）。读取或累加时若已进入新周期，先清零；时钟回拨时保留计数。周期边界按 `period`、`reset` 与时区计算：`day` 为当天 `time`；`week` 为最近一个 `weekday` 的 `time`；`month` 为当月 `day`（超过当月天数取月末）的 `time`；`total` 固定为 Unix 纪元、不重置 |
+| QT-03 | `RecordUsage(keyID, usage)`：只累加额度单位上的数量；Key 不存在、池没有额度或数量 ≤ 0 时忽略。不做 I/O，不持池锁 |
+| QT-04 | 非严格选择时，`已用 ≥ 上限` 的 Key 不可用（在 SCH-01 ~ SCH-05、SCH-21 之后判断）。这是软上限：在途请求可能使用量超出，超出量不超过在途数 × 单次用量。严格亲和（SCH-17，任务查询）不检查额度 |
+| QT-05 | 声明了额度的池忽略 `strategy`：候选集按剩余额度排序（`drain` 升序、`spread` 降序，相同时按 ID 升序），依次尝试占用。普通会话亲和命中且该 Key 仍有额度时优先 |
+| QT-06 | `SetQuotaUsage(pool, periodStart, used)`：用重算结果覆盖该池全部 Key 的计数（`used` 中没有的记 0）；`periodStart` 不是当前周期时不做任何事并返回 false |
+| QT-07 | `KeyStatus` 增加 `QuotaUsed`、`QuotaLimit`（无额度为 0）、`QuotaResetAt`（下一个重置时刻；`total` 为零值）、`QuotaExhausted` |
+| QT-08 | §3.1 的无 Key 错误：信息附「(N quota exhausted)」；`Retry-After` 取冷却截止时刻与下一个重置时刻（`total` 不参与）中最早的一个 |
+| QT-09 | `SetKeys` 以新对象替换同 ID 的 Key 时（SCH-16）沿用其额度计数 |
+| QT-10 | 启动时在 `SetKeys` 与 RT-10 之后、开始服务之前，对每个声明了额度的池用 STO-21 重算本期用量并交给 QT-06，记一条 Info（数量）；失败记 Warn，从 0 开始计数 |
+| QT-11 | 热重载新增额度，或额度的 `unit`、`period`、`reset` 变化时，对该池重算；只改 `limit` 或 `strategy` 时保留计数。进程内重启走 QT-10 |
+| QT-12 | 装配代码把 `ledger.Ledger` 包一层交给内核：`Settle` 先调用原实现，再调用 `RecordUsage`（无论结算是否出错，上游已经产生了用量）。内核不感知额度 |

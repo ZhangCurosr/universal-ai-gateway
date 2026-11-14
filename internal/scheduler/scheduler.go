@@ -58,6 +58,11 @@ type KeyStatus struct {
 	AuthFailures      int
 	ExpiresAt         time.Time // 零值 = 不过期（T62）
 	Expired           bool
+	// 周期额度（T63，QT-07）：池没有额度时 QuotaLimit 为 0
+	QuotaUsed      int64
+	QuotaLimit     int64
+	QuotaResetAt   time.Time // 下一个重置时刻；total 周期为零值
+	QuotaExhausted bool
 }
 
 // pool 是一个池的运行时状态。
@@ -146,6 +151,7 @@ func (s *Scheduler) SetKeys(keys []*Key) {
 			} else {
 				k.cooldownUntil.Store(old.cooldownUntil.Load())
 				k.authFailures.Store(old.authFailures.Load())
+				k.quota.copyFrom(&old.quota) // 额度用量属于账号，不随元数据变化（T63）
 			}
 		}
 		k.breaker.configure(p.cfg.Breaker)
@@ -197,6 +203,19 @@ func (s *Scheduler) Acquire(req AcquireRequest) (*Lease, error) {
 		}
 	}
 
+	q := p.cfg.Quota
+	var qStart int64
+	if q != nil && !req.Strict { // QT-04：额度用尽的 Key 不参与非严格选择；严格亲和（任务查询）不检查
+		qStart = q.PeriodStart(now).UnixNano()
+		kept := candidates[:0]
+		for _, k := range candidates {
+			if quotaLeft(q, k, qStart) > 0 {
+				kept = append(kept, k)
+			}
+		}
+		candidates = kept
+	}
+
 	if req.Strict { // SCH-17：不刷新 TTL，绝不回落到其他 Key
 		id, ok := s.affinity.peek(req.AffinityKey, now)
 		if req.AffinityKey == "" || !ok {
@@ -210,11 +229,11 @@ func (s *Scheduler) Acquire(req AcquireRequest) (*Lease, error) {
 				break
 			}
 		}
-		return nil, s.noKey(all, now)
+		return nil, s.noKey(p, all, now)
 	}
 
 	if len(candidates) == 0 {
-		return nil, s.noKey(all, now)
+		return nil, s.noKey(p, all, now)
 	}
 	if req.AffinityKey != "" { // SCH-10
 		if id, ok := s.affinity.Get(req.AffinityKey, now); ok {
@@ -229,13 +248,15 @@ func (s *Scheduler) Acquire(req AcquireRequest) (*Lease, error) {
 		}
 	}
 	var lease *Lease
-	if p.cfg.Strategy == config.StrategyWeightedRoundRobin {
+	if q != nil { // QT-05：按剩余额度排序，忽略池的 strategy
+		lease = s.pickByQuota(p, q, qStart, candidates, now)
+	} else if p.cfg.Strategy == config.StrategyWeightedRoundRobin {
 		lease = s.pickSWRR(p, candidates, now)
 	} else {
 		lease = s.pickLeastInflight(p, candidates, now)
 	}
 	if lease == nil {
-		return nil, s.noKey(all, now)
+		return nil, s.noKey(p, all, now)
 	}
 	if req.AffinityKey != "" {
 		s.affinity.Put(req.AffinityKey, lease.Key.ID, p.cfg.AffinityTTL, now)
@@ -298,10 +319,40 @@ func (s *Scheduler) pickSWRR(p *pool, c []*Key, now time.Time) *Lease {
 	return nil
 }
 
-// noKey 实现 §3.1。
-func (s *Scheduler) noKey(all []*Key, now time.Time) error {
+// pickByQuota 实现 QT-05：drain 剩余最少的优先，spread 剩余最多的优先，相同时按 ID 升序。
+func (s *Scheduler) pickByQuota(p *pool, q *Quota, start int64, c []*Key, now time.Time) *Lease {
+	type cand struct {
+		k    *Key
+		left int64
+	}
+	order := make([]cand, len(c))
+	for i, k := range c {
+		order[i] = cand{k, quotaLeft(q, k, start)}
+	}
+	sort.Slice(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		if a.left != b.left {
+			return (a.left < b.left) == q.Drain
+		}
+		return a.k.ID < b.k.ID
+	})
+	for _, o := range order {
+		if l := s.claim(p, o.k, now); l != nil {
+			return l
+		}
+	}
+	return nil
+}
+
+// noKey 实现 §3.1 与 QT-08。
+func (s *Scheduler) noKey(p *pool, all []*Key, now time.Time) error {
 	var earliest int64
-	expired := 0
+	expired, exhausted := 0, 0
+	q := p.cfg.Quota
+	var qStart int64
+	if q != nil {
+		qStart = q.PeriodStart(now).UnixNano()
+	}
 	for _, k := range all {
 		if k.Persisted() != PersistedReady {
 			continue
@@ -313,10 +364,19 @@ func (s *Scheduler) noKey(all []*Key, now time.Time) error {
 		if until := k.cooldownUntil.Load(); until > now.UnixNano() && (earliest == 0 || until < earliest) {
 			earliest = until
 		}
+		if q != nil && quotaLeft(q, k, qStart) <= 0 {
+			exhausted++
+			if r := q.NextReset(now); !r.IsZero() && (earliest == 0 || r.UnixNano() < earliest) {
+				earliest = r.UnixNano()
+			}
+		}
 	}
 	msg := "no upstream key available"
 	if expired > 0 {
 		msg += fmt.Sprintf(" (%d expired)", expired)
+	}
+	if exhausted > 0 {
+		msg += fmt.Sprintf(" (%d quota exhausted)", exhausted)
 	}
 	e := apperr.New(apperr.CodeUpstreamUnavailable, msg)
 	if earliest > 0 {
@@ -420,12 +480,19 @@ func (s *Scheduler) KeyStatus() []KeyStatus {
 		if until := k.cooldownUntil.Load(); until > now.UnixNano() {
 			remaining = time.Duration(until - now.UnixNano())
 		}
-		out = append(out, KeyStatus{
+		st := KeyStatus{
 			ID: k.ID, Pool: k.Pool, Name: k.Name, Persisted: k.Persisted(),
 			InFlight: int(k.inFlight.Load()), MaxInFlight: int(k.MaxInFlight),
 			CooldownRemaining: remaining, Breaker: k.breaker.current(now), AuthFailures: int(k.authFailures.Load()),
 			ExpiresAt: k.ExpiresAt(), Expired: k.expired(now),
-		})
+		}
+		if q := s.quotaOf(k); q != nil { // QT-07
+			st.QuotaUsed = k.quota.usedAt(q.PeriodStart(now).UnixNano())
+			st.QuotaLimit = q.Limit
+			st.QuotaResetAt = q.NextReset(now)
+			st.QuotaExhausted = st.QuotaUsed >= q.Limit
+		}
+		out = append(out, st)
 	}
 	return out
 }

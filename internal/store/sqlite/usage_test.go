@@ -156,3 +156,45 @@ func TestUsageColumnSerialization(t *testing.T) {
 		}
 	}
 }
+
+// STO-21：按 Key 与时间求某个单位的和；没有用量的 Key 不出现；非法单位名报错；超过一批的 Key 分批查询
+func TestSumKeyUsage(t *testing.T) {
+	ctx := context.Background()
+	db := newTestDB(t)
+	mk := func(req string, key int64, at time.Time, usage map[string]int64) store.UsageEvent {
+		return store.UsageEvent{RequestID: req, ClientID: 1, KeyID: key, Model: "m", Op: "call", Usage: usage,
+			UsageSource: store.UsageSourceUpstream, CreatedAt: at}
+	}
+	since := fixedNow.Add(-time.Hour)
+	events := []store.UsageEvent{
+		mk("a", 1, fixedNow, map[string]int64{"credits": 2, "requests": 1}),
+		mk("b", 1, fixedNow.Add(-30*time.Minute), map[string]int64{"credits": 3}),
+		mk("c", 1, fixedNow.Add(-2*time.Hour), map[string]int64{"credits": 100}), // 周期之前
+		mk("d", 2, fixedNow, map[string]int64{"requests": 1}),                    // 没有 credits
+		mk("e", 3, since, map[string]int64{"credits": 7}),                        // 恰好在周期开始
+		mk("f", 600, fixedNow, map[string]int64{"credits": 1}),
+	}
+	if err := db.InsertUsageEvents(ctx, events); err != nil {
+		t.Fatal(err)
+	}
+	ids := []int64{1, 2, 3, 4}
+	for i := int64(5); i <= 600; i++ { // 超过一批（500）
+		ids = append(ids, i)
+	}
+	got, err := db.SumKeyUsage(ctx, "credits", since, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[1] != 5 || got[3] != 7 || got[600] != 1 {
+		t.Fatalf("SumKeyUsage = %v", got)
+	}
+	if got, err := db.SumKeyUsage(ctx, "requests", since, []int64{1, 2}); err != nil || got[1] != 1 || got[2] != 1 {
+		t.Fatalf("requests = %v %v", got, err)
+	}
+	if got, err := db.SumKeyUsage(ctx, "credits", since, nil); err != nil || len(got) != 0 {
+		t.Fatalf("no keys = %v %v", got, err)
+	}
+	if _, err := db.SumKeyUsage(ctx, `credits") OR 1=1 --`, since, ids); err == nil {
+		t.Fatal("invalid unit name must be rejected")
+	}
+}

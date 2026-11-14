@@ -113,6 +113,12 @@ models:
 #   - name: tavily
 #     protocol: tavily
 #     base_url: "https://api.tavily.com"
+#     quota:                            # 周期额度（T63）：每把 Key 每月 1000 点，用满前主动换 Key
+#       unit: credits
+#       limit: 1000
+#       period: month                   # day | week | month | total
+#       reset: { day: 1, time: "00:00", tz: "+08:00" }
+#       strategy: drain                 # drain：一把用完再换下一把；spread：平均分摊
 #   - name: mineru
 #     protocol: mineru                  # 对接 MinerU 精准解析 API v4（spec/08 §8.2.1）；客户端提交文件 URL
 #     base_url: "https://mineru.net"

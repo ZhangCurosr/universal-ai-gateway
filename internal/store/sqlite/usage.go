@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/store"
 )
@@ -170,4 +172,56 @@ func (d *DB) QueryUsage(ctx context.Context, q store.UsageQuery) ([]store.UsageS
 		return nil, fmt.Errorf("iterate usage summary: %w", err)
 	}
 	return summaries, nil
+}
+
+// unitName 是可以放进 JSON 路径的计量单位名（与 pricing.ValidUnit、CFG-21 一致的子集）。
+var unitName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
+// sumKeyUsageBatch 是每次查询的 Key 数上限（SQLite 的参数个数有上限）。
+const sumKeyUsageBatch = 500
+
+// SumKeyUsage 实现 STO-21：按 Key 求 usage 中 unit 的和；JSON 路径作为参数传入。
+func (d *DB) SumKeyUsage(ctx context.Context, unit string, since time.Time, keyIDs []int64) (map[int64]int64, error) {
+	if !unitName.MatchString(unit) {
+		return nil, fmt.Errorf("sum key usage: invalid unit %q", unit)
+	}
+	out := map[int64]int64{}
+	for len(keyIDs) > 0 {
+		batch := keyIDs[:min(len(keyIDs), sumKeyUsageBatch)]
+		keyIDs = keyIDs[len(batch):]
+		args := make([]any, 0, len(batch)+2)
+		args = append(args, "$."+unit, since.UnixMilli())
+		for _, id := range batch {
+			args = append(args, id)
+		}
+		// 只拼接占位符（个数由 batch 决定），不拼接任何值
+		query := `SELECT key_id, COALESCE(SUM(CAST(json_extract(usage, ?) AS INTEGER)), 0)
+			FROM usage_events WHERE created_at >= ? AND key_id IN (?` + strings.Repeat(",?", len(batch)-1) + `)
+			GROUP BY key_id`
+		if err := d.sumUsageRows(ctx, query, args, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func (d *DB) sumUsageRows(ctx context.Context, query string, args []any, out map[int64]int64) error {
+	rows, err := d.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("sum key usage: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return fmt.Errorf("scan key usage: %w", err)
+		}
+		if n > 0 {
+			out[id] = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate key usage: %w", err)
+	}
+	return nil
 }

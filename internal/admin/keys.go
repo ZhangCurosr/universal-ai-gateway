@@ -364,6 +364,12 @@ func buildKeyViewWithStatus(k *store.UpstreamKey, st *scheduler.KeyStatus) KeyVi
 			v.CooldownSeconds = int(math.Ceil(st.CooldownRemaining.Seconds()))
 		}
 		v.Breaker = st.Breaker.String()
+		if st.QuotaLimit > 0 { // ADM-25
+			v.QuotaUsed, v.QuotaLimit = st.QuotaUsed, st.QuotaLimit
+			if !st.QuotaResetAt.IsZero() {
+				v.QuotaResetAt = st.QuotaResetAt.UTC().Format(time.RFC3339)
+			}
+		}
 	}
 	if !k.ExpiresAt.IsZero() {
 		v.ExpiresAt = k.ExpiresAt.UTC().Format(time.RFC3339)
@@ -373,11 +379,19 @@ func buildKeyViewWithStatus(k *store.UpstreamKey, st *scheduler.KeyStatus) KeyVi
 			v.State = KeyStateExpired
 		}
 	}
+	// ADM-25：额度用尽同样只在内存中判断；过期优先显示
+	if st != nil && st.QuotaExhausted && v.State == store.KeyStateReady {
+		v.StoredState = v.State
+		v.State = KeyStateExhausted
+	}
 	return v
 }
 
 // KeyStateExpired 是已过期 Key 的展示状态（T62）；不写库，延长过期时间后立即恢复。
 const KeyStateExpired = "expired"
+
+// KeyStateExhausted 是本期额度用尽的 Key 的展示状态（T63）；不写库，到重置时刻自动恢复。
+const KeyStateExhausted = "exhausted"
 
 // maxLabelLen 是来源标签的最大长度（字节）。
 const maxLabelLen = 64

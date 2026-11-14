@@ -510,7 +510,8 @@ func buildGeneration(cfg *config.Config, d genDeps, prev *generation) (*generati
 		return nil, fmt.Errorf("register adapters: %w", err)
 	}
 	kernel, err := core.New(core.Deps{
-		Config: withRestUnitPrices(cfg, restUnits(registry)), Registry: registry, Ledger: d.mem, Scheduler: d.sched,
+		Config: withRestUnitPrices(cfg, restUnits(registry)), Registry: registry,
+		Ledger: quotaLedger{Ledger: d.mem, sched: d.sched}, Scheduler: d.sched, // QT-12
 		Audit: d.auditPipe, HTTPClient: client, Logger: d.logger,
 	})
 	if err != nil {
@@ -686,6 +687,13 @@ func (rl *configReloader) applyHot(ctx context.Context, g *generation) error {
 	rl.install(g)
 	if prev != nil && prev.client != g.client { // HR-14
 		prev.client.CloseIdleConnections()
+	}
+	var oldCfg *config.Config
+	if prev != nil {
+		oldCfg = prev.cfg
+	}
+	if pools := quotaPoolsToRecompute(oldCfg, g.cfg); len(pools) > 0 { // QT-11：失败只记 Warn，不影响已生效的配置
+		recomputeQuotaUsage(ctx, rl.st, rl.gd.sched, pools, rl.logger)
 	}
 	return nil
 }

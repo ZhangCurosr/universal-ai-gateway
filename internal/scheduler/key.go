@@ -59,6 +59,7 @@ type Key struct {
 	authFailures  atomic.Int32
 	swrrCurrent   int64 // SWRR 当前权重，由池级 mutex 保护
 	breaker       breaker
+	quota         quotaState // 本期额度用量（T63）
 }
 
 // NewKey 构造 Key。maxInFlight < 1 时按 1 处理，weight < 1 时按 1 处理。
@@ -139,6 +140,7 @@ type PoolConfig struct {
 	CooldownDefault time.Duration
 	CooldownMax     time.Duration
 	Breaker         config.BreakerConfig
+	Quota           *Quota // 周期额度（T63）；nil = 不限
 }
 
 // PoolsFromConfig 把配置文件中的池转换为 PoolConfig。
@@ -152,6 +154,7 @@ func PoolsFromConfig(pools []config.PoolConfig) []PoolConfig {
 			CooldownDefault: p.Cooldown.Default,
 			CooldownMax:     p.Cooldown.Max,
 			Breaker:         p.Breaker,
+			Quota:           quotaFromConfig(p.Quota),
 		})
 	}
 	return out

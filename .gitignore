@@ -6,3 +6,4 @@ gateway.yaml
 *.db
 *.db-wal
 *.db-shm
+/gateway.exe

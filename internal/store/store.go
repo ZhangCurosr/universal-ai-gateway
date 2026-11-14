@@ -171,6 +171,8 @@ type Store interface {
 	SaveRuntimeState(ctx context.Context, keys []KeyRuntime, pins []TaskPin) error
 	// LoadRuntimeState 返回快照中在 now 时仍有效的部分（STO-19，T68）。
 	LoadRuntimeState(ctx context.Context, now time.Time) ([]KeyRuntime, []TaskPin, error)
+	// SumKeyUsage 返回 keyIDs 中各 Key 自 since 起在计量单位 unit 上的用量之和（STO-21，T63）；没有用量的 Key 不出现。
+	SumKeyUsage(ctx context.Context, unit string, since time.Time, keyIDs []int64) (map[int64]int64, error)
 
 	GetSetting(ctx context.Context, key string) (string, bool, error)
 	PutSetting(ctx context.Context, key, value string) error

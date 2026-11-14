@@ -35,6 +35,8 @@ type keyViewItem struct {
 	CooldownSeconds int    `json:"cooldown_seconds"`
 	ExpiresAt       string `json:"expires_at"`
 	Label           string `json:"label"`
+	QuotaUsed       int64  `json:"quota_used"`  // T63
+	QuotaLimit      int64  `json:"quota_limit"` // T63
 }
 
 type restGateway struct {

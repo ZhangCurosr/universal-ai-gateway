@@ -8,9 +8,9 @@ import { errorBox, pill, card, tableWrap, pageHeader, loading, money } from '../
 
 // keyKind 把 KeyView 归为 ready / cooling / bad / off（状态条与汇总共用）。
 export function keyKind(k) {
-  if (k.state === 'disabled' || k.state === 'orphaned') return 'off'; // UI-30
+  if (k.state === 'disabled' || k.state === 'orphaned' || k.state === 'expired') return 'off'; // UI-30、T62
   if (k.state === 'quarantined' || k.breaker === 'open') return 'bad';
-  if (k.cooldown_seconds > 0 || k.breaker === 'half_open') return 'cooling';
+  if (k.state === 'exhausted' || k.cooldown_seconds > 0 || k.breaker === 'half_open') return 'cooling'; // T63：到重置时刻自动恢复
   return 'ready';
 }
 

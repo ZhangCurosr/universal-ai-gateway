@@ -123,6 +123,7 @@ button, input, select { font: inherit; color: inherit; }
 .bar-fill { height: 100%; border-radius: 3px; }
 .bar-accent { background: var(--accent); }
 .bar-warn { background: var(--warn-dot); }
+.bar-bad { background: var(--bad-dot); }
 .segbar { display: flex; gap: 2px; height: 8px; min-width: 200px; border-radius: 4px; overflow: hidden; background: #F3F4F6; }
 .seg { flex-basis: 0; flex-shrink: 1; }
 .seg-ok { background: var(--ok-dot); } .seg-warn { background: var(--warn-dot); } .seg-bad { background: var(--bad-dot); } .seg-off { background: var(--off-dot); }

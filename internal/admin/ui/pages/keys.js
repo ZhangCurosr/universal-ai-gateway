@@ -94,22 +94,37 @@ export async function render(main, ctx) {
     list.sort((a, b) => a.id - b.id);
     const ready = list.filter((k) => k.state === 'ready' && !(k.cooldown_seconds > 0) && k.breaker !== 'open').length;
     const inflight = list.reduce((s, k) => s + (k.in_flight || 0), 0);
+    const quota = list.some((k) => k.quota_limit > 0); // UI-35：声明了额度的池多一列
     return h('section', { class: 'card' },
       h('div', { class: 'card-head card-head-row' },
         h('div', { class: 'row-wrap' }, h('h2', { text: pool }), h('span', { class: 'tag mono', text: protoOf.get(pool) || '?' })),
         h('span', { class: 'muted small', text: t('k.poolSummary', { n: list.length, ready, inflight }) })),
       tableWrap(h('table', { class: 'table table-wide' },
-        h('thead', {}, h('tr', {}, th(t('k.name')), th(t('k.secret')), th(t('k.state')), th(t('k.expires')), th(t('k.breaker')), th(t('k.load')), th(t('k.weight'), 'num'), th(t('k.actions'), 'num'))),
-        h('tbody', {}, list.map(keyRow)))));
+        h('thead', {}, h('tr', {}, th(t('k.name')), th(t('k.secret')), th(t('k.state')), quota ? th(t('k.quota')) : null, th(t('k.expires')), th(t('k.breaker')), th(t('k.load')), th(t('k.weight'), 'num'), th(t('k.actions'), 'num'))),
+        h('tbody', {}, list.map((k) => keyRow(k, quota))))));
   }
 
-  function keyRow(k) {
+  // quotaCell 显示本期用量：已用 / 上限与进度条（UI-35）
+  function quotaCell(k) {
+    if (!(k.quota_limit > 0)) return h('td', { class: 'small muted', text: t('common.dash') });
+    const used = k.quota_used || 0;
+    const frac = used / k.quota_limit;
+    return h('td', { title: k.quota_reset_at ? t('k.quotaResets', { time: fmtTime(k.quota_reset_at) }) : t('k.quotaNoReset') },
+      h('div', { class: 'load' }, bar(frac, frac >= 1 ? 'bad' : frac >= 0.8 ? 'warn' : 'accent'),
+        h('span', { class: 'mono small', text: fmtInt(used) + ' / ' + fmtInt(k.quota_limit) })));
+  }
+
+  function keyRow(k, quota) {
     let state;
     let reason = k.state_reason || '';
     if (k.state === 'orphaned') { state = pill(t('k.orphaned'), 'off'); reason = t('k.orphanedReason'); } // UI-30
     else if (k.state === 'disabled') state = pill(t('k.disabled'), 'off');
     else if (k.state === 'quarantined') state = pill(t('k.quarantined'), 'bad');
     else if (k.state === 'expired') { state = pill(t('k.expired'), 'off'); reason = t('k.expiredReason', { time: fmtTime(k.expires_at) }); } // T62
+    else if (k.state === 'exhausted') { // T63
+      state = pill(t('k.exhausted'), 'warn');
+      reason = k.quota_reset_at ? t('k.exhaustedReason', { time: fmtTime(k.quota_reset_at) }) : t('k.exhaustedTotal');
+    }
     else if (k.cooldown_seconds > 0) { state = pill(t('k.cooling'), 'warn'); reason = reason || t('k.coolingReason', { s: k.cooldown_seconds }); }
     else state = pill(t('k.ready'), 'ok');
 
@@ -127,6 +142,7 @@ export async function render(main, ctx) {
         h('span', { class: 'muted small' }, '#' + k.id + ' ', k.label ? h('span', { class: 'tag mono', text: k.label }) : null))),
       h('td', { class: 'mono small', text: k.secret_hint }),
       h('td', {}, h('div', { class: 'stack-xs' }, state, reason ? h('span', { class: 'muted small', text: reason }) : null)),
+      quota ? quotaCell(k) : null,
       k.expires_at ? h('td', { class: 'small mono', title: k.expires_at, text: fmtTime(k.expires_at) }) : h('td', { class: 'small muted', text: t('k.never') }),
       h('td', { class: 'small' + (k.breaker === 'open' ? ' tone-bad' : ''), text: br }),
       h('td', {}, h('div', { class: 'load' }, bar(frac), h('span', { class: 'mono small', text: fmtInt(k.in_flight || 0) + ' / ' + fmtInt(k.max_in_flight) }))),

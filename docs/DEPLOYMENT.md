@@ -586,6 +586,30 @@ gateway keys import --pool mineru --file mineru_accounts.jsonl --expires-field e
 - `--label-field batch` 用文件中的字段作为标签；管理页面可以按标签筛选。
 - 过期只在内存中判断，不改库中状态：在管理页面或用 `--update` 把过期时间改到将来，Key 立即恢复。
 
+##### 周期额度：用满前主动换 Key
+
+账号有「每月 N 次」「每天 N 页」「试用共 N 点」这类额度时，在池上声明，网关会按 Key 统计本期用量，用满就不再选它，直到重置时刻；不会先让上游失败一次（T63）：
+
+```yaml
+pools:
+  - name: tavily
+    protocol: tavily
+    base_url: "https://api.tavily.com"
+    quota:
+      unit: credits            # 计量单位，必须出现在该池服务的 price 中
+      limit: 1000              # 每把 Key 每周期的上限
+      period: month            # day | week | month | total（total = 不重置，用完为止）
+      reset: { day: 1, time: "00:00", tz: "+08:00" }   # 每月 1 日 0 点（北京时间）；tz 缺省为 UTC
+      strategy: drain          # drain：一把用完再换下一把（缺省）；spread：平均分摊
+```
+
+- `week` 用 `reset: { weekday: mon, time: "00:00" }`；`day` 只写 `time` 与 `tz`；`total` 不写 `reset`。
+- 用量来自计费记录，重启后准确；在已经运行的池上新加额度，本周期已经用掉的部分也会算进去。
+- 用满的 Key 在管理页面显示「额度用尽」与重置时间；全部用满时客户端收到 503，`Retry-After` 为最早的重置时刻。
+- 异步任务的查询（如 MinerU 的任务状态）不受额度限制，仍落在创建任务的 Key 上。
+- 上限是软上限：同时在途的请求可能让用量略超上限。网关以外也在用同一把 Key 时计数会偏少，上游的拒绝仍按 9.8 节的错误规则冷却。
+- 上限按池统一设置；同一池中额度不同的账号请分到不同的池。
+
 ### 9.3 自定义请求头转发（`X-UAIG-Forward-*`）
 
 网关只转发白名单标准头（`Content-Type`、`Accept`、`Accept-Language`、`If-Match`、`If-None-Match`、`If-Modified-Since`、`If-Unmodified-Since`、`Range`）。

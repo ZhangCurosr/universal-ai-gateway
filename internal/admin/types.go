@@ -79,8 +79,12 @@ type KeyView struct {
 	Breaker         string `json:"breaker"`
 	ExpiresAt       string `json:"expires_at,omitempty"` // RFC 3339；不过期时省略（T62）
 	Label           string `json:"label"`
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	// 周期额度（T63，ADM-25）：池没有额度时三项都省略
+	QuotaUsed    int64  `json:"quota_used,omitempty"`
+	QuotaLimit   int64  `json:"quota_limit,omitempty"`
+	QuotaResetAt string `json:"quota_reset_at,omitempty"` // RFC 3339；total 周期省略
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
 }
 
 // UsageItem 是用量汇总的一行。

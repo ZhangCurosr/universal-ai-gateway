@@ -225,7 +225,7 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	return nil
+	return c.validateQuotas() // CFG-21：需要先知道各池服务的计量单位
 }
 
 var (

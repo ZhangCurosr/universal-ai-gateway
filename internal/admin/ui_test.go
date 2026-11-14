@@ -449,3 +449,26 @@ func TestUIBulkImport(t *testing.T) {
 		}
 	}
 }
+
+// UI-35：额度用尽有专门的显示与文案（中英文）；概览把它计入冷却中。
+func TestUIQuotaState(t *testing.T) {
+	read := func(name string) string {
+		b, err := fs.ReadFile(uiFiles, "ui/"+name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return string(b)
+	}
+	keys, overview, i18n := read("pages/keys.js"), read("pages/overview.js"), read("i18n.js")
+	if !strings.Contains(keys, "k.state === 'exhausted'") || !strings.Contains(keys, "quotaCell(k)") {
+		t.Error("keys.js does not show quota usage or the exhausted state")
+	}
+	if !strings.Contains(overview, "k.state === 'exhausted'") {
+		t.Error("overview.js does not count exhausted keys")
+	}
+	for _, k := range []string{"k.quota", "k.quotaResets", "k.quotaNoReset", "k.exhausted", "k.exhaustedReason", "k.exhaustedTotal"} {
+		if strings.Count(i18n, "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}

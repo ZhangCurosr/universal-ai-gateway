@@ -71,6 +71,9 @@ CREATE INDEX idx_upstream_keys_pool ON upstream_keys(pool);
 ALTER TABLE upstream_keys ADD COLUMN expires_at INTEGER NOT NULL DEFAULT 0; -- Unix 秒；0 = 不过期
 ALTER TABLE upstream_keys ADD COLUMN label      TEXT    NOT NULL DEFAULT '';  -- 来源标签，可空
 
+-- 0004_usage_key_index.sql（T63）：按 Key 与时间重算周期额度用量
+-- CREATE INDEX idx_usage_key_time ON usage_events(key_id, created_at);
+
 -- 0003_runtime_state.sql（T68）：调度器运行时状态的快照，由控制面整体替换
 CREATE TABLE key_runtime (
     key_id         INTEGER PRIMARY KEY,
@@ -182,6 +185,8 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 | STO-17 | 过期时间与标签（T62） | `UpstreamKey.ExpiresAt` 零值表示不过期，库中存 0；非零值按 Unix 秒存取（读出为 UTC，精度到秒）。`Label` 原样存取。过期只是元数据：仓储不据此修改 `state` |
 | STO-18 | `SaveRuntimeState`（T68） | 单个事务内清空 `key_runtime`、`task_pins` 后批量插入（整体替换快照）；任一步失败回滚并返回错误。空输入表示清空 |
 | STO-19 | `LoadRuntimeState(now)`（T68） | 返回 `cooldown_until > now` 或 `auth_failures > 0` 的行（冷却已结束的 `CooldownUntil` 为零值）与 `expires_at > now` 的固定记录；不修改数据 |
+| STO-20 | 迁移 `0004_usage_key_index.sql`（T63） | 新增索引 `idx_usage_key_time ON usage_events(key_id, created_at)` |
+| STO-21 | `SumKeyUsage(unit, since, keyIDs)`（T63） | 对 `created_at >= since` 且 `key_id` 在 `keyIDs` 中的事件，按 Key 求 `json_extract(usage, '$.<unit>')` 之和；没有用量的 Key 不出现。`unit` 必须匹配 `^[a-z][a-z0-9_]*$`，否则返回错误；JSON 路径作为 `?` 参数传入；每次最多 500 个 Key 的占位符，超出分批 |
 | STO-09 | `SetUpstreamKeyState` | `state` 不在 `ready/quarantined/disabled` 中返回 `ErrInvalidArgument`；不存在返回 `ErrNotFound` |
 | STO-10 | `InsertUsageEvents` | 单个事务批量插入；使用 `INSERT OR IGNORE`，重复 `request_id` 静默跳过（幂等）；空切片直接返回 nil |
 | STO-11 | `SumCostByClient` | `SELECT client_id, SUM(cost_nano_usd) ... GROUP BY client_id` |

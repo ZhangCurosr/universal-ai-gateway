@@ -104,6 +104,7 @@ type PoolConfig struct {
 	Timeouts    TimeoutsConfig `yaml:"timeouts"`
 	Cooldown    CooldownConfig `yaml:"cooldown"`
 	Breaker     BreakerConfig  `yaml:"breaker"`
+	Quota       *QuotaConfig   `yaml:"quota"` // 周期额度（T63，CFG-21）；nil = 不限
 }
 
 type TimeoutsConfig struct {
@@ -226,6 +227,9 @@ func (c *Config) Normalize() {
 	for i := range c.Pools {
 		p := &c.Pools[i]
 		setDefault(&p.Strategy, StrategyLeastInflight)
+		if p.Quota != nil {
+			setDefault(&p.Quota.Strategy, QuotaDrain)
+		}
 		setDefault(&p.AffinityTTL, 5*time.Minute)
 		setDefault(&p.PinTTL, 24*time.Hour)
 		setDefault(&p.MaxAttempts, 3)
