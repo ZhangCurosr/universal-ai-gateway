@@ -75,7 +75,7 @@ type reloadChanges struct {
 
 // 热重载的顶层段与 server 子字段（HR-12）；其他字段一律需要进程内重启。
 var (
-	hotSections     = map[string]bool{"mcp": true, "translation": true}
+	hotSections     = map[string]bool{"mcp": true, "translation": true, "alerts": true} // alerts：T64，下一次评估即按新设置
 	hotServerFields = map[string]bool{"log_level": true, "trusted_proxies": true, "admin_hosts": true}
 )
 

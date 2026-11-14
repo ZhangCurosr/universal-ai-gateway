@@ -406,3 +406,35 @@ func TestRestrictModelsBoundsCardinality(t *testing.T) {
 		t.Errorf("want line %q in output:\n%s", want, out)
 	}
 }
+
+// MTR-13：池级容量与告警指标；没有额度或过期窗口的池不输出对应指标
+func TestPoolGauges(t *testing.T) {
+	c := metrics.NewCollector()
+	var buf strings.Builder
+	err := c.WriteMetrics(&buf, metrics.Gauges{Pools: func() []metrics.PoolGauge {
+		return []metrics.PoolGauge{
+			{Pool: "tv", Available: 3, HasQuota: true, QuotaLeft: 120, HasExpiry: true, Expiring: 2, FiringAlerts: []string{"expiring", "low_quota"}},
+			{Pool: `we"ird`, Available: 0},
+		}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`uaig_pool_available_keys{pool="tv"} 3`,
+		`uaig_pool_available_keys{pool="we\"ird"} 0`,
+		`uaig_pool_quota_left{pool="tv"} 120`,
+		`uaig_pool_keys_expiring{pool="tv"} 2`,
+		`uaig_alerts_firing{kind="expiring",pool="tv"} 1`,
+		`uaig_alerts_firing{kind="low_quota",pool="tv"} 1`,
+		"# TYPE uaig_pool_available_keys gauge",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, `uaig_pool_quota_left{pool="we`) || strings.Contains(out, `uaig_pool_keys_expiring{pool="we`) {
+		t.Error("pools without quota or expiry window must not export those gauges")
+	}
+}

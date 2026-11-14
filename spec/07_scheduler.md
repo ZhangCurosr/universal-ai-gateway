@@ -226,3 +226,16 @@ func AffinityKey(clientID int64, h http.Header, hint protocol.AffinityHint) stri
 | QT-10 | 启动时在 `SetKeys` 与 RT-10 之后、开始服务之前，对每个声明了额度的池用 STO-21 重算本期用量并交给 QT-06，记一条 Info（数量）；失败记 Warn，从 0 开始计数 |
 | QT-11 | 热重载新增额度，或额度的 `unit`、`period`、`reset` 变化时，对该池重算；只改 `limit` 或 `strategy` 时保留计数。进程内重启走 QT-10 |
 | QT-12 | 装配代码把 `ledger.Ledger` 包一层交给内核：`Settle` 先调用原实现，再调用 `RecordUsage`（无论结算是否出错，上游已经产生了用量）。内核不感知额度 |
+
+### 7.4 池级告警（任务卡 T64）
+
+控制面后台定期读取调度器的内存状态（不访问数据库），在池子快空时告警；配置见 CFG-22。
+
+| 编号 | 规则 |
+|:--|:--|
+| AL-01 | worker `pool_alerts` 启动时立即评估一次，之后每 `check_interval`（按当前配置）评估一次。对每个池用 `Scheduler.KeyStatus()` 计算：`available` = 库中 `ready`、未过期、额度未用尽、熔断器不是 `open` 的 Key 数（短暂冷却的算可用）；`quota_left` = 这些 Key 的 `max(上限 − 已用, 0)` 之和；`expiring` = 库中 `ready`、未过期、在 `expiring_within` 内过期的 Key 数 |
+| AL-02 | 告警种类：`low_keys`（`available < min_available_keys`；`available == 0` 时级别为 `critical`，否则 `warning`）、`low_quota`（`quota_left < min_quota_left`，`warning`）、`expiring`（`expiring > 0`，`warning`）。每池每种至多一条，带 `value`、`threshold`、`since`、`message`（英文一句话） |
+| AL-03 | 新告警、级别变化、恢复时记日志（告警 Warn，恢复 Info）并推送；持续告警时距上次推送满 `repeat` 再推送一次。告警状态只在内存中，重启后仍成立的告警会再推送一次 |
+| AL-04 | Webhook：一次评估中的全部变化合并为一条 POST（JSON），超时 10 秒；非 2xx 或网络错误时间隔 2 秒、4 秒各重试一次，仍失败记 Warn 并放弃，告警状态不受影响。地址每次推送前从 `url_file` 读取；日志中的地址用 `obs.MaskSecret` |
+| AL-05 | 消息格式：`generic` 为 `{"status": "firing"\|"resolved", "alerts": [{pool, kind, level, status, value, threshold, since, message}]}`；`slack` 为 `{"text"}`；`feishu` 为 `{"msg_type": "text", "content": {"text"}}`；`wecom` 与 `dingtalk` 为 `{"msgtype": "text", "text": {"content"}}`。文本第一行为 `Universal AI Gateway`，之后每条一行 `[级别或 resolved] 池: 说明` |
+| AL-06 | 配置热重载后按新设置评估；对应规则或池已删除的告警直接移除，不推送「已恢复」 |

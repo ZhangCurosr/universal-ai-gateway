@@ -15,6 +15,7 @@ type Config struct {
 	Audit       AuditConfig       `yaml:"audit"`
 	Translation TranslationConfig `yaml:"translation"`
 	MCP         MCPConfig         `yaml:"mcp"`
+	Alerts      AlertsConfig      `yaml:"alerts"` // 池级告警（T64，CFG-22）
 	Pools       []PoolConfig      `yaml:"pools"`
 	Models      []ModelConfig     `yaml:"models"`
 }
@@ -104,7 +105,8 @@ type PoolConfig struct {
 	Timeouts    TimeoutsConfig `yaml:"timeouts"`
 	Cooldown    CooldownConfig `yaml:"cooldown"`
 	Breaker     BreakerConfig  `yaml:"breaker"`
-	Quota       *QuotaConfig   `yaml:"quota"` // 周期额度（T63，CFG-21）；nil = 不限
+	Quota       *QuotaConfig   `yaml:"quota"`  // 周期额度（T63，CFG-21）；nil = 不限
+	Alerts      *PoolAlerts    `yaml:"alerts"` // 告警阈值（T64，CFG-22）；nil = 不告警
 }
 
 type TimeoutsConfig struct {
@@ -224,6 +226,7 @@ func Default() Config {
 // Normalize 为每个池填充缺省字段。Load 会自动调用。
 func (c *Config) Normalize() {
 	setDefault(&c.Translation.UnknownFields, "reject")
+	c.Alerts.normalize()
 	for i := range c.Pools {
 		p := &c.Pools[i]
 		setDefault(&p.Strategy, StrategyLeastInflight)

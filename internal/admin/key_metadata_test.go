@@ -116,3 +116,31 @@ func TestKeyConflictReturnsID(t *testing.T) {
 		t.Fatal("conflict response leaks the secret")
 	}
 }
+
+// ADM-27：停用原因只能与 state=disabled 一起使用；写入后显示在 state_reason；恢复时清除
+func TestKeyDisableReason(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.req("POST", "/admin/api/keys", CreateKeyRequest{Pool: "openai-pool", Name: "r", Secret: "sk-reason-key-0000001"}, env.adminTok)
+	var created struct {
+		Key KeyView `json:"key"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created) // 解析失败时下面的断言会报告
+	path := fmt.Sprintf("/admin/api/keys/%d", created.Key.ID)
+	for _, body := range []string{`{"reason":"x"}`, `{"state":"ready","reason":"x"}`, `{"state":"disabled","reason":"  "}`,
+		`{"state":"disabled","reason":"` + strings.Repeat("r", 201) + `"}`} {
+		if rec := env.req("PATCH", path, body, env.adminTok); rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: %d, want 400", body, rec.Code)
+		}
+	}
+	if rec := env.req("PATCH", path, `{"state":"disabled","reason":"sync: not in source"}`, env.adminTok); rec.Code != http.StatusOK {
+		t.Fatalf("disable with reason: %d %s", rec.Code, rec.Body.String())
+	}
+	if v := findKeyView(t, env, created.Key.ID); v.State != "disabled" || v.StateReason != "sync: not in source" {
+		t.Fatalf("after disable = %+v", v)
+	}
+	env.req("PATCH", path, `{"state":"ready"}`, env.adminTok)
+	env.req("PATCH", path, `{"state":"disabled"}`, env.adminTok)
+	if v := findKeyView(t, env, created.Key.ID); v.StateReason != "disabled by admin" {
+		t.Fatalf("default reason = %q", v.StateReason)
+	}
+}

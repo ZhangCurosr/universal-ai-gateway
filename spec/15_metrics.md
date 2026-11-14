@@ -73,3 +73,4 @@
 | MTR-10 | **零第三方依赖**：禁止引入任何 Prometheus 外部 SDK（如 `client_golang`），所有文本格式化由 `internal/metrics` 纯 Go 手写实现。 |
 | MTR-11 | **分层规范**：`internal/metrics` 属于第 2 层，只依赖标准库与 `internal/store`（引用 `AuditRecord`）。不得导入 `core`、`httpapi` 或 `admin`。动态仪表通过注入闭包函数解耦。 |
 | MTR-12 | **无锁热路径**：`ObserveRequest` 必须为非阻塞操作，不得执行任何磁盘或网络 I/O，使用内存原子操作或细粒度互斥锁，保障极低调用开销。 |
+| MTR-13 | 池级仪表（T64）：`uaig_pool_available_keys{pool}`（每个池）、`uaig_pool_quota_left{pool}`（只对声明了 `quota` 的池）、`uaig_pool_keys_expiring{pool}`（只对配置了 `expiring_within` 的池）、`uaig_alerts_firing{pool,kind}`（只输出正在告警的条目，值为 1）；口径同 spec/07 AL-01 |

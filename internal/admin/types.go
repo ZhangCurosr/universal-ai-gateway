@@ -61,6 +61,8 @@ type UpdateKeyRequest struct {
 	// ExpiresAt 省略 = 不改；null = 清除；字符串 = RFC 3339（T62）
 	ExpiresAt json.RawMessage `json:"expires_at,omitempty"`
 	Label     *string         `json:"label"`
+	// Reason 是停用原因（ADM-27，T64）：只在 State 为 disabled 时允许，<= 200 字节；缺省为 "disabled by admin"
+	Reason *string `json:"reason"`
 }
 
 // KeyView 是上游 Key 的对外表示。永远不包含 secret 与密文（ADM-16）。
@@ -110,4 +112,21 @@ type ToolView struct {
 type ToolsView struct {
 	ToolMode string     `json:"tool_mode"` // mcp.tool_mode；MCP 关闭时为 "disabled"
 	Tools    []ToolView `json:"tools"`
+}
+
+// AlertView 是一条正在告警的池级告警（ADM-26，T64，spec/07 AL-02）。
+type AlertView struct {
+	Pool      string `json:"pool"`
+	Kind      string `json:"kind"`  // low_keys | low_quota | expiring
+	Level     string `json:"level"` // warning | critical
+	Value     int64  `json:"value"`
+	Threshold int64  `json:"threshold"`
+	Since     string `json:"since"` // RFC 3339
+	Message   string `json:"message"`
+}
+
+// AlertsView 是 GET /admin/api/alerts 的响应。
+type AlertsView struct {
+	Alerts    []AlertView `json:"alerts"`
+	CheckedAt string      `json:"checked_at,omitempty"` // 最近一次评估的时间；还没有评估过时省略
 }

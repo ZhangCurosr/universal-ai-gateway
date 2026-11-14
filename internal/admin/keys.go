@@ -208,6 +208,17 @@ func (s *server) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// ADM-27：停用原因
+	if req.Reason != nil {
+		if req.State == nil || *req.State != store.KeyStateDisabled {
+			writeError(w, apperr.New(apperr.CodeInvalidRequest, "reason is only allowed together with state disabled"))
+			return
+		}
+		if r := strings.TrimSpace(*req.Reason); r == "" || len(*req.Reason) > maxReasonLen {
+			writeError(w, apperr.New(apperr.CodeInvalidRequest, fmt.Sprintf("reason must be between 1 and %d bytes", maxReasonLen)))
+			return
+		}
+	}
 
 	var expiresAt *time.Time
 	if len(req.ExpiresAt) > 0 {
@@ -257,6 +268,9 @@ func (s *server) handleUpdateKey(w http.ResponseWriter, r *http.Request) {
 		reason := ""
 		if state == store.KeyStateDisabled {
 			reason = "disabled by admin"
+			if req.Reason != nil {
+				reason = strings.TrimSpace(*req.Reason)
+			}
 		}
 		// state 为 ready 时，reason 为 ""，清除 quarantined 状态与 state_reason (ADM-15)
 		err := s.d.Store.SetUpstreamKeyState(r.Context(), id, state, reason)
@@ -395,6 +409,9 @@ const KeyStateExhausted = "exhausted"
 
 // maxLabelLen 是来源标签的最大长度（字节）。
 const maxLabelLen = 64
+
+// maxReasonLen 是停用原因的最大长度（字节，ADM-27）。
+const maxReasonLen = 200
 
 func validLabel(l string) error {
 	if len(l) > maxLabelLen {

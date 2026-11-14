@@ -159,6 +159,9 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		limiter: limiter, ipLimiter: ipLimiter, overload: overload,
 		budget: &responseBudget{limit: cfg.Limits.MaxBufferedBodyBytes}, logger: logger,
 	}
+	if err := checkWebhookFile(cfg); err != nil { // CFG-22：告警推送地址读不到则拒绝启动
+		return err
+	}
 	gen, err := buildGeneration(cfg, gd, nil)
 	if err != nil {
 		return err
@@ -247,6 +250,10 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		restartCh: make(chan *restartRequest, 1),
 	}
 	rl.install(gen)
+	// 池级告警（T64）：按当前一代的配置评估，热重载后下一轮生效
+	alerts := newAlertEngine(sched, func() *config.Config { return rl.gen.Load().cfg }, logger)
+	metricsGauges.Pools = alerts.PoolGauges
+	startWorker("pool_alerts", alerts.Run)
 	dataHandler := trackHandlers(&handlers, rl) // 数据面处理器可被热重载原子替换（HR-13）
 	adminMCPHandler := newAdminMCP(logger)
 	adminHandler, adminCtl := admin.NewServerWithControl(admin.Deps{
@@ -271,6 +278,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		ReloadRecords: records.view,
 		Tools:         rl.toolsView,
 		MCP:           adminMCPHandler, // spec/14 §6
+		Alerts:        alerts.View,     // ADM-26
 	})
 	adminMCPHandler.admin = adminHandler
 	rl.adminCtl = adminCtl

@@ -94,7 +94,7 @@ func TestAdminMCP(t *testing.T) {
 			} `json:"annotations"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(out.Result, &list); err != nil || len(list.Tools) != 10 {
+	if err := json.Unmarshal(out.Result, &list); err != nil || len(list.Tools) != 11 { // T64 新增 gateway_admin_alerts（ADM-28）
 		t.Fatalf("tools/list = %s", out.Result)
 	}
 	ro := 0
@@ -108,8 +108,8 @@ func TestAdminMCP(t *testing.T) {
 			}
 		}
 	}
-	if ro != 7 {
-		t.Errorf("read-only tools = %d, want 7", ro)
+	if ro != 8 { // T64：gateway_admin_alerts 是只读工具
+		t.Errorf("read-only tools = %d, want 8", ro)
 	}
 
 	// 只读工具
@@ -151,6 +151,9 @@ func TestAdminMCP(t *testing.T) {
 	if res.IsError || !strings.Contains(res.Content[0].Text, `"am_lookup"`) || !strings.Contains(res.Content[0].Text, `"Look up a thing."`) ||
 		!strings.Contains(res.Content[0].Text, `"tavily_search"`) || strings.Contains(res.Content[0].Text, "Second line") {
 		t.Errorf("tools = %+v", res)
+	}
+	if res := adminCall(t, g, "gateway_admin_alerts", `{}`); res.IsError || !strings.Contains(res.Content[0].Text, `"alerts":[]`) { // ADM-28（T64）
+		t.Fatalf("alerts = %+v", res)
 	}
 	if res := adminCall(t, g, "gateway_admin_reload_records", `{}`); res.IsError || !strings.Contains(res.Content[0].Text, "records") {
 		t.Errorf("reload_records = %+v", res)

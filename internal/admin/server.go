@@ -57,6 +57,8 @@ type Deps struct {
 	Tools func() ToolsView
 	// MCP 是管理面 MCP 端点（ADM-21，spec/14 §6），挂在 /admin/mcp，经过管理面的全部中间件；为 nil 时不挂载。
 	MCP http.Handler
+	// Alerts 返回当前的池级告警（ADM-26，T64）；为 nil 时端点返回空列表。
+	Alerts func() AlertsView
 }
 
 // Control 让调用方在运行中替换管理面读取的配置（配置热重载，spec/03 §8）。
@@ -213,6 +215,9 @@ func NewServerWithControl(d Deps) (http.Handler, *Control) {
 
 	// 工具列表（ADM-20）与管理面 MCP（ADM-21）
 	mux.HandleFunc("GET /admin/api/tools", s.handleTools)
+
+	// 池级告警（ADM-26）
+	mux.HandleFunc("GET /admin/api/alerts", s.handleAlerts)
 	if d.MCP != nil {
 		mux.Handle("POST /admin/mcp", d.MCP)
 		mux.HandleFunc("/admin/mcp", func(w http.ResponseWriter, r *http.Request) {
@@ -282,6 +287,18 @@ func (s *server) handleTools(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.d.Tools())
+}
+
+// handleAlerts 实现 ADM-26：没有配置告警时返回空列表。
+func (s *server) handleAlerts(w http.ResponseWriter, _ *http.Request) {
+	v := AlertsView{Alerts: []AlertView{}}
+	if s.d.Alerts != nil {
+		v = s.d.Alerts()
+		if v.Alerts == nil {
+			v.Alerts = []AlertView{}
+		}
+	}
+	writeJSON(w, http.StatusOK, v)
 }
 
 // handleReloadRecords 实现 ADM-19。

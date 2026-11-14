@@ -586,6 +586,48 @@ gateway keys import --pool mineru --file mineru_accounts.jsonl --expires-field e
 - `--label-field batch` 用文件中的字段作为标签；管理页面可以按标签筛选。
 - 过期只在内存中判断，不改库中状态：在管理页面或用 `--update` 把过期时间改到将来，Key 立即恢复。
 
+##### 让池跟着账号文件走：`gateway keys sync`
+
+注册程序不断往账号文件里追加新账号、把失效的账号标成 `banned` 时，用 `sync` 代替 `import`（T64）：
+
+```bash
+# 一次性同步：新增、更新过期时间与标签，停用文件中已经没有或 status 不再是 ok 的账号
+gateway keys sync --pool tavily --file tavily_accounts.jsonl --where status=ok --label signup-tavily
+
+# CSV 账号文件可以直接读（第一行是表头）；--watch 让它一直运行，文件有变化就同步
+gateway keys sync --pool mineru --file mineru_accounts.csv --format csv --expires-field expires_at --tz +08:00 \
+  --label signup-mineru --watch 10m
+```
+
+- 只停用**同一池中、标签等于 `--label`** 的 Key；手工添加的 Key、管理员停用的 Key、因 401 隔离的 Key 都不会被动到。
+- 同步停用的 Key 原因显示为 `sync: not in source`；账号回到文件中后自动恢复。
+- 一次要停用超过一半时拒绝执行（文件可能写坏了），确认无误后加 `--force`。
+- 名称编号接在池中已有的最大编号之后，可以放心重复运行。`import` 也支持 `--format csv`。
+- Windows 上可以用「任务计划程序」每隔一段时间运行一次（不加 `--watch`），或者在一个终端里加 `--watch` 常驻。
+
+##### 池子快空时提醒：告警
+
+在池上设置阈值，网关每分钟检查一次；有告警时管理页面概览最上面会显示，`gateway_admin_alerts`（管理面 MCP）可以让 AI 查询，也可以推送到群机器人（T64）：
+
+```yaml
+alerts:
+  check_interval: 1m
+  repeat: 24h                    # 持续告警时每 24 小时再推送一次
+  webhook:
+    url_file: ./secrets/alert_webhook.url   # 文件里只放一行机器人地址（地址常带令牌，不要写进配置）
+    format: feishu               # generic | slack | feishu | wecom | dingtalk
+
+pools:
+  - name: tavily
+    alerts:
+      min_available_keys: 5      # 可用 Key 少于 5 把（一把都没有时为「严重」）
+      min_quota_left: 500        # 全池本期剩余额度少于 500（需要 quota）
+      expiring_within: 72h       # 有 Key 将在 72 小时内过期
+```
+
+- 告警开始、级别变化、恢复时各推送一次；推送失败只记日志，不影响网关。
+- Prometheus 指标：`uaig_pool_available_keys`、`uaig_pool_quota_left`、`uaig_pool_keys_expiring`、`uaig_alerts_firing`。
+
 ##### 周期额度：用满前主动换 Key
 
 账号有「每月 N 次」「每天 N 页」「试用共 N 点」这类额度时，在池上声明，网关会按 Key 统计本期用量，用满就不再选它，直到重置时刻；不会先让上游失败一次（T63）：

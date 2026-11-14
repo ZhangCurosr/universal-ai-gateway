@@ -18,9 +18,21 @@ type KeyGauge struct {
 	BreakerOpen       bool
 }
 
+// PoolGauge 是一个池在抓取时的容量快照（MTR-13，T64）。
+type PoolGauge struct {
+	Pool         string
+	Available    int      // 当前可用的 Key 数（AL-01）
+	HasQuota     bool     // 池声明了周期额度时才输出 QuotaLeft
+	QuotaLeft    int64    // 可用 Key 的剩余额度之和
+	HasExpiry    bool     // 池配置了 expiring_within 时才输出 Expiring
+	Expiring     int      // 将在 expiring_within 内过期的 Key 数
+	FiringAlerts []string // 正在告警的种类（low_keys、low_quota、expiring）
+}
+
 // Gauges 是抓取时动态读取的数据源；任何字段为 nil 时跳过对应指标（spec/15 §2.2）。
 type Gauges struct {
 	Keys         func() []KeyGauge
+	Pools        func() []PoolGauge // T64：池级容量与告警（MTR-13）
 	LedgerQueue  func() (length, capacity int)
 	InFlight     func() (requests, bodyBytes int64)
 	AuditDropped func() int64

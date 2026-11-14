@@ -149,6 +149,38 @@ func (c *Collector) WriteMetrics(w io.Writer, g Gauges) error {
 		}
 	}
 
+	// 4b. 池级容量与告警（MTR-13，T64）
+	if g.Pools != nil {
+		var avail, quota, expiring, firing []string
+		for _, p := range g.Pools() {
+			pl := escapeLabelValue(p.Pool)
+			avail = append(avail, fmt.Sprintf(`uaig_pool_available_keys{pool="%s"} %d`, pl, p.Available))
+			if p.HasQuota {
+				quota = append(quota, fmt.Sprintf(`uaig_pool_quota_left{pool="%s"} %d`, pl, p.QuotaLeft))
+			}
+			if p.HasExpiry {
+				expiring = append(expiring, fmt.Sprintf(`uaig_pool_keys_expiring{pool="%s"} %d`, pl, p.Expiring))
+			}
+			for _, kind := range p.FiringAlerts {
+				firing = append(firing, fmt.Sprintf(`uaig_alerts_firing{kind="%s",pool="%s"} 1`, escapeLabelValue(kind), pl))
+			}
+		}
+		for _, f := range []struct {
+			name, help string
+			samples    []string
+		}{
+			{"uaig_pool_available_keys", "Upstream keys in the pool that can serve requests now (ready, not expired, quota left, breaker not open).", avail},
+			{"uaig_pool_quota_left", "Remaining quota this period summed over the pool's available keys.", quota},
+			{"uaig_pool_keys_expiring", "Keys in the pool that expire within the pool's expiring_within window.", expiring},
+			{"uaig_alerts_firing", "Pool alerts currently firing (1 per pool and kind).", firing},
+		} {
+			if len(f.samples) > 0 {
+				sort.Strings(f.samples)
+				families = append(families, &metricFamily{name: f.name, help: f.help, typ: "gauge", samples: f.samples})
+			}
+		}
+	}
+
 	// 5. uaig_ledger_events_queue_capacity & uaig_ledger_events_queue_length (gauge)
 	if g.LedgerQueue != nil {
 		qLen, qCap := g.LedgerQueue()

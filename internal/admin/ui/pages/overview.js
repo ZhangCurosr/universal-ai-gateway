@@ -1,7 +1,7 @@
-// 概览页：健康状态、24 小时用量、各池 Key 状态、需要处理的事项。
+// 概览页：池级告警（T64）、健康状态、24 小时用量、各池 Key 状态、需要处理的事项。
 
 import { h } from '../dom.js';
-import { t, fmtInt, fmtDuration } from '../i18n.js';
+import { t, fmtInt, fmtDuration, fmtTime } from '../i18n.js';
 import { api } from '../api.js';
 import { formatNano } from '../money.js';
 import { errorBox, pill, card, tableWrap, pageHeader, loading, money } from '../ui.js';
@@ -18,14 +18,15 @@ export async function render(main, ctx) {
   main.replaceChildren(pageHeader(t('ov.title'), ''), loading());
   const now = new Date();
   const from = new Date(now.getTime() - 24 * 3600 * 1000);
-  let health, keyList, items, clientList, cfg;
+  let health, keyList, items, clientList, cfg, poolAlerts;
   try {
-    [health, { keys: keyList }, { items }, { clients: clientList }, cfg] = await Promise.all([
+    [health, { keys: keyList }, { items }, { clients: clientList }, cfg, { alerts: poolAlerts }] = await Promise.all([
       ctx.health(),
       api('GET', '/admin/api/keys'),
       api('GET', '/admin/api/usage?from=' + encodeURIComponent(from.toISOString().replace(/\.\d+Z$/, 'Z')) + '&to=' + encodeURIComponent(now.toISOString().replace(/\.\d+Z$/, 'Z'))),
       api('GET', '/admin/api/clients'),
       ctx.config(),
+      api('GET', '/admin/api/alerts'), // UI-36：池级告警（T64）
     ]);
   } catch (e) {
     main.replaceChildren(pageHeader(t('ov.title'), ''), errorBox(e));
@@ -104,7 +105,16 @@ export async function render(main, ctx) {
           h('span', { class: 'num' }, money(cost)))))
       : h('p', { class: 'muted pad', text: t('ov.noUsage') }));
 
+  // UI-36：池级告警放在最上面；没有告警时不显示
+  const poolAlertCard = poolAlerts.length
+    ? card(t('ov.poolAlerts'), h('ul', { class: 'alert-list' }, poolAlerts.map((a) => alertItem(
+      t(a.level === 'critical' ? 'ov.alertCritical' : 'ov.alertWarning'), a.level === 'critical' ? 'bad' : 'warn',
+      a.pool + ' · ' + t('ov.alert.' + a.kind),
+      t('ov.alertDetail.' + a.kind, { value: fmtInt(a.value), threshold: fmtInt(a.threshold) }) + ' · ' + t('ov.alertSince', { time: fmtTime(a.since) })))))
+    : null;
+
   main.replaceChildren(head,
+    ...(poolAlertCard ? [poolAlertCard] : []), // replaceChildren 会把 null 当成文本
     h('section', { class: 'stats', 'aria-label': t('ov.title') }, stats),
     h('div', { class: 'split' }, h('div', { class: 'split-main' }, poolsCard), h('div', { class: 'split-side' }, attnCard)),
     topCard);

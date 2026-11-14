@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -40,128 +41,275 @@ type importMeta struct {
 	setLabel  bool
 }
 
+const keysUsage = "usage: gateway keys import|sync --pool P --file F [--format jsonl|lines|csv] [--field api_key] [--where k=v]... [--secret-prefix S] [--name-prefix N] [--weight W] [--max-in-flight M] [--expires-field F] [--tz Z] [--include-expired] [--label L | --label-field F] [--update] [--dry-run]\n" +
+	"       sync also takes: --label L (required) [--force] [--watch 10m]"
+
+// importOpts 是 keys import / keys sync 的参数（CLI-09、CLI-11 ~ CLI-15）。
+type importOpts struct {
+	sync                                  bool
+	pool, file, format, field             string
+	prefix, namePrefix                    string
+	weight, maxInFlight                   int
+	expiresField, label, labelField       string
+	loc                                   *time.Location
+	includeExpired, update, dryRun, force bool
+	watch                                 time.Duration
+	conds                                 map[string]string
+	base, token                           string
+}
+
 func cmdKeys(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "import" {
-		fmt.Fprintln(stderr, "usage: gateway keys import --pool P --file F [--format jsonl|lines] [--field api_key] [--where k=v]... [--secret-prefix S] [--name-prefix N] [--weight W] [--max-in-flight M] [--expires-field F] [--tz Z] [--include-expired] [--label L | --label-field F] [--update] [--dry-run]")
+	if len(args) == 0 || (args[0] != "import" && args[0] != "sync") {
+		fmt.Fprintln(stderr, keysUsage)
 		return 2
 	}
-	fs := flag.NewFlagSet("keys import", flag.ContinueOnError)
+	o, code := parseImportOpts(args[0] == "sync", args[1:], getenv, stderr)
+	if o == nil {
+		return code
+	}
+	if o.sync {
+		return runSync(ctx, o, stdout, stderr)
+	}
+	st, code := runImport(ctx, o, stderr, nil)
+	if st == nil {
+		return code
+	}
+	verb := "imported"
+	if o.dryRun {
+		verb = "would import"
+	}
+	fmt.Fprintf(stdout, "%s %d, duplicate %d, skipped %d (filtered or invalid), failed %d, updated %d, expired %d\n",
+		verb, st.imported, st.duplicate, st.skipped, st.failed, st.updated, st.expired)
+	return code
+}
+
+// parseImportOpts 解析参数；返回 nil 时第二个值是退出码。
+func parseImportOpts(sync bool, args []string, getenv func(string) string, stderr io.Writer) (*importOpts, int) {
+	name := "keys import"
+	if sync {
+		name = "keys sync"
+	}
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	pool := fs.String("pool", "", "pool to add the keys to (required)")
 	file := fs.String("file", "", "account file to read (required)")
-	format := fs.String("format", "jsonl", "jsonl (one JSON object per line) or lines (one key per line)")
-	field := fs.String("field", "api_key", "jsonl: field that holds the key")
+	format := fs.String("format", "jsonl", "jsonl (one JSON object per line), lines (one key per line) or csv (first row is the header)")
+	field := fs.String("field", "api_key", "jsonl / csv: field that holds the key")
 	var where whereFlags
-	fs.Var(&where, "where", "jsonl: only import lines whose top-level field equals the value, k=v (repeatable)")
+	fs.Var(&where, "where", "jsonl / csv: only import rows whose field equals the value, k=v (repeatable)")
 	prefix := fs.String("secret-prefix", "", "prepended to every key, e.g. bearer: (spec/08 §8.3.3)")
 	namePrefix := fs.String("name-prefix", "", "key names are <prefix>-001, <prefix>-002, ... (default: the pool name)")
 	weight := fs.Int("weight", 0, "weight for every key (0 = gateway default)")
 	maxInFlight := fs.Int("max-in-flight", 0, "max in-flight requests per key (0 = gateway default)")
-	expiresField := fs.String("expires-field", "", "jsonl: field that holds the expiry time (RFC 3339, Unix seconds, YYYY-MM-DD HH:MM:SS or YYYY-MM-DD); empty value = never expires")
+	expiresField := fs.String("expires-field", "", "jsonl / csv: field that holds the expiry time (RFC 3339, Unix seconds, YYYY-MM-DD HH:MM:SS or YYYY-MM-DD); empty value = never expires")
 	tz := fs.String("tz", "", "time zone for expiry times without one, e.g. +08:00 or UTC (default: this machine's time zone)")
 	includeExpired := fs.Bool("include-expired", false, "also import accounts that have already expired (default: skip them)")
-	label := fs.String("label", "", "source label for every imported key, e.g. signup-2026-11")
-	labelField := fs.String("label-field", "", "jsonl: field whose value becomes the key's label")
-	update := fs.Bool("update", false, "for keys that already exist, update their expiry and label instead of counting them as duplicates")
-	dryRun := fs.Bool("dry-run", false, "only parse and count, do not add keys")
-	if err := fs.Parse(args[1:]); err != nil {
-		return 2
+	label := fs.String("label", "", "source label for every imported key, e.g. signup-2026-11 (sync: required; only keys with this label are disabled or restored)")
+	labelField := fs.String("label-field", "", "jsonl / csv: field whose value becomes the key's label")
+	update := fs.Bool("update", false, "for keys that already exist, update their expiry and label instead of counting them as duplicates (sync: always on)")
+	dryRun := fs.Bool("dry-run", false, "only parse and count, do not change anything")
+	force := fs.Bool("force", false, "sync: disable keys even if more than half of the source's keys would be disabled")
+	watch := fs.Duration("watch", 0, "sync: keep running and sync whenever the file changes, checking at this interval (>= 1m)")
+	if err := fs.Parse(args); err != nil {
+		return nil, 2
 	}
-	if *pool == "" || *file == "" {
-		fmt.Fprintln(stderr, "gateway: --pool and --file are required")
-		return 2
+	o := &importOpts{sync: sync, pool: *pool, file: *file, format: *format, field: *field, prefix: *prefix, namePrefix: *namePrefix,
+		weight: *weight, maxInFlight: *maxInFlight, expiresField: *expiresField, label: *label, labelField: *labelField,
+		includeExpired: *includeExpired, update: *update || sync, dryRun: *dryRun, force: *force, watch: *watch, conds: map[string]string{}}
+	fail := func(msg string) (*importOpts, int) {
+		fmt.Fprintln(stderr, "gateway: "+msg)
+		return nil, 2
 	}
-	if *format != "jsonl" && *format != "lines" {
-		fmt.Fprintln(stderr, "gateway: --format must be jsonl or lines")
-		return 2
-	}
-	if *format == "lines" && (*expiresField != "" || *labelField != "") {
-		fmt.Fprintln(stderr, "gateway: --expires-field and --label-field need --format jsonl")
-		return 2
-	}
-	if *label != "" && *labelField != "" {
-		fmt.Fprintln(stderr, "gateway: use either --label or --label-field, not both")
-		return 2
-	}
-	if len(*label) > maxImportLabelBytes {
-		fmt.Fprintf(stderr, "gateway: --label must be at most %d bytes\n", maxImportLabelBytes)
-		return 2
-	}
-	if *update && *expiresField == "" && *label == "" && *labelField == "" {
-		fmt.Fprintln(stderr, "gateway: --update needs --expires-field, --label or --label-field (there is nothing else to update)")
-		return 2
+	switch {
+	case o.pool == "" || o.file == "":
+		return fail("--pool and --file are required")
+	case o.format != "jsonl" && o.format != "lines" && o.format != "csv":
+		return fail("--format must be jsonl, lines or csv")
+	case o.format == "lines" && (o.expiresField != "" || o.labelField != "" || len(where) > 0):
+		return fail("--expires-field, --label-field and --where need --format jsonl or csv")
+	case o.label != "" && o.labelField != "":
+		return fail("use either --label or --label-field, not both")
+	case len(o.label) > maxImportLabelBytes:
+		return fail(fmt.Sprintf("--label must be at most %d bytes", maxImportLabelBytes))
+	case !sync && o.update && o.expiresField == "" && o.label == "" && o.labelField == "":
+		return fail("--update needs --expires-field, --label or --label-field (there is nothing else to update)")
+	case sync && o.label == "":
+		return fail("keys sync needs --label: only keys with this label are disabled or restored")
+	case !sync && (o.force || o.watch != 0):
+		return fail("--force and --watch are only for keys sync")
+	case o.watch != 0 && o.watch < time.Minute:
+		return fail("--watch must be at least 1m")
 	}
 	loc, err := parseTZ(*tz)
 	if err != nil {
-		fmt.Fprintln(stderr, "gateway:", err)
-		return 2
+		return fail(err.Error())
 	}
-	conds := map[string]string{}
+	o.loc = loc
 	for _, w := range where {
 		k, v, ok := strings.Cut(w, "=")
 		if !ok || k == "" {
-			fmt.Fprintln(stderr, "gateway: --where must look like field=value")
-			return 2
+			return fail("--where must look like field=value")
 		}
-		conds[k] = v
+		o.conds[k] = v
 	}
-	if *namePrefix == "" {
-		*namePrefix = *pool
+	if o.namePrefix == "" {
+		o.namePrefix = o.pool
 	}
+	o.token = getenv(envAdminToken)
+	if o.token == "" && !o.dryRun {
+		return fail(envAdminToken + " is required")
+	}
+	o.base = strings.TrimRight(getenv(envAdminURL), "/")
+	if o.base == "" {
+		o.base = "http://127.0.0.1:8081"
+	}
+	return o, 0
+}
 
-	token := getenv(envAdminToken)
-	if token == "" && !*dryRun {
-		fmt.Fprintln(stderr, "gateway: "+envAdminToken+" is required")
-		return 2
-	}
-	base := strings.TrimRight(getenv(envAdminURL), "/")
-	if base == "" {
-		base = "http://127.0.0.1:8081"
-	}
+// sourceRow 是账号文件中的一行（CSV 已转换为等价的 JSON 对象行）；why 非空表示该行无法读取。
+type sourceRow struct {
+	line int
+	text string
+	why  string
+}
 
-	data, err := readLimited(*file, maxImportFileBytes)
+// loadRows 读取账号文件。CSV（CLI-12）的每个数据行转换为以表头为键的 JSON 对象，之后与 JSONL 走同一条路径。
+func loadRows(path, format string) ([]sourceRow, error) {
+	data, err := readLimited(path, maxImportFileBytes)
+	if err != nil {
+		return nil, err
+	}
+	if format == "csv" {
+		return csvRows(data)
+	}
+	var rows []sourceRow
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 64<<10), maxImportFileBytes)
+	for n := 1; sc.Scan(); n++ {
+		rows = append(rows, sourceRow{line: n, text: sc.Text()})
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+	return rows, nil
+}
+
+// csvRows 实现 CLI-12：第一行是表头；第一行含制表符且不含逗号时用制表符分隔；列数与表头不同的行标记为无法读取。
+func csvRows(data []byte) ([]sourceRow, error) {
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+	first, _, _ := bytes.Cut(data, []byte("\n"))
+	r := csv.NewReader(bytes.NewReader(data))
+	if bytes.Contains(first, []byte("\t")) && !bytes.Contains(first, []byte(",")) {
+		r.Comma = '\t'
+	}
+	r.FieldsPerRecord = -1 // 列数由下面自己检查，便于只跳过该行
+	header, err := r.Read()
+	if errors.Is(err, io.EOF) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read csv header: %w", err)
+	}
+	for i := range header {
+		header[i] = strings.TrimSpace(header[i])
+	}
+	var rows []sourceRow
+	for {
+		rec, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			return rows, nil
+		}
+		if err != nil {
+			var pe *csv.ParseError
+			if errors.As(err, &pe) { // 引号不匹配等：跳过这一行（不回显内容）
+				rows = append(rows, sourceRow{line: pe.StartLine, why: "malformed CSV row"})
+				continue
+			}
+			return nil, fmt.Errorf("read csv: %w", err)
+		}
+		line, _ := r.FieldPos(0)
+		if len(rec) == 1 && strings.TrimSpace(rec[0]) == "" {
+			continue
+		}
+		if len(rec) != len(header) {
+			rows = append(rows, sourceRow{line: line, why: fmt.Sprintf("has %d columns, header has %d", len(rec), len(header))})
+			continue
+		}
+		obj := make(map[string]string, len(header))
+		for i, name := range header {
+			if name != "" {
+				obj[name] = rec[i]
+			}
+		}
+		b, _ := json.Marshal(obj) // map[string]string 必然可以序列化
+		rows = append(rows, sourceRow{line: line, text: string(b)})
+	}
+}
+
+// runImport 逐行导入（CLI-09、CLI-11）。onKey 非 nil 时，每个在源中的行（新增、重复或已更新）对应的 Key ID 都会传给它（CLI-13）。
+// 返回 nil 统计时第二个值是退出码；否则有失败时退出码为 1。
+func runImport(ctx context.Context, o *importOpts, stderr io.Writer, onKey func(id int64)) (*importStats, int) {
+	rows, err := loadRows(o.file, o.format)
 	if err != nil {
 		fmt.Fprintln(stderr, "gateway:", err)
-		return 1
+		return nil, 1
 	}
-
+	format := o.format
+	if format == "csv" {
+		format = "jsonl"
+	}
 	var st importStats
 	client := newCLIHTTPClient()
 	now := time.Now()
 	seq := 0
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	sc.Buffer(make([]byte, 64<<10), maxImportFileBytes)
-	for lineNo := 1; sc.Scan(); lineNo++ {
-		secret, ok, why := extractSecret(sc.Text(), *format, *field, conds)
+	if !o.dryRun { // 名称编号接在池中同前缀已有的最大编号之后，重复运行不会撞名（与 ADM-23 相同）
+		keys, err := listSyncKeys(ctx, o)
+		if err != nil {
+			fmt.Fprintln(stderr, "gateway: list keys:", redactToken(err.Error(), o.token))
+			return nil, 1
+		}
+		for _, k := range keys {
+			if n, ok := keyNameSeq(k.Name, o.namePrefix); ok && k.Pool == o.pool && n > seq {
+				seq = n
+			}
+		}
+	}
+	for _, row := range rows {
+		if row.why != "" {
+			st.skipped++
+			fmt.Fprintf(stderr, "line %d: skipped (%s)\n", row.line, row.why)
+			continue
+		}
+		secret, ok, why := extractSecret(row.text, format, o.field, o.conds)
 		if !ok {
 			if why != "" {
 				st.skipped++
-				fmt.Fprintf(stderr, "line %d: skipped (%s)\n", lineNo, why)
+				fmt.Fprintf(stderr, "line %d: skipped (%s)\n", row.line, why)
 			}
 			continue
 		}
-		meta, why := extractMeta(sc.Text(), *expiresField, *label, *labelField, loc)
+		meta, why := extractMeta(row.text, o.expiresField, o.label, o.labelField, o.loc)
 		if why != "" {
 			st.skipped++
-			fmt.Fprintf(stderr, "line %d: skipped (%s)\n", lineNo, why)
+			fmt.Fprintf(stderr, "line %d: skipped (%s)\n", row.line, why)
 			continue
 		}
-		if !meta.expiresAt.IsZero() && !now.Before(meta.expiresAt) && !*includeExpired {
+		if !meta.expiresAt.IsZero() && !now.Before(meta.expiresAt) && !o.includeExpired {
 			st.expired++
-			fmt.Fprintf(stderr, "line %d: skipped (expired)\n", lineNo)
+			fmt.Fprintf(stderr, "line %d: skipped (expired)\n", row.line)
 			continue
 		}
 		seq++
-		if *dryRun {
+		if o.dryRun {
 			st.imported++
 			continue
 		}
-		body := map[string]any{"pool": *pool, "name": fmt.Sprintf("%s-%03d", *namePrefix, seq), "secret": *prefix + secret}
-		if *weight > 0 {
-			body["weight"] = *weight
+		body := map[string]any{"pool": o.pool, "name": fmt.Sprintf("%s-%03d", o.namePrefix, seq), "secret": o.prefix + secret}
+		if o.weight > 0 {
+			body["weight"] = o.weight
 		}
-		if *maxInFlight > 0 {
-			body["max_in_flight"] = *maxInFlight
+		if o.maxInFlight > 0 {
+			body["max_in_flight"] = o.maxInFlight
 		}
 		if !meta.expiresAt.IsZero() {
 			body["expires_at"] = meta.expiresAt.Format(time.RFC3339)
@@ -170,47 +318,78 @@ func cmdKeys(ctx context.Context, args []string, getenv func(string) string, std
 			body["label"] = meta.label
 		}
 		raw, _ := json.Marshal(body) // 只含字符串与整数，必然可以序列化
-		status, resp, err := adminRequest(ctx, client, http.MethodPost, base+"/admin/api/keys", token, raw)
+		status, resp, err := adminRequest(ctx, client, http.MethodPost, o.base+"/admin/api/keys", o.token, raw)
 		switch {
 		case err != nil:
 			st.failed++
-			fmt.Fprintf(stderr, "line %d: failed (%s)\n", lineNo, redactToken(err.Error(), token))
+			fmt.Fprintf(stderr, "line %d: failed (%s)\n", row.line, redactToken(err.Error(), o.token))
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return 1
+				return &st, 1
 			}
 		case status == http.StatusCreated:
 			st.imported++
-		case status == http.StatusConflict && *update:
-			if why := updateExisting(ctx, client, base, token, resp, meta); why != "" {
+			if onKey != nil {
+				onKey(createdKeyID(resp))
+			}
+		case status == http.StatusConflict && o.update:
+			if why := updateExisting(ctx, client, o.base, o.token, resp, meta); why != "" {
 				st.failed++
-				fmt.Fprintf(stderr, "line %d: failed (%s)\n", lineNo, redactToken(why, token))
+				fmt.Fprintf(stderr, "line %d: failed (%s)\n", row.line, redactToken(why, o.token))
 				if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					return 1
+					return &st, 1
 				}
 			} else {
 				st.updated++
+				if onKey != nil {
+					onKey(conflictKeyID(resp))
+				}
 			}
 		case status == http.StatusConflict:
 			st.duplicate++
+			if onKey != nil {
+				onKey(conflictKeyID(resp))
+			}
 		default:
 			st.failed++
-			fmt.Fprintf(stderr, "line %d: failed (HTTP %d: %s)\n", lineNo, status, apiErrorMessage(resp))
+			fmt.Fprintf(stderr, "line %d: failed (HTTP %d: %s)\n", row.line, status, apiErrorMessage(resp))
 		}
 	}
-	if err := sc.Err(); err != nil {
-		fmt.Fprintln(stderr, "gateway: read file:", err)
-		return 1
-	}
-	verb := "imported"
-	if *dryRun {
-		verb = "would import"
-	}
-	fmt.Fprintf(stdout, "%s %d, duplicate %d, skipped %d (filtered or invalid), failed %d, updated %d, expired %d\n",
-		verb, st.imported, st.duplicate, st.skipped, st.failed, st.updated, st.expired)
 	if st.failed > 0 {
-		return 1
+		return &st, 1
 	}
-	return 0
+	return &st, 0
+}
+
+// keyNameSeq 解析 "<prefix>-<数字>" 形式的名称中的编号。
+func keyNameSeq(name, prefix string) (int, bool) {
+	rest, ok := strings.CutPrefix(name, prefix+"-")
+	if !ok || rest == "" || strings.Trim(rest, "0123456789") != "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest)
+	return n, err == nil
+}
+
+// createdKeyID 取 201 响应中的 key.id；解析失败返回 0。
+func createdKeyID(body []byte) int64 {
+	var r struct {
+		Key struct {
+			ID int64 `json:"id"`
+		} `json:"key"`
+	}
+	_ = json.Unmarshal(body, &r) // 失败时为 0，调用方忽略
+	return r.Key.ID
+}
+
+// conflictKeyID 取 409 响应中已存在 Key 的 id（T62）；没有时返回 0。
+func conflictKeyID(body []byte) int64 {
+	var e struct {
+		Error struct {
+			KeyID int64 `json:"key_id"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(body, &e) // 失败时为 0，调用方忽略
+	return e.Error.KeyID
 }
 
 // updateExisting 用 409 响应中的 key_id 更新已存在 Key 的过期时间与标签（T62 --update）。

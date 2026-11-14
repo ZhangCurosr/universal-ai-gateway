@@ -225,7 +225,10 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
-	return c.validateQuotas() // CFG-21：需要先知道各池服务的计量单位
+	if err := c.validateQuotas(); err != nil { // CFG-21：需要先知道各池服务的计量单位
+		return err
+	}
+	return c.validateAlerts() // CFG-22
 }
 
 var (

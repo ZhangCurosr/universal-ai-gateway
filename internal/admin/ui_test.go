@@ -472,3 +472,25 @@ func TestUIQuotaState(t *testing.T) {
 		}
 	}
 }
+
+// UI-36：概览读取池级告警并放在最上面；文案中英文齐全。
+func TestUIPoolAlerts(t *testing.T) {
+	b, err := fs.ReadFile(uiFiles, "ui/pages/overview.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ov := string(b)
+	if !strings.Contains(ov, "api('GET', '/admin/api/alerts')") || !strings.Contains(ov, "poolAlertCard ? [poolAlertCard] : []") {
+		t.Error("overview.js does not show pool alerts")
+	}
+	b, err = fs.ReadFile(uiFiles, "ui/i18n.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"ov.poolAlerts", "ov.alertCritical", "ov.alertWarning", "ov.alertSince",
+		"ov.alert.low_keys", "ov.alert.low_quota", "ov.alert.expiring", "ov.alertDetail.low_keys", "ov.alertDetail.low_quota", "ov.alertDetail.expiring"} {
+		if strings.Count(string(b), "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}

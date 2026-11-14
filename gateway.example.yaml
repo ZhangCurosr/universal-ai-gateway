@@ -47,6 +47,14 @@ audit:
 # translation:
 #   unknown_fields: reject
 
+# 池级告警（T64）：池上的 alerts 设置阈值；webhook 可选，地址放在文件里。
+# alerts:
+#   check_interval: 1m
+#   repeat: 24h
+#   webhook:
+#     url_file: ./secrets/alert_webhook.url
+#     format: feishu                    # generic | slack | feishu | wecom | dingtalk
+
 pools:
   - name: anthropic-main
     protocol: anthropic
@@ -119,6 +127,10 @@ models:
 #       period: month                   # day | week | month | total
 #       reset: { day: 1, time: "00:00", tz: "+08:00" }
 #       strategy: drain                 # drain：一把用完再换下一把；spread：平均分摊
+#     alerts:                           # 池级告警（T64）
+#       min_available_keys: 5
+#       min_quota_left: 500
+#       expiring_within: 72h
 #   - name: mineru
 #     protocol: mineru                  # 对接 MinerU 精准解析 API v4（spec/08 §8.2.1）；客户端提交文件 URL
 #     base_url: "https://mineru.net"

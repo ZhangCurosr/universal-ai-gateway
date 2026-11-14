@@ -3,9 +3,12 @@ package admin
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
+	"github.com/ZhangCurosr/universal-ai-gateway/internal/obs"
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/scheduler"
 )
 
@@ -54,4 +57,29 @@ func TestKeyViewQuota(t *testing.T) {
 func jsonID(id int64) string {
 	b, _ := json.Marshal(id) // 整数必然可以序列化
 	return string(b)
+}
+
+// ADM-26：没有告警来源时返回空数组；有来源时原样返回
+func TestAlertsEndpoint(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.req("GET", "/admin/api/alerts", nil, env.adminTok)
+	if rec.Code != http.StatusOK || rec.Body.String() != "{\"alerts\":[]}\n" {
+		t.Fatalf("no source: %d %q", rec.Code, rec.Body.String())
+	}
+	h := NewServer(Deps{Config: env.cfg, Store: env.store, Keyring: env.keyring, Index: env.index, Reloader: env.reloader,
+		Ledger: env.ledger, Scheduler: env.scheduler, Logger: obs.Discard(),
+		Alerts: func() AlertsView {
+			return AlertsView{Alerts: []AlertView{{Pool: "p", Kind: "low_keys", Level: "critical"}}, CheckedAt: "2026-11-08T12:00:00Z"}
+		}})
+	r := httptest.NewRequest("GET", "/admin/api/alerts", nil)
+	r.RemoteAddr = "127.0.0.1:1"
+	r.Header.Set("Authorization", "Bearer "+env.adminTok)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"kind":"low_keys"`) || !strings.Contains(w.Body.String(), `"checked_at"`) {
+		t.Fatalf("with source: %d %s", w.Code, w.Body.String())
+	}
+	if rec := env.req("GET", "/admin/api/alerts", nil, ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: %d", rec.Code)
+	}
 }

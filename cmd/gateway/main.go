@@ -117,5 +117,6 @@ client commands (talk to a running gateway; env UAIG_URL, UAIG_TOKEN):
 admin commands (env UAIG_ADMIN_URL, UAIG_ADMIN_TOKEN):
   gateway reload [--dry-run] [--json]          re-read the config file of the running gateway
   gateway keys import --pool P --file F ...     add upstream keys from a local file (keys never printed)
+  gateway keys sync --pool P --file F --label L [--watch 10m]   keep labeled keys in step with the file
   gateway admin-mcp                            run the admin MCP server on stdio`)
 }
