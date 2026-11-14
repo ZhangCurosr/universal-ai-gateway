@@ -350,6 +350,8 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T64 | Key 补充与告警：`gateway keys sync` 同步账号文件（含 CSV），可用 Key 或剩余额度低于阈值时告警（指标、管理面 MCP、Web UI）、快过期提醒（[说明](../docs/handoff/T64_key_sync_alerts.md)） | T62 | 是（已批准） | `DONE` |
 | T65 | Key 视图：Web UI 与管理面 MCP 展示每 Key 用量、剩余额度、失败率、过期时间与池剩余容量（[说明](../docs/handoff/T65_key_views.md)） | T63 | 是（已批准） | `DONE` |
 | T69 | 文件中转：客户端（含 MCP 工具）上传一次得到文件 ID，任何工具用 ID 引用文件；有大小、数量与保存时间上限（[说明](../docs/handoff/T69_file_relay.md)） | T67 | 是（已批准） | `DONE` |
+| T71 | 网页端局域网共享：状态与开关（写回 `server.data_listen` 并重载）、访问地址、防火墙命令、另一台设备的配置片段（[说明](../docs/handoff/T71_lan_sharing.md)） | — | 是（已批准） | `DONE` |
+| T72 | 网页端管理池与服务：新建、编辑、删除池与服务，写回配置文件并热重载（复用 T71 的配置写回） | T71 | 是 | `TODO` |
 
 ---
 

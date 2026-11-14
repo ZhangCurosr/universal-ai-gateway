@@ -72,6 +72,8 @@ curl -s -X POST http://127.0.0.1:8081/admin/api/clients \
 
 ### 2.1 局域网（形态 B）
 
+> 最简单的做法：打开管理页面的「局域网共享」，那里显示是否已开放、本机的局域网地址、可以复制的防火墙命令和另一台设备的配置片段，并可以一键开关（会写回 `gateway.yaml` 的 `server.data_listen`，原文件备份为 `.bak`，数据面短暂重启）。下面是手工做法。
+
 1. 在 `gateway.yaml` 中设置 `server.data_listen: "0.0.0.0:8080"`。
 2. 在防火墙中放行入站 TCP 8080：
    - Windows（只放行「专用网络」）：

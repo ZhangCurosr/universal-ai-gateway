@@ -209,3 +209,15 @@ button, input, select { font: inherit; color: inherit; }
   .nav-links { flex-direction: row; flex-wrap: wrap; }
   .nav-foot { margin-top: 0; }
 }
+
+/* 局域网共享页（UI-38，T71） */
+.btn-sm { min-height: 30px; padding: 0 10px; font-size: 13px; }
+.share-status { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.share-status .btn { margin-left: auto; }
+.share-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.share-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.share-pick { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.share-pick select { flex: 1 1 260px; }
+.snippet { display: flex; gap: 8px; align-items: flex-start; }
+.snippet pre { flex: 1; margin: 0; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; white-space: pre-wrap; word-break: break-all; }
+

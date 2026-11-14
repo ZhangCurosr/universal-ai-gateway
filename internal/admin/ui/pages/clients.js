@@ -87,6 +87,12 @@ export async function render(main, ctx) {
   draw();
 
   main.replaceChildren(head, msg, filters, card(null, tableWrap(table)), foot, h('p', { class: 'muted small', text: t('cl.note') }));
+  // UI-38：从「局域网共享」页跳来（#/clients?new=<名称>）时直接打开新建表单并预填名称
+  const want = new URLSearchParams(location.hash.split('?')[1] || '').get('new');
+  if (want) {
+    history.replaceState(null, '', '#/clients');
+    clientForm(null, models, showError, reload, want.slice(0, 64));
+  }
 }
 
 function th(text, cls) {
@@ -151,10 +157,10 @@ function showToken(name, token, onDone) {
 }
 
 // clientForm 新建（c 为 null）或编辑客户端。
-function clientForm(c, models, showError, reload) {
+function clientForm(c, models, showError, reload, prefillName) {
   const editing = !!c;
   const err = h('div', { 'aria-live': 'polite' });
-  const name = input({ type: 'text', maxlength: '64', value: editing ? c.name : '' });
+  const name = input({ type: 'text', maxlength: '64', value: editing ? c.name : (prefillName || '') });
   const role = select([{ value: 'user', label: t('cl.roleUser') }, { value: 'admin', label: t('cl.roleAdmin') }], editing ? c.role : 'user');
   const unlimited = h('input', { type: 'checkbox', checked: editing ? c.quota_unlimited : false });
   const quota = input({ type: 'text', inputmode: 'decimal', value: editing ? nanoToInput(c.quota_nano_usd) : '0' });

@@ -205,6 +205,7 @@ models:                           # 客户端可见的「服务」：大模型�
 | CFG-21 | `pools[].quota` 可选（T63），是池级周期额度：`unit` 匹配 `[a-z][a-z0-9_]*` 且出现在该池至少一个服务的 `price` 中；`limit` ≥ 1；`period` ∈ `day` / `week` / `month` / `total`；`reset.time` 为 `HH:MM`（缺省 `00:00`）；`reset.weekday`（`mon` ~ `sun`）只用于且必须用于 `week`；`reset.day`（1 ~ 31，超过当月天数取月末）只用于且必须用于 `month`；`day` 只接受 `reset.time` 与 `reset.tz`；`reset.tz` 为 `±HH:MM` 或 `UTC`（缺省 UTC，与 CFG-20 的 `cooldown_until` 相同）；`total` 不允许写 `reset`；`strategy` ∈ `drain` / `spread`（缺省 `drain`）。额度的增删改属于池的变化，热重载生效 |
 | CFG-22 | `alerts` 可选（T64）：`check_interval` 缺省 1m、≥ 10s；`repeat` 缺省 24h、≥ 1m；`webhook` 存在时 `url_file` 必填，`format` ∈ `generic` / `slack` / `feishu` / `wecom` / `dingtalk`（缺省 `generic`）；地址文件在启动时读取，去掉首尾空白后必须是一个 http(s) URL，否则拒绝启动。`pools[].alerts` 可选：`min_available_keys` ≥ 1、`min_quota_left` ≥ 1（该池必须声明 `quota`）、`expiring_within` ≥ 1h，至少设置一项。`alerts` 段与池的告警设置都可以热重载 |
 | CFG-23 | `files` 可选（T69，spec/09 §7）：`max_file_bytes` > 0 且 ≤ `limits.max_stream_body_bytes`；`max_files_per_client` > 0；`max_bytes_per_client` ≥ `max_file_bytes`；`max_total_bytes` ≥ `max_bytes_per_client`；`default_ttl` ≥ 1m；`max_ttl` ≥ `default_ttl`。`models[].tools[].file: {arg, name_query?}`（FS-30）：只允许 `POST` / `PUT`，`arg` 匹配 `^[A-Za-z_][A-Za-z0-9_]*$` 且不是路径占位符，`name_query` 匹配 `^[A-Za-z0-9_.-]{1,64}$`；声明了 `file` 而 `files.enabled` 为 false → 拒绝启动（FS-31）。`files` 段改动需要重启 |
+| CFG-24 | 配置文件可以由管理页面修改（T71，spec/09 §8 LAN-03）：只替换被修改字段的值文本，注释、空行与其他内容不变；写入前用 `Parse` 校验，原文件备份为 `<文件名>.bak`，以临时文件 + rename 写入；随后的重载失败时恢复原文件。目前只用于 `server.data_listen` |
 
 ## 5. 启动与关闭顺序（`cmd/gateway`）
 

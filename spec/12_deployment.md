@@ -26,6 +26,7 @@
    - Claude Code：`ANTHROPIC_BASE_URL=http://<网关IP>:8080`、`ANTHROPIC_AUTH_TOKEN=uai_live_...`
    - OpenAI SDK：`base_url="http://<网关IP>:8080/v1"`
 4. 风险提示：局域网内是明文 HTTP，同网段设备可以嗅探到 Token。公共或不可信网络请改用形态 C（可以是内网域名 + 自签证书）。
+5. 也可以在管理页面的「局域网共享」中查看访问地址、复制防火墙命令和客户端配置，并一键开关（T71，spec/09 §8）。
 
 ## 3. 域名对外（形态 C）
 

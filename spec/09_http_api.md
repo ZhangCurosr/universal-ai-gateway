@@ -282,6 +282,7 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 | UI-35 | Key 页（T63）：声明了额度的池增加「本期用量」列（`已用 / 上限` 与进度条，≥ 80% 黄色、用满红色；`title` 为重置时刻）；`exhausted` 显示「额度用尽」（黄色），原因「{time} 重置后恢复」，`total` 周期为「额度已用完，不会重置」。概览把 `exhausted` 计入冷却中、`expired` 计入已停用 |
 | UI-36 | 概览页（T64）：有池级告警时在最上面显示「Key 池告警」卡片（`critical` 红色、`warning` 黄色；池名与种类、数值与阈值、开始时间）；没有告警时不显示这一块 |
 | UI-37 | Key 页（T65）：与 Key 列表一起（每 10 秒）请求 ADM-29 与 ADM-30，失败时只隐藏以下内容。每个池卡片标题下一行摘要：「可用 a / n」；有额度时加「剩余 N 单位」「每小时约 N 单位」（速度 > 0 时）以及「预计 {时间} 用完」（黄色）或「能撑到 {时间} 重置」或「按当前用法不会用完」；有 7 天内过期的 Key 时加「7 天内过期 N 把」；没有可用 Key 时整行红色。表格增加「24 小时」列：`请求数 · 失败率`（失败率 ≥ 20% 黄色、≥ 50% 红色；没有尝试时为「—」），`title` 列出尝试数、各类失败次数与最近一次失败 |
+| UI-38 | 「局域网共享」页（T71，#/share）：状态（已对局域网开放 / 只允许本机访问、当前监听地址）与开关（二次确认，说明会写回配置文件并短暂重启；重启期间按 UI-31 等待记录）；开放时显示明文 HTTP 的风险提示；说明管理页面只能在本机打开。访问地址（LAN-01 的 `url`，带复制按钮，标出网卡名）。防火墙命令（Windows：`New-NetFirewallRule … -Profile Private`；其他系统：ufw 示例），网关不自动修改。另一台设备的配置片段（环境变量、Claude Code、OpenAI SDK、MCP），Token 一律是 `<Token>` 占位符；按钮「为这台设备创建 Token」跳到 `#/clients?new=lan-device`，客户端页据此打开新建表单并预填名称（Token 仍只在创建时显示一次）。配置文件不可写时隐藏开关并提示手工修改 |
 | UI-31 | 「配置」页：按钮「预览重载」（`dry_run: true`）与「应用重载」（二次确认）；显示模式、增删改的池与服务、变化的设置、需要重启的字段、警告；收到 202 时显示「正在重启」，每秒查询 `GET reload` 直到该记录不再是 `restarting`（最多 2 分钟；重启期间的请求失败视为尚未就绪）；错误按 UI-16 显示。下方是最近 20 次重载记录。 |
 | UI-32 | 「配置」页的服务与工具：按 `GET config` 列出池与服务，按 `GET tools` 列出工具（名称、所属服务、只读与否、说明首行）与当前的 `tool_mode`。全部用 `textContent` 写入（UI-12）。 |
 
@@ -338,3 +339,16 @@ func IPRateLimit(l *ratelimit.Limiter, rpm int) func(http.Handler) http.Handler
 |:--|:--|
 | FS-50 | `GET /admin/api/files`：`{"enabled", "used": {files, bytes}, "clients": [{client_id, files, bytes}], "expiring": [{id, client_id, size, expires_at}], "limits"}`；`expiring` 是最近到期的 20 个文件，不含文件名。没有开启时只有 `{"enabled": false}`。`DELETE /admin/api/files/{id}`：管理员删除任意文件 |
 | FS-51 | 概览页的指标行增加「文件中转」：`已用字节 / max_total_bytes` 与文件数，超过 80% 黄色；`files.enabled` 为 false 时不显示 |
+
+## 8. 局域网共享（任务卡 T71）
+
+管理页面「局域网共享」（UI-38）显示数据面是否对局域网开放、本机的局域网地址、防火墙命令与另一台设备的配置片段，并可以一键开关。只共享数据面，管理面仍然只监听本机。设计说明见 [T71_lan_sharing.md](../docs/handoff/T71_lan_sharing.md)。
+
+| 编号 | 规则 |
+|:--|:--|
+| LAN-01 | `GET /admin/api/share`：`{"listen": "0.0.0.0:8080", "port": 8080, "lan_open": true, "addresses": [{"ip": "192.168.1.23", "interface": "WLAN", "url": "http://192.168.1.23:8080"}], "os": "windows", "config_writable": true, "url_template": "http://<IP>:8080"}`（地址由服务端拼好，页面脚本中不出现绝对 URL，UI 静态规则）。地址来自 `net.Interfaces()`，只取启用的、非回环、非链路本地的 IPv4，按网段排序（192.168/16、172.16/12、10/8 在前，其他如 VPN 的 100.64/10 在后；第一项是页面的缺省选择）；`lan_open` 按 §2 第 1 条判断。`config_writable` 为 false 时（没有配置文件路径，或文件不可写）页面隐藏开关，提示手工修改 |
+| LAN-02 | `POST /admin/api/share`，请求体 `{"lan_open": true|false}`（缺少 → 400；不能修改配置文件 → 409）：把配置文件中的 `server.data_listen` 改为 `0.0.0.0:<端口>` 或 `127.0.0.1:<端口>`（端口不变），然后按 HR 规则重载（监听地址变化 → 进程内重启），成功时返回 `{"changed": true, "listen", "reload": <ADM-18 的响应>}`，状态码同重载（重启为 202）。运行中的监听地址已经是目标状态时返回 200 `{"changed": false}`，不写文件；文件已是目标值但还没生效时直接重载。同一端口先绑定新地址再关闭旧地址（§2.3）：Windows 支持；不支持的系统上预检失败，按 LAN-03 恢复文件并返回 422 |
+| LAN-03 | 写配置文件：用 `yaml.v3` 定位字段，只替换该值的原文（不重新序列化整个文件），**保留注释与其他内容的原样**；文件里没有 `server.data_listen` 时在 `server:` 下追加（没有 `server:` 就新建）。写入前先用 `config.Parse` 校验新内容；先备份为 `<文件名>.bak`（覆盖上一份备份），再写临时文件并 `rename`。重载失败时把备份写回并返回错误（网关继续用原来的监听地址） |
+| LAN-04 | 每次修改记 Info 日志 `config edited by admin`（字段名、旧值、新值），并出现在重载记录中（ADM-19） |
+| LAN-05 | 修改配置文件的代码放在 `internal/config`（`yaml.v3` 只允许在这里，spec/01 §4）：`config.SetScalar(data, keys, value)`（只替换这一处文本）、`config.EditFile(path, keys, value)`（校验、备份、原子写入）、`config.WriteFileAtomic`，供本卡与后续「网页管理池与服务」复用；`admin` 通过 `Deps` 注入的函数调用，不直接接触文件路径 |
+| LAN-06 | 管理面本身不受影响：仍然只监听本机（CFG-02、DEP-03）。页面上说明：其他设备只能用网关的 AI 能力，不能打开管理页面 |

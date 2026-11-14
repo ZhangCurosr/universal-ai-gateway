@@ -39,6 +39,12 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	return newTestEnvWith(t, nil)
+}
+
+// newTestEnvWith 与 newTestEnv 相同，构造服务端之前可以用 mutate 修改依赖。
+func newTestEnvWith(t *testing.T, mutate func(*Deps)) *testEnv {
+	t.Helper()
 	ctx := context.Background()
 	now := time.Date(2026, 11, 8, 12, 0, 0, 0, time.UTC)
 	nowPtr := &now
@@ -126,6 +132,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		Now:       nowFunc,
 	}
 
+	if mutate != nil {
+		mutate(&deps)
+	}
 	srv := NewServer(deps)
 	return &testEnv{
 		server:    srv,

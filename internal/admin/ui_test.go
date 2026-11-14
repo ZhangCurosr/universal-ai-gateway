@@ -521,3 +521,34 @@ func TestUIKeyViews(t *testing.T) {
 		}
 	}
 }
+
+// UI-38：局域网共享页；配置片段只有 <Token> 占位符；从共享页跳到客户端页预填名称；文案中英文齐全。
+func TestUIShare(t *testing.T) {
+	read := func(name string) string {
+		b, err := fs.ReadFile(uiFiles, "ui/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	app, share, clients, i18n := read("app.js"), read("pages/share.js"), read("pages/clients.js"), read("i18n.js")
+	if !strings.Contains(app, "share: { mod: share") {
+		t.Error("app.js has no share page")
+	}
+	for _, want := range []string{"api('GET', '/admin/api/share')", "api('POST', '/admin/api/share'", "UAIG_TOKEN=<Token>", "#/clients?new=lan-device"} {
+		if !strings.Contains(share, want) {
+			t.Errorf("share.js lacks %q", want)
+		}
+	}
+	if strings.Contains(share, "uai_live_") || strings.Contains(share, "getToken") {
+		t.Error("share.js must not show a real token")
+	}
+	if !strings.Contains(clients, "get('new')") {
+		t.Error("clients.js does not open a prefilled form")
+	}
+	for _, k := range []string{"nav.share", "sh.title", "sh.open", "sh.closed", "sh.turnOn", "sh.turnOff", "sh.confirmOn", "sh.confirmOff", "sh.plainHttp", "sh.fwWindows", "sh.createToken"} {
+		if strings.Count(i18n, "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}
