@@ -7,3 +7,4 @@ gateway.yaml
 *.db-wal
 *.db-shm
 /gateway.exe
+__pycache__/

@@ -35,6 +35,8 @@ func main() {
 		{name: "go vet", args: []string{"go", "vet", "./..."}},
 		{name: "go build", args: []string{"go", "build", "./..."}},
 		{name: "zero-CGO build", args: []string{"go", "build", "-o", os.DevNull, "./cmd/gateway"}, env: []string{"CGO_ENABLED=0"}},
+		// 技能：.claude/skills 必须是 .agents/skills 的副本（tools/skillsync）
+		{name: "skills in sync", args: []string{"go", "run", "./tools/skillsync", "-check"}},
 	}
 	testArgs := []string{"go", "test", "-count=1", "./..."}
 	race := !*short && raceSupported()

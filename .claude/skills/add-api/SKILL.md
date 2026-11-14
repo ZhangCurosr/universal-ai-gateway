@@ -34,7 +34,7 @@ description: 把一个外部 REST API 接入 universal-ai-gateway：查阅官方
 
 需要弄清楚：
 
-- **base URL**（含版本前缀，例如 `https://api.example.com/v2`）；
+- **base URL**（含版本前缀，例如 `https://api.example.com/v2`）。文档里只有一个时直接用；**有多个可选地址时先问用户，不要自己挑**：国内与海外节点（如 `api.example.cn` / `api.example.com`）、按地区划分的地址（`us.` / `eu.`）、沙箱与正式环境、自托管实例的地址、账号专属的子域名。问的时候列出文档中的候选地址与各自的用途；用户的 Key 是在哪个站点注册的，通常就决定了用哪个地址；
 - **鉴权方式**，对应 Key 的写法（spec/08 §8.3.3）：`Authorization: Bearer` → `bearer:`；自定义头 → `header:<名字>:`；查询参数 → `query:<名字>:`；HTTP Basic → `basic:<用户>:<密码>`。签名类（AWS SigV4、HMAC）与需要自动刷新的 OAuth **不支持**，遇到就停下告诉用户；
 - **计费**：缺省按次计费（`requests`），问用户每次调用的价格（不知道就用 `"0"`）。文档写明按页数、积分、字符数计费，且响应或请求里有对应字段时，用 `api.endpoints[].usage` 声明（第 4 步）；
 - **错误码**：额度用完、Token 错误、任务不存在等是不是放在 HTTP 200 的响应体里（例如 `{"code": -60018}`）；额度什么时候重置；
