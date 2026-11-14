@@ -207,6 +207,8 @@ curl -X POST http://127.0.0.1:8081/admin/api/clients \
 
 ### 5.4 下游客户端统一无缝接入示例
 
+> 给 AI 编程助手的一页接入说明：[docs/AI_QUICKSTART.md](docs/AI_QUICKSTART.md)；Claude Code 技能：[docs/skills/use-gateway](docs/skills/use-gateway/SKILL.md)。
+
 #### 示例 A：配置 Claude Code CLI
 只需将基础 URL 与 API 密钥指向本地或远程网关。注意 Claude Code 会自行拼接 `/v1/messages`，因此 `ANTHROPIC_BASE_URL` **不要带 `/v1`**；
 `ANTHROPIC_AUTH_TOKEN` 以 `Authorization: Bearer` 发送，若改用 `ANTHROPIC_API_KEY` 则以 `x-api-key` 头发送，网关两者都接受：
