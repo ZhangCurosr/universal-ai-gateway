@@ -57,6 +57,7 @@ go run ./tools/check
 ## 6. 提交（只在用户要求时）
 
 - 一张卡一个提交：`feat(scope): Txx 说明`，类型取 feat / fix / test / docs / refactor / chore；结尾加上环境要求的 `Co-Authored-By` 行。
+- **一张卡完成后先请用户提交，再开始下一张**；多张卡的改动混在工作区里时才需要下面的拆分步骤。
 - 不 push，除非用户要求；不 amend、不 rebase、不 reset --hard。
 - 提交前 `git status` 确认没有 `gateway.exe`、日志、`data/`、`secrets/`、账号文件。
 
