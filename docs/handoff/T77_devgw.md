@@ -52,3 +52,21 @@ go run ./tools/devgw --config <yaml> [--fake openai,anthropic,responses] [--dir 
 | 1 | 放在哪里 | A. `tools/devgw`（开发工具，不进发布包）；B. 做成 `gateway dev` 子命令 | **A**：只给开发与实测用，不应出现在用户的程序里；假上游也不该打包进去 |
 | 2 | 假上游覆盖哪些协议 | A. openai、anthropic、responses 三种；B. 再加 gemini、tavily、mineru | **A**：大模型 CLI 的兼容问题都出在这三种；搜索与文档解析有真实 Key，可以直接实测 |
 | 3 | Token 怎么交给使用者 | A. 写到权限 0600 的文件，终端只给路径；B. 打印到终端 | **A**：终端输出常被复制进对话或日志 |
+
+## 7. 实现说明（2026-11-14）
+
+- 文件：`tools/devgw/main.go`（编译、启动、Token、停止与清理）、`config.go`（改写配置副本，复用 `internal/config` 的逐行编辑函数，注释与其余内容不变）、`fake.go`（三种假上游）及测试。
+- 规格之外的三处补充（实现中发现，保守做法）：
+  1. **占位 Key**：池里没有 Key 时网关返回 503，所以给每个 `base_url` 为 `fake:` 的池自动加一个占位 Key（名称 `devgw-fake-<池>`），假上游不校验它。
+  2. **停止文件**：后台运行（AI 代理、Windows 上无法发送 `Ctrl+C`）时创建 `<目录>/stop` 即可停止并清理；直接杀 `devgw` 进程会留下网关子进程。
+  3. **监听地址**：配置副本中 `data_listen`、`admin_listen` 的主机一律改为 `127.0.0.1`（端口不变），即使原配置写的是 `0.0.0.0`。
+- `--dir` 必须不存在或为空（退出时整个删除，避免误删）；`gateway.log` 中引导 Token 那一行替换为 `<written to admin.token>`。
+- `base_url: fake:<名字>` 与池协议不匹配（如 `fake:openai` 用在 `anthropic` 池）、或没有用 `--fake` 启动对应假上游时，启动前报错。
+
+## 8. 实测结果（2026-11-14，本机 Windows）
+
+- `go run ./tools/devgw --config t77.yaml --fake openai,anthropic,responses`（后台运行）：约 1 分钟编译并就绪；终端输出只有地址、Token 文件路径与环境变量命令，没有 Token。
+- 脚本 9/9 通过：openai 非流式 / 流式回显、anthropic 流式、responses 流式与工具调用、anthropic → openai 转译、三个占位 Key、`gateway.log` 与 `fake.log` 中没有 Token、`fake.log` 每请求一行。
+- 真实 CLI：Claude Code（`ANTHROPIC_BASE_URL` → `fake-claude`）回答 `hello-from-claude`；Codex（`wire_api="responses"` → `fake-resp`）回答 `hello-from-codex`。`fake.log` 记录到 Claude Code 的角色序列 `user, system`、Codex 的 `developer, developer, user, user`。
+- 实测中发现并修复：Claude Code 在用户消息前插入提醒文本块，`echo:` 改为按文本块判断（最后一条用户消息的任一文本块以 `echo:` 开头）。
+- 创建 `<目录>/stop` 后两次都正常停止：目录被删除，没有残留的 `gateway.exe` 进程；用户的配置文件未改动。

@@ -356,7 +356,7 @@ M2：T20 → T21 → T22，T23 → T24，T21 → T25 → T26，T25 + T23 → T27
 | T74 | 管理面命令行 `gateway admin tools` / `gateway admin call`：管理面 MCP 工具的命令行入口，写入类需 `--yes`（[说明](../docs/handoff/T74_admin_cli.md)） | T58 | 是（已批准） | `DONE` |
 | T75 | 转译兼容：Anthropic `messages[]` 中的 system 消息（Claude Code 2.1）、Responses message 项总是带 `content`（Codex）（[说明](../docs/handoff/T75_translate_compat.md)） | T73 | 是（已批准） | `DONE` |
 | T76 | `gateway check-config` 做完整的启动前检查（价目单位、接口声明、告警地址文件），与 serve / 重载用同一函数（[说明](../docs/handoff/T76_check_config.md)） | T72 | 是（已批准） | `DONE` |
-| T77 | 一次性测试网关 `tools/devgw` 与内置假上游（openai / anthropic / responses），Token 写入文件（[草案](../docs/handoff/T77_devgw.md)） | — | 是 | `TODO` |
+| T77 | 一次性测试网关 `tools/devgw` 与内置假上游（openai / anthropic / responses），Token 写入文件（[说明](../docs/handoff/T77_devgw.md)） | — | 是（已批准） | `DONE` |
 | T78 | `gateway doctor`：诊断环境变量、连通性、Token 与权限、MCP、各 AI CLI 的配置（[草案](../docs/handoff/T78_doctor.md)） | T73 | 是 | `TODO` |
 
 ---
