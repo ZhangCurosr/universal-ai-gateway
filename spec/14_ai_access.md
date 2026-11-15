@@ -212,3 +212,17 @@ gateway call ask_model --args '{"model":"deepseek-chat","input":"用一句话解
 | CN-07 | 技能：`use-gateway` 打包进 `gateway` 程序（`embed`），安装时整目录覆盖 `use-gateway/`（只动这个目录）；技能文件里记录安装它的 `gateway` 版本。`--write` 之外不安装 |
 | CN-08 | 结束时打印验证命令：`curl -s $UAIG_URL/v1/models -H "Authorization: Bearer $UAIG_TOKEN"`，以及该 CLI 里的一句自检（如在 Codex 中选择 `uaig` 提供方后问一句 "ping"） |
 | CN-09 | 用户级配置目录按各 CLI 自己的环境变量查找（与 CLI 的行为一致）：Codex `CODEX_HOME`（缺省 `~/.codex`）、OpenCode `XDG_CONFIG_HOME`（缺省 `~/.config`）、Pi `PI_CODING_AGENT_DIR`（缺省 `~/.pi/agent`，`models.json` 总是写在这里）、Claude Code `CLAUDE_CONFIG_DIR`（缺省 `~/.claude`，用于技能目录）。实测中发现：设置了 `PI_CODING_AGENT_DIR` 时 Pi 不读 `~/.pi/agent/models.json` |
+
+## 8. 诊断连接问题：`gateway doctor`（任务卡 T78）
+
+`gateway doctor [--cli claude|codex|opencode|pi|all] [--json]`。连接信息同 CLI-05。**只读**：不改任何文件、不调用会计费的接口（只用 `/healthz`、`/v1/models` 与 MCP 的 `initialize` / `tools/list`）；输出与错误信息中不出现 Token 的值。修改配置交给 `gateway connect … --write`。设计说明见 [T78_doctor.md](../docs/handoff/T78_doctor.md)。
+
+| 编号 | 规则 |
+|:--|:--|
+| DR-01 | 环境变量：`UAIG_URL` 未设置 → 警告（用缺省 `http://127.0.0.1:8080`）；不是 `http(s)://主机` → 失败。`UAIG_TOKEN` 未设置或不以 `uai_live_` 开头 → 失败。修复提示给出设置方法（Windows `setx`，其他写进 shell 配置） |
+| DR-02 | `GET <URL>/healthz`（5 秒超时）：拒绝连接、超时、DNS 失败分别给出原因与处理办法；地址是局域网 IP 时追加「打开网关的局域网共享、放行防火墙端口」；非 200 → 失败（提示 `UAIG_URL` 应是数据面地址）。`UAIG_URL` 不可用时跳过 |
+| DR-03 | `GET <URL>/v1/models`：401 / 403 → 失败（Token 无效、已轮换或被停用）；空列表 → 失败（`allowed_models` 没有任何可用服务）；否则通过并给出服务数。DR-02 未通过或 Token 不可用时跳过 |
+| DR-04 | MCP `initialize` + `tools/list`：给出工具数与直接 / 目录模式；没有工具 → 警告。DR-03 未通过时跳过 |
+| DR-05 | `--cli`：按 `gateway connect` 的路径规则（project 与 user 两级，含 CN-09 的环境变量）查找该 CLI 的配置，逐个文件检查：有 `uaig` 条目、地址与 `UAIG_URL` 一致（不一致 → 失败，列出文件中的地址）、引用 `UAIG_TOKEN`（否则警告）；Codex 另查顶层 `model_provider = "uaig"`（否则警告）；Claude Code 另查 `ANTHROPIC_BASE_URL`（与 `UAIG_URL` 不一致 → 失败）与 `ANTHROPIC_AUTH_TOKEN`（与 `UAIG_TOKEN` 不同 → 警告）。都没有配置 → 失败。`use-gateway` 技能未安装或版本与当前 `gateway` 不同 → 警告。修复提示 `gateway connect <cli> --write` |
+| DR-06 | `--cli` 检查过的文件中写死了 Token 的值（`uai_live_…`）→ 警告，列出文件（不输出值），建议改为引用 `UAIG_TOKEN` 并轮换 Token |
+| DR-07 | 文本输出每项一行 `PASS/WARN/FAIL/SKIP 编号 原因`，下面缩进给出修复办法；`--json` 输出 `{"checks": [{"id", "status": "pass\|warn\|fail\|skip", "message", "fix"}], "ok": bool}`。退出码：有失败为 1，只有警告为 0，参数错误为 2 |

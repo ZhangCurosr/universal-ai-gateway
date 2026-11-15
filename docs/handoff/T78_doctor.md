@@ -46,3 +46,23 @@ gateway doctor [--cli claude|codex|opencode|pi|all] [--json]
 |:-:|:--|:--|:--|
 | 1 | 是否实际调用一次模型验证 | A. 不调用（只读、不计费）；B. 加 `--ping <服务名>` 选项，调用一次 | **A**，以后需要再加 B：诊断本身不应产生费用 |
 | 2 | 发现 CLI 配置有问题时是否自动修复 | A. 只给出修复命令（`gateway connect … --write`）；B. 自动修复 | **A**：`doctor` 保持只读，修改交给 `connect`，职责清楚 |
+
+## 7. 实现说明（2026-11-14）
+
+- 文件：`cmd/gateway/doctor.go` 与 `doctor_test.go`；`main.go` 分派与用法。CLI 配置的路径直接取自 `buildConnectPlan`（project 与 user 两级），与 `gateway connect` 写入的位置始终一致。
+- 规则写进 spec/14 §8（DR-01 ~ DR-07）。比草案多的几点：`UAIG_URL` 未设置只是警告（与其他客户端命令一样用缺省地址）；`/healthz` 非 200 提示「应是数据面地址」；Codex 另查顶层 `model_provider = "uaig"`（`connect` 只打印、不写入这一行）；Claude Code 的 `ANTHROPIC_AUTH_TOKEN` 与 `UAIG_TOKEN` 不同为警告。
+- 文本输出：一项有多条发现时每条一行，修复办法在 `fix:` 下缩进列出。
+
+## 8. 实测结果（2026-11-14，本机 Windows，网关用 `tools/devgw` 启动）
+
+| 情况 | 结果 |
+|:--|:--|
+| 未设环境变量 | DR-01 失败（Token 未设置），DR-02 连缺省地址被拒绝，DR-03 / 04 跳过，退出码 1 |
+| 网关未启动（端口 18999） | DR-02「connection refused」，后续跳过 |
+| 错误 Token | DR-03「rejected the token (HTTP 401)」，DR-04 跳过 |
+| 正确配置 | 四项通过：3 个服务，MCP 1 个工具（直接模式），退出码 0 |
+| 局域网地址无应答（192.168.1.250） | DR-02「no answer within 5s」，并提示打开局域网共享与防火墙 |
+| `--cli all`（未接入） | 四个 CLI 都是「no gateway config found」并列出查找的路径 |
+| `gateway connect <cli> --write` 后各运行一次 `--cli` | claude、opencode、pi 通过；codex 警告「model_provider 未设置」（符合预期：`connect` 不写这一行），给出修复办法 |
+
+所有输出（含 `--json`）中没有 Token 的值。Pi 用 `PI_CODING_AGENT_DIR` 指向临时目录，没有动用户自己的 CLI 配置。

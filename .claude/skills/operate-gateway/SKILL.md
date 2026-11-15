@@ -51,7 +51,7 @@ gateway admin call key_stats --args '{"pool":"<池>"}'   # 每把 Key 的请求�
 1. 网关所在机器：管理页面「局域网共享」查看是否开放、本机的局域网地址、防火墙命令（用户自己在管理员 PowerShell 中运行）。
 2. 管理页面「客户端」为那台设备新建 Token（只显示一次，由用户自己复制到那台设备）。
 3. 那台设备：设置 `UAIG_URL=http://<网关局域网 IP>:8080` 与 `UAIG_TOKEN`，在项目里运行 `gateway connect <claude|codex|opencode|pi> --write`。
-4. 接不通：在那台设备上运行 `gateway doctor`（若该版本已提供），或依次检查 `curl $UAIG_URL/healthz`、`curl $UAIG_URL/v1/models -H "Authorization: Bearer $UAIG_TOKEN"`、网关的局域网共享与防火墙。
+4. 接不通：在那台设备上运行 `gateway doctor`（再加 `--cli <claude|codex|opencode|pi|all>` 检查 AI CLI 的配置；`--json` 便于解析）。它只读、不计费，按顺序检查环境变量、`/healthz`（区分拒绝连接 / 超时 / DNS，局域网地址时提示局域网共享与防火墙）、Token 与服务权限、MCP、CLI 配置与技能版本，每项给出修复办法；修改配置交给 `gateway connect … --write`。没有 `gateway` 程序时依次检查 `curl $UAIG_URL/healthz`、`curl $UAIG_URL/v1/models -H "Authorization: Bearer $UAIG_TOKEN"`、网关的局域网共享与防火墙。
 
 ### 新建池与服务、修改配置
 

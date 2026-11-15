@@ -147,6 +147,8 @@ gateway files upload ./report.pdf --ttl 2h    # 输出 file_… ID
 
 网关已经在多把 Key 之间重试，**客户端只需要很少的重试**（2–3 次、指数退避），不要并发轰炸。
 
+连不上、总是 401、`/v1/models` 为空、某个 AI CLI 不走网关时，先运行 `gateway doctor [--cli claude|codex|opencode|pi|all]`：只读、不计费，逐项输出「通过 / 警告 / 失败 + 原因 + 修复办法」。
+
 ## 9. 检查清单
 
 - [ ] `UAIG_URL`、`UAIG_TOKEN` 从环境变量读取，代码和日志里没有 Token。

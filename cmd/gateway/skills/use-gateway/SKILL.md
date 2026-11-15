@@ -59,6 +59,8 @@ reply = client.chat.completions.create(model="<服务名>", messages=[{"role": "
 | 429 | 按 `Retry-After` 等待后重试 |
 | 502 / 503 / 504 | 网关已换 Key 重试过；客户端最多再退避重试 2–3 次 |
 
+**接不通（连不上、401、没有服务、CLI 不走网关）时先运行 `gateway doctor`**（加 `--cli <claude|codex|opencode|pi>` 同时检查该 CLI 的配置）：它只读、不计费，逐项给出原因与修复办法，不要逐个猜。
+
 ### 4. 本地文件交给接口
 
 接口要的是文件本身时：`gateway files upload <路径>` 得到 `file_…`，之后工具参数填这个 ID，或 HTTP 请求体留空并加头 `X-UAIG-File: file_…`。需要网关开启 `files.enabled`。
