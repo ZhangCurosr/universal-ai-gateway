@@ -743,6 +743,47 @@ models:
             question: { type: string, description: "是非问题" }
           required: [state, question]
           additionalProperties: false
+      - name: bivia_choice
+        description: "从 2–26 个候选里选出最合适的一个，返回选项、概率和各选项分布；都不贴切时弃答（value 为 null）。"
+        method: POST
+        path: /choice
+        idempotent: true
+        read_only: true
+        input_schema:
+          type: object
+          properties:
+            state:    { type: string, description: "需要判断的情境" }
+            question: { type: string, description: "要做的选择" }
+            choices:  { type: array, items: { type: string }, minItems: 2, maxItems: 26, description: "候选项" }
+          required: [state, question, choices]
+          additionalProperties: false
+      - name: bivia_set
+        description: "多标签判断：选出所有成立的候选（概率 ≥ 0.5），返回选中列表与每项概率（probabilities）。"
+        method: POST
+        path: /set
+        idempotent: true
+        read_only: true
+        input_schema:
+          type: object
+          properties:
+            state:    { type: string, description: "需要判断的情境" }
+            question: { type: string, description: "要判断哪些成立" }
+            options:  { type: array, items: { type: string }, description: "候选项（上游要求叫 options，不是 choices）" }
+          required: [state, question, options]
+          additionalProperties: false
+      - name: bivia_span
+        description: "在原文中定位回答问题的片段，返回字符级 start / end 与原文；没有匹配时返回空数组。"
+        method: POST
+        path: /span
+        idempotent: true
+        read_only: true
+        input_schema:
+          type: object
+          properties:
+            state:    { type: string, description: "要在其中定位的原文" }
+            question: { type: string, description: "片段应回答的问题" }
+          required: [state, question]
+          additionalProperties: false
 
   - name: github-ro
     pool: github-ro-pool
