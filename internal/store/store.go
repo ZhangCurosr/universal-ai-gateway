@@ -175,6 +175,8 @@ type Store interface {
 	SumKeyUsage(ctx context.Context, unit string, since time.Time, keyIDs []int64) (map[int64]int64, error)
 	// SumUsageByKey 按 Key 汇总 [from, to) 内的计费事件（STO-22，T65）；没有事件的 Key 不出现。to - from 不得超过 31 天。
 	SumUsageByKey(ctx context.Context, from, to time.Time, keyIDs []int64) ([]KeyUsage, error)
+	// AggregateUsage 按 q.GroupBy 汇总 [From, To) 内的计费事件（STO-23，T79）；用量按单位求和，与协议无关。
+	AggregateUsage(ctx context.Context, q UsageAggQuery) ([]UsageBucket, error)
 
 	GetSetting(ctx context.Context, key string) (string, bool, error)
 	PutSetting(ctx context.Context, key, value string) error
@@ -188,6 +190,52 @@ type KeyUsage struct {
 	Requests    int64            // 计费事件数
 	Usage       map[string]int64 // 各计量单位之和
 	CostNanoUSD int64
+}
+
+// AggregateUsage 的分组维度（STO-23）。
+const (
+	GroupTime   = "time"
+	GroupClient = "client"
+	GroupModel  = "model"
+	GroupKey    = "key"
+	GroupPool   = "pool"
+)
+
+// AggregateUsage 的时间桶与上限（STO-23）。
+const (
+	IntervalHour       = "hour"
+	IntervalDay        = "day"
+	MaxHourlyRange     = 7 * 24 * time.Hour
+	MaxUsageAggRange   = 92 * 24 * time.Hour
+	MaxUsageAggGroups  = 3
+	MaxUsageAggBuckets = 10000
+)
+
+// ErrTooManyBuckets 表示结果行数超过 MaxUsageAggBuckets（应缩小区间或减少分组）。
+var ErrTooManyBuckets = errors.New("store: too many result rows")
+
+// UsageAggQuery 是 AggregateUsage 的条件，时间区间为 [From, To)。
+type UsageAggQuery struct {
+	From, To time.Time
+	GroupBy  []string       // GroupTime / GroupClient / GroupModel / GroupKey / GroupPool，不重复，最多 MaxUsageAggGroups 个
+	Interval string         // 按时间分组时：IntervalHour | IntervalDay
+	TZ       *time.Location // 时间桶的边界（按区间起点的时区偏移）；nil 为 UTC
+	ClientID int64          // 过滤，0 = 全部
+	Model    string         // 过滤，"" = 全部
+	Pool     string         // 过滤，"" = 全部
+}
+
+// UsageBucket 是一组汇总；没有参与分组的维度为零值。
+type UsageBucket struct {
+	Time              time.Time // 按时间分组时为桶的起点（UTC）
+	ClientID          int64
+	Model             string
+	KeyID             int64
+	Pool              string // 取 Key 当前所在的池；Key 已删除时为 ""
+	Requests          int64
+	EstimatedRequests int64 // 用量来源为估算的请求数
+	CostNanoUSD       int64
+	Usage             map[string]int64 // 各计量单位之和（非 nil）
 }
 
 // MaxKeyUsageRange 是 SumUsageByKey 允许的最长时间跨度。

@@ -100,7 +100,7 @@ models:
           usage: {}                               # 查询不计费
 ```
 
-- `usage` 里用到的单位必须写进 `price`；额度按天重置时，池上加 `cooldown: { max: 24h }`；
+- `usage` 里用到的单位必须写进 `price`；表示 token 的单位名以 `_tokens` 结尾（PRC-06），统计页才会把它算进 Token 合计；额度按天重置时，池上加 `cooldown: { max: 24h }`；
 - 需要失败自动换 Key 或按请求体字段计费的 `POST` 接口，工具声明写 `idempotent: true`（走 `/rest-idem/`）；
 - 不确定错误码含义时不要猜，宁可不写这条规则（未命中的 2xx 照常当作成功）。
 

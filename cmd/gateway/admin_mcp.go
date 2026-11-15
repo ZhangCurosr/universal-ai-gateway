@@ -130,6 +130,33 @@ func adminTools() []adminTool {
 				}
 				return http.MethodGet, path, nil, nil
 			}},
+		{name: "gateway_admin_usage_stats", title: "Usage statistics (tokens and other units)", readOnly: true,
+			desc: "Usage statistics for a time range (ADM-32, default: last 24 hours): requests, estimated requests, cost and the sum of every meter unit, grouped by any of time (hour or day buckets in a time zone), client, model, pool and key. " +
+				"tokens is the sum of all *_tokens units. units lists every unit with its kind (tokens, count, other) and the protocols that report it. Hourly buckets: at most 7 days; otherwise at most 92 days.",
+			schema: `{"type":"object","properties":{"group":{"type":"string","description":"Comma-separated, at most 3 of: time, client, model, pool, key. Empty = one total row"},"interval":{"type":"string","enum":["hour","day"],"description":"Bucket size when grouping by time (default day)"},"tz":{"type":"string","description":"Bucket boundaries, ±HH:MM or UTC (default UTC), e.g. +08:00"},"from":{"type":"string","description":"Start, RFC 3339"},"to":{"type":"string","description":"End, RFC 3339"},"client_id":{"type":"integer","minimum":1},"model":{"type":"string"},"pool":{"type":"string"}},"additionalProperties":false}`,
+			request: func(args json.RawMessage) (string, string, []byte, error) {
+				var a struct {
+					Group, Interval, TZ, From, To, Model, Pool string
+					ClientID                                   int64 `json:"client_id"`
+				}
+				if err := decodeAdminArgs(args, &a); err != nil {
+					return "", "", nil, err
+				}
+				q := url.Values{}
+				for k, v := range map[string]string{"group": a.Group, "interval": a.Interval, "tz": a.TZ, "from": a.From, "to": a.To, "model": a.Model, "pool": a.Pool} {
+					if v != "" {
+						q.Set(k, v)
+					}
+				}
+				if a.ClientID > 0 {
+					q.Set("client_id", strconv.FormatInt(a.ClientID, 10))
+				}
+				path := "/admin/api/usage/stats"
+				if len(q) > 0 {
+					path += "?" + q.Encode()
+				}
+				return http.MethodGet, path, nil, nil
+			}},
 		{name: "gateway_admin_reload_records", title: "Reload history", readOnly: true, schema: noArgsSchema,
 			desc:    "The last 20 config reloads: time, mode (hot or restart), result (applied, failed, rolled_back, restarting) and error.",
 			request: noArgs(http.MethodGet, "/admin/api/reload")},

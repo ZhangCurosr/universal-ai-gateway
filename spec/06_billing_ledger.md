@@ -37,6 +37,8 @@ func EstimateOutputTokens(forwardedBytes int64) int64 // 大模型出站适配�
 | PRC-03 | 预留用量 `ReserveUsage(env.Estimate, models[].reserve)`：Estimate 中有的单位取 `min(估计, reserve)`（reserve 中没有该单位则取估计）；Estimate 中**没有该键**、reserve 中有的单位取 reserve。即 `reserve` 既是上限也是默认值。Estimate 中**显式为 0** 的单位表示确定不会产生，不会被 reserve 补上 |
 | PRC-04 | 任一用量为负数时视为 0 |
 | PRC-05 | 价格字符串 `USD[/PER]`：USD 为非负十进制，最多 9 位小数（精确换算为 nano-USD，不经过浮点）；PER 为正整数，可带 `K`（×1000）或 `M`（×1,000,000）后缀，缺省为 1 |
+| PRC-06 | 表示 token 的单位名必须以 `_tokens` 结尾，同一个名字在所有适配器中含义相同（适配器负责把上游字段换算成这些名字）。「是不是 token」只由 `pricing.UnitKind` 判断（`tokens` / `count` / `other`），统计与页面不写死单位名（T79）。`cmd/gateway` 的守护测试检查每个出站适配器的 `Units()` 符合本条 |
+| PRC-07 | 同一请求报告的各单位**互不包含**（例如若单独报告推理 token，`output_tokens` 中就不能再计入它），所以 token 合计 = 所有 `*_tokens` 单位之和，不会重复计算（T79） |
 
 例：`claude-sonnet` 配置 `price: {input_tokens: "3/1M", output_tokens: "15/1M", ...}`、`reserve: {output_tokens: 64000}`；请求 `max_tokens: 1024`、请求体 3000 字节 → Estimate `{input_tokens: 1000, output_tokens: 1024}` → 预留 `1000 × 3e9 / 1e6 + 1024 × 15e9 / 1e6 = 3,000,000 + 15,360,000 = 18,360,000` nano-USD。
 `tavily-search` 配置 `price: {credits: "0.008"}`、`reserve: {credits: 2}`；请求未声明深度 → Estimate 为空 → 预留 2 credits = 16,000,000 nano。

@@ -603,3 +603,39 @@ func TestUIPoolsEditor(t *testing.T) {
 		}
 	}
 }
+
+// UI-41（T79）：用量页用统计接口、单位列来自接口（不写死单位名）、文案中英齐全、能导出 CSV。
+func TestUIUsageStatsPage(t *testing.T) {
+	read := func(name string) string {
+		b, err := fs.ReadFile(uiFiles, "ui/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	page, i18n := read("pages/usage.js"), read("i18n.js")
+	for _, want := range []string{"/admin/api/usage/stats?", "u.kind === 'tokens'", "format', 'csv'", "getToken()"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("usage.js lacks %q", want)
+		}
+	}
+	for _, banned := range []string{"TOKEN_UNITS", "'input_tokens'", "'output_tokens'"} {
+		if strings.Contains(page, banned) {
+			t.Errorf("usage.js hard-codes unit names: %q", banned)
+		}
+	}
+	used := regexp.MustCompile(`t\('(u\.[\w.]+)'[,)]`).FindAllStringSubmatch(page, -1)
+	if len(used) < 25 {
+		t.Fatalf("found only %d usage messages", len(used))
+	}
+	for _, m := range used {
+		if n := strings.Count(i18n, "'"+m[1]+"':"); n != 2 {
+			t.Errorf("message %s defined %d times, want 2 (zh and en)", m[1], n)
+		}
+	}
+	for _, k := range []string{"u.r24h", "u.r7d", "u.r30d", "u.by.model", "u.by.client", "u.by.pool", "u.by.key"} {
+		if strings.Count(i18n, "'"+k+"':") != 2 {
+			t.Errorf("message %s missing in a language", k)
+		}
+	}
+}

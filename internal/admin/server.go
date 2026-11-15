@@ -66,6 +66,8 @@ type Deps struct {
 	Share *ShareDeps
 	// ConfigEdit 是网页端管理池与服务（PE-01 ~ PE-07，T72）；nil = 不能从网页修改。
 	ConfigEdit *ConfigEditDeps
+	// Units 返回当前配置中各池协议报告的计量单位（ADM-32，T79）；nil = 只显示数据中出现的单位。
+	Units func() []UnitSource
 }
 
 // Control 让调用方在运行中替换管理面读取的配置（配置热重载，spec/03 §8）。
@@ -196,6 +198,7 @@ func NewServerWithControl(d Deps) (http.Handler, *Control) {
 
 	// Usage
 	mux.HandleFunc("GET /admin/api/usage", s.handleQueryUsage)
+	mux.HandleFunc("GET /admin/api/usage/stats", s.handleUsageStats) // ADM-32、ADM-33（T79）
 
 	// 管理 Web UI 用的只读配置（spec/09 §6.4）
 	mux.HandleFunc("GET /admin/api/config", s.handleConfig)

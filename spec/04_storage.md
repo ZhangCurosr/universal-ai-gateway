@@ -188,6 +188,7 @@ type SealFunc func(id int64) (crypto.Sealed, error)
 | STO-20 | 迁移 `0004_usage_key_index.sql`（T63） | 新增索引 `idx_usage_key_time ON usage_events(key_id, created_at)` |
 | STO-21 | `SumKeyUsage(unit, since, keyIDs)`（T63） | 对 `created_at >= since` 且 `key_id` 在 `keyIDs` 中的事件，按 Key 求 `json_extract(usage, '$.<unit>')` 之和；没有用量的 Key 不出现。`unit` 必须匹配 `^[a-z][a-z0-9_]*$`，否则返回错误；JSON 路径作为 `?` 参数传入；每次最多 500 个 Key 的占位符，超出分批 |
 | STO-22 | `SumUsageByKey(from, to, keyIDs)`（T65） | 按 Key 汇总 `[from, to)` 内、`key_id` 在 `keyIDs` 中的计费事件：请求数（事件数）、`usage` 各单位之和、费用之和；没有事件的 Key 不出现，按 Key ID 升序。`from` 必须早于 `to` 且跨度 ≤ 31 天，否则返回错误。用 `idx_usage_key_time`，每次最多 500 个 Key 的占位符 |
+| STO-23 | `AggregateUsage(q)`（T79） | 汇总 `[From, To)` 内的计费事件：按 `time`（`hour` / `day` 桶，按 `TZ` 在区间起点的偏移对齐）、`client`、`model`、`key`、`pool`（Key 当前所在池，Key 已删除为空）任意组合分组（最多 3 个、不重复），可按客户端、服务、池过滤；返回请求数、估算请求数（`usage_source = estimated`）、成本与各单位之和。单位用 `json_each` 展开求和，SQL 中不出现单位名。区间按小时最多 7 天、其他最多 92 天；结果超过 10,000 行 → `ErrTooManyBuckets`；参数不合法 → `ErrInvalidArgument`。迁移 0005 增加 `idx_usage_time(created_at)` |
 | STO-09 | `SetUpstreamKeyState` | `state` 不在 `ready/quarantined/disabled` 中返回 `ErrInvalidArgument`；不存在返回 `ErrNotFound` |
 | STO-10 | `InsertUsageEvents` | 单个事务批量插入；使用 `INSERT OR IGNORE`，重复 `request_id` 静默跳过（幂等）；空切片直接返回 nil |
 | STO-11 | `SumCostByClient` | `SELECT client_id, SUM(cost_nano_usd) ... GROUP BY client_id` |

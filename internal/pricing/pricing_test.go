@@ -3,6 +3,7 @@ package pricing
 import (
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -121,5 +122,27 @@ func TestUsageHelpers(t *testing.T) {
 	}
 	if EstimateInputTokens(1) != 1 || EstimateOutputTokens(9) != 3 {
 		t.Fatal("estimates wrong")
+	}
+}
+
+// PRC-06（T79）：token 单位按后缀识别，未来适配器的新单位也一样。
+func TestUnitKind(t *testing.T) {
+	for u, want := range map[string]string{
+		UnitInputTokens: KindTokens, UnitOutputTokens: KindTokens, UnitCacheReadTokens: KindTokens, UnitCacheWriteTokens: KindTokens,
+		"audio_input_tokens": KindTokens, "_tokens": KindOther, "tokens": KindOther,
+		UnitRequests: KindCount, "credits": KindOther, "pages": KindOther, "token_count": KindOther,
+	} {
+		if got := UnitKind(u); got != want {
+			t.Errorf("UnitKind(%q) = %q, want %q", u, got, want)
+		}
+	}
+}
+
+func TestSortUnits(t *testing.T) {
+	u := []string{"pages", "output_tokens", "requests", "audio_input_tokens", "credits", "input_tokens", "cache_write_tokens", "cache_read_tokens"}
+	SortUnits(u)
+	want := "input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,audio_input_tokens,requests,credits,pages"
+	if got := strings.Join(u, ","); got != want {
+		t.Fatalf("SortUnits = %s", got)
 	}
 }

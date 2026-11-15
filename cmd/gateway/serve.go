@@ -291,6 +291,7 @@ func run(ctx context.Context, cfg *config.Config, opts runOptions) (err error) {
 		Files:         fileStore,                           // FS-50
 		Share:         (&shareEditor{rl: rl}).deps(),       // LAN-01、LAN-02（T71）
 		ConfigEdit:    (&configEntryEditor{rl: rl}).deps(), // PE-01 ~ PE-07（T72）
+		Units:         rl.usageUnits,                       // ADM-32（T79）
 	})
 	adminMCPHandler.admin = adminHandler
 	rl.adminCtl = adminCtl

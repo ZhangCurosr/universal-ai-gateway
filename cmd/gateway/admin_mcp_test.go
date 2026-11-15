@@ -94,7 +94,7 @@ func TestAdminMCP(t *testing.T) {
 			} `json:"annotations"`
 		} `json:"tools"`
 	}
-	if err := json.Unmarshal(out.Result, &list); err != nil || len(list.Tools) != 13 { // T64 新增 gateway_admin_alerts（ADM-28），T65 新增 gateway_admin_pools、gateway_admin_key_stats（ADM-31）
+	if err := json.Unmarshal(out.Result, &list); err != nil || len(list.Tools) != 14 { // T64 新增 gateway_admin_alerts（ADM-28），T65 新增 gateway_admin_pools、gateway_admin_key_stats（ADM-31），T79 新增 gateway_admin_usage_stats（ADM-34）
 		t.Fatalf("tools/list = %s", out.Result)
 	}
 	ro := 0
@@ -108,8 +108,8 @@ func TestAdminMCP(t *testing.T) {
 			}
 		}
 	}
-	if ro != 10 { // T64、T65 新增的三个工具都是只读
-		t.Errorf("read-only tools = %d, want 10", ro)
+	if ro != 11 { // T64、T65 新增的三个工具与 T79 的 usage_stats 都是只读
+		t.Errorf("read-only tools = %d, want 11", ro)
 	}
 
 	// 只读工具
@@ -160,6 +160,12 @@ func TestAdminMCP(t *testing.T) {
 	}
 	if res := adminCall(t, g, "gateway_admin_key_stats", `{}`); res.IsError || !strings.Contains(res.Content[0].Text, `"keys"`) {
 		t.Fatalf("key_stats = %+v", res)
+	}
+	if res := adminCall(t, g, "gateway_admin_usage_stats", `{"group":"time,model","interval":"day","tz":"+08:00"}`); res.IsError || !strings.Contains(res.Content[0].Text, `"units"`) { // ADM-34（T79）
+		t.Fatalf("usage_stats = %+v", res)
+	}
+	if res := adminCall(t, g, "gateway_admin_usage_stats", `{"group":"protocol"}`); !res.IsError || !strings.Contains(res.Content[0].Text, "HTTP 400") {
+		t.Fatalf("usage_stats with a bad group = %+v", res)
 	}
 	if res := adminCall(t, g, "gateway_admin_alerts", `{}`); res.IsError || !strings.Contains(res.Content[0].Text, `"alerts":[]`) { // ADM-28（T64）
 		t.Fatalf("alerts = %+v", res)

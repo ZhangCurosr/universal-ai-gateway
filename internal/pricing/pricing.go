@@ -32,6 +32,59 @@ var unitPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 // ValidUnit 报告 u 是否是合法的单位名：小写字母开头，只含小写字母、数字、下划线，最长 64。
 func ValidUnit(u string) bool { return unitPattern.MatchString(u) }
 
+// 单位的种类（PRC-06，T79）：统计页面据此分组显示、计算 token 合计。
+const (
+	KindTokens = "tokens" // 名称以 _tokens 结尾：各种 token
+	KindCount  = "count"  // requests：调用次数
+	KindOther  = "other"  // 其他（credits、pages、seconds……）
+)
+
+// TokenSuffix 是 token 单位名的后缀（PRC-06）。
+const TokenSuffix = "_tokens"
+
+// SortUnits 按显示顺序排序（就地）：token 单位在前（标准的四个按输入、缓存读、缓存写、输出，其余按名称），
+// 然后 requests，最后其他单位按名称。统计页面与 CSV 的列顺序用它（T79）。
+func SortUnits(units []string) {
+	std := map[string]int{UnitInputTokens: 0, UnitCacheReadTokens: 1, UnitCacheWriteTokens: 2, UnitOutputTokens: 3}
+	rank := func(u string) (int, int) {
+		switch UnitKind(u) {
+		case KindTokens:
+			if r, ok := std[u]; ok {
+				return 0, r
+			}
+			return 0, len(std)
+		case KindCount:
+			return 1, 0
+		default:
+			return 2, 0
+		}
+	}
+	sort.SliceStable(units, func(i, j int) bool {
+		ki, ri := rank(units[i])
+		kj, rj := rank(units[j])
+		if ki != kj {
+			return ki < kj
+		}
+		if ri != rj {
+			return ri < rj
+		}
+		return units[i] < units[j]
+	})
+}
+
+// UnitKind 返回单位的种类。这是全系统唯一判断「是不是 token」的地方（PRC-06）：
+// 表示 token 的单位名必须以 _tokens 结尾，且同一请求的各单位互不包含（PRC-07），所以 token 合计 = 这些单位之和。
+func UnitKind(u string) string {
+	switch {
+	case strings.HasSuffix(u, TokenSuffix) && len(u) > len(TokenSuffix):
+		return KindTokens
+	case u == UnitRequests:
+		return KindCount
+	default:
+		return KindOther
+	}
+}
+
 // Usage 是一次请求在各单位上的用量。nil 与空 map 等价；值 <= 0 的单位视为不存在（PRC-04）。
 type Usage map[string]int64
 

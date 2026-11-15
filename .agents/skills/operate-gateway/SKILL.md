@@ -67,6 +67,16 @@ gateway admin call usage --args '{"from":"2026-11-01T00:00:00Z","to":"2026-11-15
 gateway admin call list_clients                            # 客户端的额度与已花费
 ```
 
+Token 与其他单位的统计（按时间趋势、按服务 / 客户端 / 池 / Key 分组；`tokens` 是所有 `*_tokens` 单位之和）：
+
+```bash
+gateway admin call usage_stats --args '{"group":"model"}'                                  # 最近 24 小时按服务
+gateway admin call usage_stats --args '{"group":"time,model","interval":"day","tz":"+08:00","from":"2026-11-01T00:00:00Z"}'
+gateway admin call usage_stats --args '{"group":"pool,key","pool":"<池>"}'                  # 某个池里每把 Key 用了多少
+```
+
+网页「用量」页有同样的统计、趋势图和「导出 CSV」。
+
 调整客户端额度或速率：`gateway admin call update_client --args '{"id":<id>,"quota_nano_usd":<纳美元>}' --yes`（1 美元 = 1000000000），先告诉用户。
 
 ## 不能做的（告诉用户去管理页面或手工处理）
