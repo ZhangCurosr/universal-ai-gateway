@@ -53,6 +53,8 @@ func TestE2E_REST_DeclaredAPI(t *testing.T) {
 	}))
 	defer upstream.Close()
 
+	// Keep the quota reset comfortably ahead of the wall clock, including near midnight.
+	resetTime := time.Now().In(time.FixedZone("quota-reset", 8*60*60)).Add(12 * time.Hour).Format("15:04")
 	notIn := []any{0}
 	g := startRESTGateway(t, func(c *config.Config) {
 		c.Pools = append(c.Pools, config.PoolConfig{Name: "mu-rest", Protocol: "rest", BaseURL: upstream.URL, MaxAttempts: 3, Cooldown: config.CooldownConfig{Max: 24 * time.Hour}})
@@ -62,7 +64,7 @@ func TestE2E_REST_DeclaredAPI(t *testing.T) {
 			Reserve: map[string]int64{"pages": 600},
 			API: &config.APIConfig{
 				Errors: []config.APIErrorRule{
-					{When: config.APIWhen{JSON: "code", In: []any{-60018}}, Outcome: "rate_limited", CooldownUntil: &config.APICooldown{Time: "00:01", TZ: "+08:00"}},
+					{When: config.APIWhen{JSON: "code", In: []any{-60018}}, Outcome: "rate_limited", CooldownUntil: &config.APICooldown{Time: resetTime, TZ: "+08:00"}},
 					{When: config.APIWhen{JSON: "code", In: []any{-60012}}, Outcome: "client_error", Status: 404},
 					{When: config.APIWhen{JSON: "code", NotIn: notIn}, Outcome: "client_error"},
 				},
