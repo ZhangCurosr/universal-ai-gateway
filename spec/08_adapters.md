@@ -419,6 +419,7 @@ func ParseRetryAfter(h http.Header, now time.Time) time.Duration
 |:--|:--|
 | RS-20 | 格式不合法（如 `header:` 后缺少 `:`、头名非法）→ `Do` 返回 `*AttemptError{Outcome: OutcomeAuthFailed}`，错误信息只写「rest upstream key format is invalid」，不含任何部分明文。调度器因此隔离这个 Key，管理员会在 Key 列表里看到它 |
 | RS-21 | 管理 API 添加 Key 时不校验格式（管理面不认识协议）；DEPLOYMENT.md 写明格式与示例 |
+| RS-22 | T80：REST 池可配置 `secret_prefix`，发送原始 Key 时先添加前缀，再按本节解析。已有 `bearer:` / `header:` / `query:` / `basic:` 格式优先，不再添加池前缀；不修改密钥存储。未配置时沿用原有默认 Bearer 行为。允许的前缀为 `bearer:`、`header:<Name>:<固定值前缀>`、`query:<name>:`、`basic:<user>:`；头名、查询参数名使用 RS-20 同一校验，禁止 CR、LF、其他非法控制字符及危险头。未知格式拒绝；错误不包含前缀值。前缀只存固定的鉴权规则，不存凭据。校验放在适配器与装配层，非 REST 池配置则拒绝；支持热重载，普通请求与 flow 使用相同规则 |
 
 #### 8.3.4 部署文档安全规范
 

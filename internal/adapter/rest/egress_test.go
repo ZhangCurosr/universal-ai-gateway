@@ -18,6 +18,51 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
 
+// T80：原始 Key 的前缀同时用于普通上传和 flow 的上游请求。
+func TestEgress_PoolSecretPrefixUploadAndFlow(t *testing.T) {
+	for _, flow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("flow=%v", flow), func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+				if err != nil || string(body) != "audio" || r.Header.Get("Authorization") != "Token raw-upload-key" {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if _, err := io.WriteString(w, `{"id":"task1","transcript":"hello"}`); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer upstream.Close()
+			def := APIDef{Service: "svc", SecretPrefix: "header:Authorization:Token "}
+			op := OpPost
+			if flow {
+				op = OpPostIdem
+				def.Endpoints = []EndpointDef{{Method: "POST", Segments: []string{"upload"}, Flow: &FlowDef{Submit: &FlowStep{Method: "POST", Path: "/upload"}}}}
+			}
+			table, err := newAPITable([]APIDef{def})
+			if err != nil {
+				t.Fatal(err)
+			}
+			e := Egress{apis: table}
+			call, err := e.Prepare(&protocol.Envelope{Model: "svc", Op: op, Body: []byte("audio"), Params: map[string]string{"method": "POST", "path": "/upload"}}, "svc")
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := e.Do(context.Background(), protocol.Upstream{BaseURL: upstream.URL, Secret: []byte("raw-upload-key"), Client: upstream.Client(), MaxBufferedBytes: 4096}, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.Raw != nil {
+				defer response.Raw.Close()
+			}
+			if response.Status != http.StatusOK {
+				t.Fatalf("Do status = %d", response.Status)
+			}
+		})
+	}
+}
+
 func TestEgress_HeaderFilteringAndForwarding(t *testing.T) {
 	var capturedHeader http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

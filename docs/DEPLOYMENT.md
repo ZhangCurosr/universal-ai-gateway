@@ -554,6 +554,22 @@ curl -H "Authorization: Bearer <网关客户端Token>" \
 
 ### 9.2 上游 Key 放置方式
 
+一个池里的原始 Key 使用相同鉴权方式时，可以直接导入原始 Key，在池上配置一次前缀（T80）：
+
+```yaml
+pools:
+  - name: deepgram
+    protocol: rest
+    base_url: "https://api.deepgram.com/v1"
+    secret_prefix: "header:Authorization:Token " # 末尾空格必须保留
+```
+
+网关会发送 `Authorization: Token <原始Key>`，已导入的原始 Key 无需重新导入。
+`secret_prefix` 只影响发送方式，不重写存储。已有 `bearer:`、`header:`、`query:`、`basic:` 格式的 Key 优先使用自己的格式。
+没有池级前缀时，原始 Key 默认发送为 Bearer。其他可用前缀包括 `bearer:`、`header:X-Api-Key:`、`query:api_key:`、`basic:user:`；前缀不得包含凭据。
+只有 REST 池支持此字段；未知格式、危险头或非法控制字符在启动、预检和热重载时拒绝。修改后运行 `check-config`、`reload --dry-run`，再重载。
+管理页面可在池的「高级（YAML）」中设置此字段；它不是命令行导入的 `--secret-prefix`，后者会改变保存的 Key 格式。
+
 通过管理 API 添加上游 Key 时，把 Key 的放置方式编码在 `secret` 字符串中（解密后生效，管理面不校验格式）：
 
 | 写法 | 上游请求行为 | 适用场景 |

@@ -24,6 +24,17 @@ models:
     reserve: { output_tokens: 1000 }
 `
 
+func TestPoolSecretPrefixPreservesWhitespace(t *testing.T) {
+	yaml := strings.Replace(minimalYAML, "    protocol: anthropic", "    secret_prefix: \"header:Authorization:Token \"\n    protocol: rest", 1)
+	cfg, err := Parse([]byte(yaml))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Pools[0].SecretPrefix != "header:Authorization:Token " {
+		t.Fatal("Parse changed the configured secret_prefix, including its trailing space")
+	}
+}
+
 func TestParseAppliesDefaults(t *testing.T) {
 	cfg, err := Parse([]byte(minimalYAML))
 	if err != nil {

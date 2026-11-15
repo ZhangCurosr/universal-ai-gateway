@@ -149,6 +149,10 @@ models:
 #     base_url: "https://api.weather.example.com/v1"
 #     strategy: least_inflight
 #     max_attempts: 3
+#   - name: deepgram
+#     protocol: rest
+#     base_url: "https://api.deepgram.com/v1"
+#     secret_prefix: "header:Authorization:Token " # 原始 Key 直接导入；末尾空格有意义
 #
 # models:
 #   - name: "tavily-search"

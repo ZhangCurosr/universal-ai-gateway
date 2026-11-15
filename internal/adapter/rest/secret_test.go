@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"strings"
@@ -8,6 +9,61 @@ import (
 
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/protocol"
 )
+
+func TestValidateSecretPrefix(t *testing.T) {
+	for _, prefix := range []string{"", "bearer:", "header:Authorization:Token ", "header:X-Api-Key:", "query:api_key:", "basic:alice:", "basic::"} {
+		if err := ValidateSecretPrefix(prefix); err != nil {
+			t.Fatalf("ValidateSecretPrefix(%q): %v", prefix, err)
+		}
+	}
+	for _, prefix := range []string{"unknown:", "bearer:extra", "query:api_key:extra", "basic:alice:extra", "header:no-colon", "header:Host:", "header:X-Forwarded-For:", "query:bad name:", "header:Authorization:Token \r\n", "basic:a\n:", "header:Authorization:\x00", "header:Authorization:\x7f"} {
+		err := ValidateSecretPrefix(prefix)
+		if err == nil || err.Error() != "rest secret_prefix is invalid" {
+			t.Fatalf("invalid prefix accepted or error included its value: %v", err)
+		}
+		if _, err := newAPITable([]APIDef{{Service: "svc", SecretPrefix: prefix}}); err == nil {
+			t.Fatal("API table accepted an invalid prefix")
+		}
+	}
+}
+
+func TestParseSecretWithPrefix(t *testing.T) {
+	for _, tc := range []struct{ name, prefix, raw, want string }{
+		{"default", "", "raw-key", "Bearer raw-key"},
+		{"raw custom scheme", "header:Authorization:Token ", "raw-key", "Token raw-key"},
+		{"explicit bearer wins", "header:Authorization:Token ", "bearer:explicit", "Bearer explicit"},
+		{"explicit header wins", "header:Authorization:Token ", "header:Authorization:Custom explicit", "Custom explicit"},
+		{"explicit query wins", "header:Authorization:Token ", "query:key:explicit", "explicit"},
+		{"explicit basic wins", "header:Authorization:Token ", "basic:a:b", "Basic YTpi"},
+		{"pool query", "query:key:", "raw-key", "raw-key"},
+		{"pool basic", "basic:a:", "b", "Basic YTpi"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := []byte(tc.raw)
+			before := bytes.Clone(raw)
+			p, err := parseSecretWithPrefix(raw, tc.prefix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := p.headerValue
+			if p.queryParam != "" {
+				got = p.queryValue
+			}
+			if got != tc.want || !bytes.Equal(raw, before) {
+				t.Fatal("prefix was not applied correctly or mutated the original Key")
+			}
+		})
+	}
+	for _, tc := range []struct{ prefix, raw string }{
+		{"unknown:", "raw-key"},
+		{"header:Authorization:Token ", "bad\r\nkey"},
+		{"header:Authorization:Token ", "header:Host:invalid"},
+	} {
+		if _, err := parseSecretWithPrefix([]byte(tc.raw), tc.prefix); err == nil {
+			t.Fatal("invalid prefix or credential was accepted")
+		}
+	}
+}
 
 func TestParseSecret_Valid(t *testing.T) {
 	cases := []struct {

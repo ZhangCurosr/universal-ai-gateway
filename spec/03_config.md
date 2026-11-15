@@ -32,6 +32,11 @@ gateway reload [--dry-run] [--json]  让运行中的网关重新读取配置文�
 
 完整示例见仓库根目录 `gateway.example.yaml`。字段定义以 `internal/config/config.go` 为准。
 
+`pools[].secret_prefix`（T80、CFG-24）是可选的 REST 原始 Key 前缀，例如 `"header:Authorization:Token "`。
+只在发送时用于没有显式鉴权格式的 Key，不修改存储；末尾空格有意义，须用引号保留。
+只适用于 rest 池；包括未被服务引用的池在内，前缀必须通过同一套启动、check-config 与热重载预检。
+具体格式及优先级见 spec/08 §8.3.3 的 RS-22。
+
 ```yaml
 server:
   data_listen: "0.0.0.0:8080"      # 数据面监听地址

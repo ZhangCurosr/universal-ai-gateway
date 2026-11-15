@@ -153,12 +153,16 @@ func (e Egress) Do(ctx context.Context, up protocol.Upstream, call *protocol.Cal
 	}
 
 	// 2. 解析上游 Key（§8.3.3、RS-20）
-	parsedKey, err := parseSecret(up.Secret)
+	st, _ := call.State.(*callState)
+	prefix := ""
+	if st != nil && st.def != nil {
+		prefix = st.def.SecretPrefix
+	}
+	parsedKey, err := parseSecretWithPrefix(up.Secret, prefix)
 	if err != nil {
 		return nil, err
 	}
 
-	st, _ := call.State.(*callState)
 	if st != nil && st.ep != nil && st.ep.Flow != nil { // 虚拟端点（FL-01）
 		return e.doFlow(ctx, up, call, st, parsedKey)
 	}

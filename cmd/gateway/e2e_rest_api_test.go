@@ -15,6 +15,126 @@ import (
 	"github.com/ZhangCurosr/universal-ai-gateway/internal/config"
 )
 
+func TestRESTPoolSecretPrefixPreflight(t *testing.T) {
+	for _, tc := range []struct {
+		name, protocol, prefix string
+		unused, withAPI, fail  bool
+	}{
+		{"raw service", "rest", "header:Authorization:Token ", false, false, false},
+		{"declared service", "rest", "header:X-Api-Key:", false, true, false},
+		{"no prefix", "rest", "", false, false, false},
+		{"invalid prefix", "rest", "unknown:sensitive-config-value", false, false, true},
+		{"unused invalid prefix", "rest", "header:Host:", true, false, true},
+		{"other protocol", "anthropic", "bearer:", true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{Pools: []config.PoolConfig{{Name: "p", Protocol: tc.protocol, SecretPrefix: tc.prefix}}}
+			if !tc.unused {
+				m := config.ModelConfig{Name: "svc", Pool: "p"}
+				if tc.withAPI {
+					m.API = &config.APIConfig{}
+				}
+				cfg.Models = []config.ModelConfig{m}
+			}
+			defs, err := restAPIDefs(cfg)
+			if (err != nil) != tc.fail {
+				t.Fatalf("restAPIDefs error = %v, expected failure %v", err, tc.fail)
+			}
+			if err != nil && strings.Contains(err.Error(), "sensitive-config-value") {
+				t.Fatal("preflight error leaked the prefix value")
+			}
+			if !tc.fail && tc.prefix != "" && (len(defs) != 1 || defs[0].SecretPrefix != tc.prefix) {
+				t.Fatal("pool prefix did not reach the service declaration")
+			}
+		})
+	}
+}
+
+// T80：两池同一上游仍独立选择鉴权方式，原始 Key 无需重新导入，热重载后上传字节完整。
+func TestE2E_REST_PoolSecretPrefixReload(t *testing.T) {
+	const one, two = "fake-raw-pool-one-key", "fake-raw-pool-two-key"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := one
+		if strings.HasPrefix(r.URL.Path, "/two/") {
+			key = two
+		}
+		scheme := "Bearer "
+		if strings.HasSuffix(r.URL.Path, "/token") {
+			scheme = "Token "
+		}
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+		if err != nil || r.Header.Get("Authorization") != scheme+key || (r.Method == http.MethodPost && string(body) != "RIFF\x00audio") {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.WriteString(w, `{"transcript":"hello gateway"}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer upstream.Close()
+	spec := gwSpec{pools: poolYAML("one", upstream.URL) + poolYAML("two", upstream.URL), services: svcYAML("one", "one", "0") + svcYAML("two", "two", "0")}
+	g := startReloadGateway(t, spec)
+	for pool, secret := range map[string]string{"one": one, "two": two} {
+		if code := doJSON(t, "POST", g.adminURL()+"/keys", g.adminToken, map[string]any{"pool": pool, "name": pool, "secret": secret}, nil); code != http.StatusCreated {
+			t.Fatalf("create raw key: %d", code)
+		}
+	}
+	token := g.createClient("prefix-client")
+	if code, _ := g.get(token, "/rest/one/one/bearer"); code != http.StatusOK {
+		t.Fatalf("default bearer: %d", code)
+	}
+	spec.pools = strings.Replace(poolYAML("one", upstream.URL), " }", ", secret_prefix: \"header:Authorization:Token \" }", 1) + poolYAML("two", upstream.URL)
+	g.write(spec)
+	if code, out := g.reload(false); code != 200 || out["mode"] != "hot" || out["applied"] != true {
+		t.Fatalf("prefix reload: %d %v", code, out)
+	}
+	if code, _ := g.get(token, "/rest/one/one/token"); code != http.StatusOK {
+		t.Fatalf("configured Token: %d", code)
+	}
+	if code, _ := g.get(token, "/rest/two/two/bearer"); code != http.StatusOK {
+		t.Fatalf("other pool bearer: %d", code)
+	}
+	req, err := http.NewRequest(http.MethodPost, "http://"+g.data+"/rest/one/one/token", strings.NewReader("RIFF\x00audio"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "audio/wav")
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("audio upload: %d", response.StatusCode)
+	}
+	spec.pools = strings.Replace(spec.pools, "header:Authorization:Token ", "header:Host:", 1)
+	g.write(spec)
+	invalidReq, err := http.NewRequest(http.MethodPost, g.adminURL()+"/reload", strings.NewReader(`{"dry_run":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidReq.Header.Set("Authorization", "Bearer "+g.adminToken)
+	invalidReq.Header.Set("Content-Type", "application/json")
+	invalidResponse, err := (&http.Client{Timeout: 5 * time.Second}).Do(invalidReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer invalidResponse.Body.Close()
+	if invalidResponse.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("invalid prefix preflight: %d", invalidResponse.StatusCode)
+	}
+	if code, _ := g.get(token, "/rest/one/one/token"); code != http.StatusOK {
+		t.Fatalf("invalid reload changed active authentication: %d", code)
+	}
+	for _, secret := range []string{one, two} {
+		if strings.Contains(g.stderr.String(), secret) {
+			t.Fatal("raw Key leaked in gateway logs")
+		}
+	}
+}
+
 // T66：声明式 API 能力经完整网关：异步任务固定到创建它的 Key、业务额度错误换 Key 并冷却、
 // 按声明计费、未定价单位自动补 0（DA-13）。
 func TestE2E_REST_DeclaredAPI(t *testing.T) {

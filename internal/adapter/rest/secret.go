@@ -17,6 +17,50 @@ type parsedSecret struct {
 	queryValue  string
 }
 
+// ValidateSecretPrefix 校验池级前缀（T80），错误不包含配置值或凭据。
+func ValidateSecretPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	valid := prefix == "bearer:"
+	for _, kind := range []string{"header:", "query:", "basic:"} {
+		if rest, ok := strings.CutPrefix(prefix, kind); ok {
+			_, tail, found := strings.Cut(rest, ":")
+			valid = found && (kind == "header:" || tail == "")
+			break
+		}
+	}
+	if !valid || strings.ContainsAny(prefix, "\r\n") {
+		return errors.New("rest secret_prefix is invalid")
+	}
+	for _, b := range []byte(prefix) {
+		if (b < 0x20 && b != '\t') || b == 0x7f {
+			return errors.New("rest secret_prefix is invalid")
+		}
+	}
+	if _, err := parseSecret([]byte(prefix + "prefix-validation-placeholder")); err != nil {
+		return errors.New("rest secret_prefix is invalid")
+	}
+	return nil
+}
+
+// parseSecretWithPrefix 仅为没有显式格式的 Key 应用池级前缀，不改变原始字节。
+func parseSecretWithPrefix(raw []byte, prefix string) (*parsedSecret, error) {
+	if prefix == "" {
+		return parseSecret(raw)
+	}
+	if err := ValidateSecretPrefix(prefix); err != nil {
+		return nil, invalidKeyError()
+	}
+	secret := string(raw)
+	for _, kind := range []string{"bearer:", "header:", "query:", "basic:"} {
+		if strings.HasPrefix(secret, kind) {
+			return parseSecret(raw)
+		}
+	}
+	return parseSecret([]byte(prefix + secret))
+}
+
 // invalidKeyError 返回格式非法错误（RS-20）。
 // 严格遵守规范：错误消息固定为「rest upstream key format is invalid」，不含任何凭据明文片段。
 func invalidKeyError() error {

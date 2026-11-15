@@ -20,9 +20,10 @@ import (
 
 // APIDef 是一个服务的声明（DA-01 ~ DA-14）。
 type APIDef struct {
-	Service   string
-	Errors    []ErrorRule
-	Endpoints []EndpointDef
+	Service      string
+	SecretPrefix string // T80：所属池的原始 Key 前缀；显式凭据格式优先。
+	Errors       []ErrorRule
+	Endpoints    []EndpointDef
 }
 
 // ErrorRule 是一条业务错误映射（DA-03 ~ DA-05）。全部条件满足才命中。
@@ -83,6 +84,9 @@ func newAPITable(defs []APIDef) (*apiTable, error) {
 	units := map[string]bool{UnitRequests: true}
 	for i := range defs {
 		d := &defs[i]
+		if err := ValidateSecretPrefix(d.SecretPrefix); err != nil {
+			return nil, fmt.Errorf("rest: service %q secret_prefix: %w", d.Service, err)
+		}
 		if d.Service == "" {
 			return nil, fmt.Errorf("rest: api declaration without service")
 		}

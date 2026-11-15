@@ -96,18 +96,19 @@ const (
 )
 
 type PoolConfig struct {
-	Name        string         `yaml:"name"`
-	Protocol    string         `yaml:"protocol"`
-	BaseURL     string         `yaml:"base_url"`
-	Strategy    string         `yaml:"strategy"`
-	AffinityTTL time.Duration  `yaml:"affinity_ttl"`
-	PinTTL      time.Duration  `yaml:"pin_ttl"` // 任务固定（Response.Pins）的有效期（spec/07 §7.1）
-	MaxAttempts int            `yaml:"max_attempts"`
-	Timeouts    TimeoutsConfig `yaml:"timeouts"`
-	Cooldown    CooldownConfig `yaml:"cooldown"`
-	Breaker     BreakerConfig  `yaml:"breaker"`
-	Quota       *QuotaConfig   `yaml:"quota"`  // 周期额度（T63，CFG-21）；nil = 不限
-	Alerts      *PoolAlerts    `yaml:"alerts"` // 告警阈值（T64，CFG-22）；nil = 不告警
+	Name         string         `yaml:"name"`
+	Protocol     string         `yaml:"protocol"`
+	BaseURL      string         `yaml:"base_url"`
+	SecretPrefix string         `yaml:"secret_prefix"` // T80：适配器发送原始 Key 时使用的可选前缀；不改写存储。
+	Strategy     string         `yaml:"strategy"`
+	AffinityTTL  time.Duration  `yaml:"affinity_ttl"`
+	PinTTL       time.Duration  `yaml:"pin_ttl"` // 任务固定（Response.Pins）的有效期（spec/07 §7.1）
+	MaxAttempts  int            `yaml:"max_attempts"`
+	Timeouts     TimeoutsConfig `yaml:"timeouts"`
+	Cooldown     CooldownConfig `yaml:"cooldown"`
+	Breaker      BreakerConfig  `yaml:"breaker"`
+	Quota        *QuotaConfig   `yaml:"quota"`  // 周期额度（T63，CFG-21）；nil = 不限
+	Alerts       *PoolAlerts    `yaml:"alerts"` // 告警阈值（T64，CFG-22）；nil = 不告警
 }
 
 type TimeoutsConfig struct {

@@ -28,18 +28,32 @@ func restAPIDefs(cfg *config.Config) ([]rest.APIDef, error) {
 		return nil, nil
 	}
 	poolProto := make(map[string]string, len(cfg.Pools))
-	for _, p := range cfg.Pools {
+	poolPrefix := make(map[string]string, len(cfg.Pools))
+	for i, p := range cfg.Pools {
 		poolProto[p.Name] = p.Protocol
+		if p.SecretPrefix != "" {
+			if p.Protocol != string(rest.Protocol) {
+				return nil, fmt.Errorf("config: pools[%d].secret_prefix: only rest pools support secret_prefix", i)
+			}
+			if err := rest.ValidateSecretPrefix(p.SecretPrefix); err != nil {
+				return nil, fmt.Errorf("config: pools[%d].secret_prefix: %w", i, err)
+			}
+			poolPrefix[p.Name] = p.SecretPrefix
+		}
 	}
 	var defs []rest.APIDef
 	for i, m := range cfg.Models {
-		if m.API == nil {
+		if m.API == nil && poolPrefix[m.Pool] == "" {
 			continue
 		}
 		if proto := poolProto[m.Pool]; proto != string(rest.Protocol) { // DA-01
 			return nil, fmt.Errorf("config: models[%d].api: pool %q uses protocol %q, which does not support api declarations (only %q does)", i, m.Pool, proto, rest.Protocol)
 		}
-		d := rest.APIDef{Service: m.Name}
+		d := rest.APIDef{Service: m.Name, SecretPrefix: poolPrefix[m.Pool]}
+		if m.API == nil {
+			defs = append(defs, d)
+			continue
+		}
 		for j, r := range m.API.Errors {
 			kind, ok := apiOutcomeKinds[r.Outcome]
 			if !ok {
